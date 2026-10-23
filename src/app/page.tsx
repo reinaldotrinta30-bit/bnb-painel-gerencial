@@ -693,8 +693,98 @@ export default function PainelGerencialPage() {
               }
             }}
 
+
+            onInlineEditCabecalho={(card, updates) => {
+              const novasContratacoes = [...contratacoes];
+              const cpfAntigoLimpo = (card.cpfVinculado || '').replace(/\D/g, '');
+              const nomeAntigoUpper = (card.clienteVinculado || '').toUpperCase().trim();
+              const idsGrupo = card.idsPropostasAgrupadas || [];
+
+              // Localiza todas as linhas deste cliente na aba de Contratações
+              const indicesCliente: number[] = [];
+              novasContratacoes.forEach((r, idx) => {
+                const matchId =
+                  String(r.id) === String(card.propostaIdVinculada) ||
+                  String(r.id) === String(card.lcgPropostaIdVinculada) ||
+                  idsGrupo.includes(String(r.id));
+                const matchCpf =
+                  cpfAntigoLimpo.length === 11 &&
+                  (r.cpf || '').replace(/\D/g, '') === cpfAntigoLimpo;
+                const matchNome =
+                  nomeAntigoUpper.length > 3 &&
+                  (r.cliente || '').toUpperCase().trim() === nomeAntigoUpper;
+
+                if (matchId || matchCpf || matchNome) {
+                  indicesCliente.push(idx);
+                }
+              });
+
+              if (indicesCliente.length > 0) {
+                indicesCliente.forEach((idx) => {
+                  const reg = novasContratacoes[idx];
+                  const tipoRegUpper = (reg.tipo || '').toUpperCase().trim();
+                  const labelComp = tipoRegUpper.includes('RENOVA')
+                    ? 'RENOV. CUSTEIO'
+                    : tipoRegUpper;
+
+                  // Procura se o valor desta operação específica foi editado no cabeçalho
+                  const opEditada =
+                    updates.operacoesEditadas.find(
+                      (op) => op.opId && String(op.opId) === String(reg.id)
+                    ) ||
+                    updates.operacoesEditadas.find(
+                      (op) => op.tipo.toUpperCase() === labelComp
+                    );
+
+                  // Verifica também se havia um limite LCG embutido nos campos de garantia da operação principal
+                  const lcgEmbutidaEditada = updates.operacoesEditadas.find(
+                    (op) =>
+                      op.tipo === 'LCGH' || op.tipo === 'LCGA'
+                  );
+
+                  novasContratacoes[idx] = {
+                    ...reg,
+                    cliente: updates.cliente || reg.cliente,
+                    cpf: updates.cpf,
+                    porte: updates.porte || reg.porte,
+                    projetista: updates.projetista,
+                    avalistaNome:
+                      updates.avalistaNome !== undefined
+                        ? updates.avalistaNome
+                        : reg.avalistaNome,
+                    avalistaCpf:
+                      updates.avalistaCpf !== undefined
+                        ? updates.avalistaCpf
+                        : reg.avalistaCpf,
+                    valor: opEditada ? opEditada.valor : reg.valor,
+                    lcgValor:
+                      reg.lcgValor && lcgEmbutidaEditada
+                        ? lcgEmbutidaEditada.valor
+                        : reg.lcgValor,
+                  };
+                });
+
+                const regRepresentante =
+                  novasContratacoes.find(
+                    (r) => String(r.id) === String(card.propostaIdVinculada)
+                  ) || novasContratacoes[indicesCliente[0]];
+
+                if (regRepresentante) {
+                  handleRegistroContratacaoSalvo(
+                    regRepresentante,
+                    novasContratacoes
+                  );
+                }
+              }
+            }}
+
+
           />
         )}
+
+        
+
+        
 
         {guiaAtiva === 'carteira' && (
           <ModuloRelatorioCarteira

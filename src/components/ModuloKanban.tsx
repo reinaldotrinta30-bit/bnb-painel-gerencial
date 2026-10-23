@@ -14,6 +14,8 @@ import {
   obterListaProgramas,
   isEnquadradoCadaVezMelhor,
   buscarTelefoneProjetista,
+  mascaraDocumento,
+  mascaraMoedaInput,
   aplicarMascaraCPF,
   aplicarMascaraMoedaInput,
   aplicarMascaraDataBR,
@@ -33,6 +35,22 @@ interface ModuloKanbanProps {
     cardAtualizado: CardKanban,
     todosOsCards: CardKanban[]
   ) => void;
+  onAlterarSituacaoDesembolsoPeloKanban?: (
+    card: CardKanban,
+    novaSituacaoDesembolso: string
+  ) => void;
+  onInlineEditCabecalho?: (
+    card: CardKanban,
+    updates: {
+      cliente: string;
+      cpf: string;
+      porte: string;
+      projetista: string;
+      avalistaNome?: string;
+      avalistaCpf?: string;
+      operacoesEditadas: Array<{ opId?: string; tipo: string; valor: string }>;
+    }
+  ) => void;
   onCriarClientePeloKanban?: (
     opPrincipal: RegistroContratacao,
     opLimiteOpcional?: RegistroContratacao,
@@ -43,10 +61,6 @@ interface ModuloKanbanProps {
   onLimparDestaqueExterno?: () => void;
   onAbrirClienteEmContratacoes?: (card: CardKanban) => void;
   onAbrirClienteEmDesembolsos?: (card: CardKanban) => void;
-  onAlterarSituacaoDesembolsoPeloKanban?: (
-    card: CardKanban,
-    novaSituacaoDesembolso: string
-  ) => void;
 }
 
 const ORDEM_ETAPAS: EtapaKanban[] = [
@@ -116,6 +130,7 @@ export default function ModuloKanban({
   onAbrirClienteEmContratacoes,
   onAbrirClienteEmDesembolsos,
   onAlterarSituacaoDesembolsoPeloKanban,
+  onInlineEditCabecalho,
 }: ModuloKanbanProps) {
   const [termoBusca, setTermoBusca] = useState('');
   const [filtroCor, setFiltroCor] = useState<'TODOS' | StatusCorKanban>('TODOS');
@@ -642,6 +657,138 @@ const aplicarHighlight = useCallback((cor: string) => {
   const [menuEmojiFullscreenAberto, setMenuEmojiFullscreenAberto] =
     useState(false);
 
+    // Estados da Edição Rápida por Duplo Clique no Cabeçalho do Card
+  const [cardHeaderEditId, setCardHeaderEditId] = useState<string | null>(null);
+  const [heCliente, setHeCliente] = useState('');
+  const [heCpf, setHeCpf] = useState('');
+  const [hePorte, setHePorte] = useState('');
+  const [heProjetista, setHeProjetista] = useState('');
+  const [heTemAval, setHeTemAval] = useState(false);
+  const [heAvalNome, setHeAvalNome] = useState('');
+  const [heAvalCpf, setHeAvalCpf] = useState('');
+  const [heOperacoes, setHeOperacoes] = useState<
+    Array<{ opId?: string; tipo: string; valor: string }>
+  >([]);
+
+  const abrirEdicaoInlineCabecalho = (card: CardKanban) => {
+    if (card.etapa === 'NOTAS') return;
+    const puro = card.textoPuro || extrairTextoPuro(card.texto);
+    const linhas = puro.split('\n').map((l) => l.trim()).filter(Boolean);
+
+    // 1. Extrai Nome e CPF
+    let cli = card.clienteVinculado || '';
+    let cpf = card.cpfVinculado || '';
+    const primLinha = linhas[0] || '';
+    if (!cli || !cpf) {
+      const mCpf = primLinha.match(/(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/);
+      if (mCpf && !cpf) cpf = mCpf[1];
+      if (!cli) {
+        cli = primLinha
+          .split(/-\s*CPF:?/i)[0]
+          .replace(/^CLIENTE:\s*/i, '')
+          .trim();
+      }
+    }
+
+    // 2. Extrai Porte, Projetista, Avalista e Operações
+    let porte = card.porteVinculado || 'PRONAF V';
+    let proj = '';
+    let temAval = false;
+    let avalNome = '';
+    let avalCpf = '';
+    const opsExtraidas: Array<{ opId?: string; tipo: string; valor: string }> = [];
+
+    // Tenta extrair os opIds dos spans HTML se já existirem
+    const mapaOpIdPorIndice: Record<number, string> = {};
+    if (typeof document !== 'undefined') {
+      const temp = document.createElement('div');
+      temp.innerHTML = card.texto;
+      let idxVal = 0;
+      temp.querySelectorAll('.inline-edit-value[data-field="valor"]').forEach((el) => {
+        const idAttr = el.getAttribute('data-opid');
+        if (idAttr) mapaOpIdPorIndice[idxVal] = idAttr;
+        idxVal++;
+      });
+    }
+
+    let contadorOps = 0;
+    for (const l of linhas) {
+      const up = l.toUpperCase();
+      if (up.includes('SITUAÇÃO:') || up.includes('PENDÊNCIAS')) break;
+
+      if (up.startsWith('PORTE:')) {
+        porte = l.substring(6).trim().toUpperCase();
+      } else if (up.startsWith('PROJETISTA:')) {
+        proj = l.substring(11).trim().toUpperCase();
+      } else if (up.startsWith('AVAL:') || up.startsWith('AVALISTA:')) {
+        temAval = true;
+        const resto = l.replace(/^AVAL(?:ISTA)?:\s*/i, '').trim();
+        const mCpfAval = resto.match(/(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/);
+        if (mCpfAval) {
+          avalCpf = mCpfAval[1];
+          avalNome = resto.replace(avalCpf, '').replace(/[-:]/g, '').trim();
+        } else {
+          avalNome = resto;
+        }
+      } else if (
+        up.startsWith('LCGH:') ||
+        up.startsWith('LCGA:') ||
+        up.startsWith('INVESTIMENTO:') ||
+        up.startsWith('CUSTEIO:') ||
+        up.startsWith('RENOV. CUSTEIO:') ||
+        up.startsWith('RENOVAÇÃO') ||
+        up.startsWith('CARTÃO BNB:') ||
+        up.startsWith('PROPOSTA:')
+      ) {
+        const partes = l.split(':');
+        const tipoLabel = partes[0].trim().toUpperCase();
+        const restoValor = partes.slice(1).join(':').replace(/R\$\s*/i, '').trim();
+        const valorLimpo = restoValor.split('(')[0].trim();
+        opsExtraidas.push({
+          opId: mapaOpIdPorIndice[contadorOps],
+          tipo: tipoLabel,
+          valor: valorLimpo,
+        });
+        contadorOps++;
+      }
+    }
+
+    if (opsExtraidas.length === 0 && card.valorVinculado) {
+      opsExtraidas.push({
+        opId: card.propostaIdVinculada,
+        tipo: (card.tipoOpVinculado || 'INVESTIMENTO').toUpperCase(),
+        valor: card.valorVinculado,
+      });
+    }
+
+    setHeCliente(cli.toUpperCase());
+    setHeCpf(cpf);
+    setHePorte(porte === '-' ? 'PRONAF V' : porte);
+    setHeProjetista(proj === '-' ? '' : proj);
+    setHeTemAval(temAval);
+    setHeAvalNome(avalNome);
+    setHeAvalCpf(avalCpf);
+    setHeOperacoes(opsExtraidas);
+    setCardHeaderEditId(card.id);
+  };
+
+  const salvarEdicaoInlineCabecalho = (card: CardKanban) => {
+    if (onInlineEditCabecalho) {
+      onInlineEditCabecalho(card, {
+        cliente: heCliente.toUpperCase().trim(),
+        cpf: heCpf.trim(),
+        porte: hePorte.toUpperCase().trim(),
+        projetista: heProjetista.toUpperCase().trim(),
+        avalistaNome: heTemAval ? heAvalNome.toUpperCase().trim() : undefined,
+        avalistaCpf: heTemAval ? heAvalCpf.trim() : undefined,
+        operacoesEditadas: heOperacoes,
+      });
+    }
+    setCardHeaderEditId(null);
+  };
+
+    
+
   const EMOJIS_RAPIDOS_KANBAN = [
     { icone: '✅', desc: 'Concluído / OK' },
     { icone: '⚠️', desc: 'Atenção / Alerta' },
@@ -791,13 +938,30 @@ const aplicarHighlight = useCallback((cor: string) => {
     // ITEM 6: Extrai preservando o HTML rico (cores, negritos, grifos e emojis) de cada seção!
     const extraidos = extrairCamposLivresDoHtmlKanban(novoHtml, novoTextoPuro);
 
+    // Intercepta as edições inline do cabeçalho (Duplo Clique) e limpa os spans editados
+    const temp = document.createElement('div');
+    temp.innerHTML = novoHtml;
+
+    temp.querySelectorAll('.inline-edit-value').forEach((span) => {
+      const htmlEl = span as HTMLElement;
+      if (htmlEl.contentEditable === 'true') {
+        htmlEl.contentEditable = 'false';
+        htmlEl.style.backgroundColor = 'transparent';
+        htmlEl.style.border = 'none';
+        htmlEl.style.borderBottom = '1px dotted #94a3b8';
+        htmlEl.style.padding = '0';
+      }
+    });
+
+    const htmlParaSalvar = temp.innerHTML;
+
     let cardModificado: CardKanban | undefined;
 
     const novos = cards.map((c) => {
       if (c.id !== cardId) return c;
       cardModificado = {
         ...c,
-        texto: novoHtml,
+        texto: htmlParaSalvar,
         textoPuro: novoTextoPuro,
         dataModificacao: hoje,
         situacaoDetalhadaVinculada:
@@ -2154,6 +2318,19 @@ const aplicarHighlight = useCallback((cor: string) => {
                                   )}
                                 </div>
 
+                                {/* Escudo invisível para fechar os menus suspensos ao clicar fora */}
+                                {(menuEmojiFullscreenAberto || menuHighlightFullscreenAberto) && (
+                                  <div
+                                    style={{ position: 'fixed', inset: 0, zIndex: 10000009 }}
+                                    onMouseDown={(e) => {
+                                      e.stopPropagation();
+                                      e.preventDefault();
+                                      setMenuEmojiFullscreenAberto(false);
+                                      setMenuHighlightFullscreenAberto(false);
+                                    }}
+                                  />
+                                )}
+
                                 {/* ITEM 6.1: Seletor de Emojis de Check, Alerta, Fixação e Tópicos */}
                                 <div style={{ position: 'relative', display: 'inline-block' }}>
                                   <button
@@ -2177,10 +2354,10 @@ const aplicarHighlight = useCallback((cor: string) => {
                                         boxShadow: '0 6px 16px rgba(0,0,0,0.2)',
                                         borderRadius: '8px',
                                         padding: '8px',
-                                        display: 'grid',
-                                        gridTemplateColumns: 'repeat(7, 1fr)',
-                                        gap: '4px',
-                                        width: '230px',
+                                        display: 'flex',
+                                        flexWrap: 'wrap',
+                                        gap: '6px',
+                                        width: '270px',
                                         zIndex: 10000010,
                                       }}
                                     >
@@ -2406,6 +2583,139 @@ const aplicarHighlight = useCallback((cor: string) => {
                           </div>
                         )}
 
+                        
+                        {/* EDITOR INLINE DO CABEÇALHO (Ativado ao dar Duplo Clique nos dados do cliente) */}
+                        {cardHeaderEditId === card.id && (
+                          <div
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                salvarEdicaoInlineCabecalho(card);
+                              } else if (e.key === 'Escape') {
+                                setCardHeaderEditId(null);
+                              }
+                            }}
+                            style={{
+                              margin: '6px 8px 0 8px',
+                              padding: '8px 10px',
+                              background: '#fffbeb',
+                              border: '1.5px dashed #8B1530',
+                              borderRadius: '6px',
+                              fontSize: '11.5px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '5px',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #fde68a', paddingBottom: '4px', marginBottom: '2px' }}>
+                              <strong style={{ color: '#8B1530', fontSize: '10.5px' }}>
+                                ✏️ EDITANDO CABEÇALHO (ENTER PARA SALVAR)
+                              </strong>
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => salvarEdicaoInlineCabecalho(card)}
+                                  style={{ background: '#137333', color: '#fff', border: 'none', borderRadius: '4px', padding: '2px 8px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
+                                >
+                                  ✔ Salvar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setCardHeaderEditId(null)}
+                                  style={{ background: '#e2e8f0', color: '#333', border: 'none', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', cursor: 'pointer' }}
+                                >
+                                  ✖
+                                </button>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                              <b>CLIENTE:</b>
+                              <input
+                                type="text"
+                                value={heCliente}
+                                onChange={(e) => setHeCliente(e.target.value)}
+                                style={{ flex: 1, minWidth: '140px', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
+                                autoFocus
+                              />
+                              <b>CPF:</b>
+                              <input
+                                type="text"
+                                value={heCpf}
+                                onChange={(e) => setHeCpf(mascaraDocumento(e.target.value))}
+                                style={{ width: '125px', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
+                              />
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                              <b>PORTE:</b>
+                              <select
+                                value={hePorte}
+                                onChange={(e) => setHePorte(e.target.value)}
+                                style={{ width: 'auto', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
+                              >
+                                <option value="PRONAF V">PRONAF V</option>
+                                <option value="PRONAF A">PRONAF A</option>
+                                <option value="MINI">MINI</option>
+                                <option value="PEQUENO">PEQUENO</option>
+                                <option value="MÉDIO">MÉDIO</option>
+                              </select>
+
+                              <b>PROJETISTA:</b>
+                              <input
+                                type="text"
+                                value={heProjetista}
+                                onChange={(e) => setHeProjetista(e.target.value)}
+                                style={{ flex: 1, minWidth: '90px', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
+                              />
+                            </div>
+
+                            {heTemAval && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                <b>AVAL:</b>
+                                <input
+                                  type="text"
+                                  value={heAvalNome}
+                                  onChange={(e) => setHeAvalNome(e.target.value)}
+                                  placeholder="Nome do Avalista"
+                                  style={{ flex: 1, minWidth: '120px', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
+                                />
+                                <b>CPF AVAL:</b>
+                                <input
+                                  type="text"
+                                  value={heAvalCpf}
+                                  onChange={(e) => setHeAvalCpf(mascaraDocumento(e.target.value))}
+                                  placeholder="000.000.000-00"
+                                  style={{ width: '120px', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
+                                />
+                              </div>
+                            )}
+
+                            {heOperacoes.map((opItem, idxOp) => (
+                              <div key={idxOp} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <b style={{ color: opItem.tipo.includes('LCG') ? '#8B1530' : '#1e293b' }}>
+                                  {opItem.tipo}: R$
+                                </b>
+                                <input
+                                  type="text"
+                                  value={opItem.valor}
+                                  onChange={(e) => {
+                                    const novas = [...heOperacoes];
+                                    novas[idxOp] = {
+                                      ...novas[idxOp],
+                                      valor: mascaraMoedaInput(e.target.value),
+                                    };
+                                    setHeOperacoes(novas);
+                                  }}
+                                  style={{ width: '130px', padding: '2px 6px', fontSize: '11.5px', fontWeight: 'bold', height: '24px' }}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+
                         {/* ITEM 4 e ITEM 5: Para cards de clientes, o contêiner externo tem contentEditable={false}
                             (protegendo os títulos fixos e permitindo selecionar o cabeçalho), enquanto as 3 caixas internas são editáveis! */}
                         <div
@@ -2418,6 +2728,20 @@ const aplicarHighlight = useCallback((cor: string) => {
                           style={estiloNotaConcluida}
                           onPaste={handleSmartPasteCard}
                           onMouseDown={() => setDragHabilitadoId(null)}
+                          onDoubleClick={(e) => {
+                            const target = e.target as HTMLElement;
+                            // Se deu duplo clique dentro do cabeçalho cinza do cliente (ou nas primeiras linhas de dados), abre a edição inline!
+                            if (
+                              target.closest('.card-bloco-cliente') ||
+                              target.classList.contains('inline-edit-value') ||
+                              (!target.closest('.bloco-editavel-situacao') &&
+                                !target.closest('.bloco-editavel-pendencias') &&
+                                !target.closest('.bloco-editavel-analise'))
+                            ) {
+                              e.preventDefault();
+                              abrirEdicaoInlineCabecalho(card);
+                            }
+                          }}
                           onFocus={() => {
                             if (isFullscreen) limparGrifosBuscaInterna(card.id);
                           }}

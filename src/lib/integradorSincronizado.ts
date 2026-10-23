@@ -72,13 +72,20 @@ export function montarHtmlCardSincronizado(params: {
     return tu || 'PROPOSTA';
   };
 
+  // Preparador de spans para a Sacada Genial do Duplo Clique:
+  const spanEdit = (field: string, val?: string, opId = '') =>
+    `<span class="inline-edit-value" data-field="${field}" ${
+      opId ? `data-opid="${opId}"` : ''
+    } title="Dê duplo clique no cabeçalho para editar">${val || '-'}</span>`;
+
   // 1. Linha de Avalista (se houver e não for PRONAF A)
   let linhaAvalHtml = '';
   let linhaAvalPuro = '';
   if (!isPronafA && tipoGarantia === 'AVAL' && (avalistaNome || avalistaCpf)) {
-    linhaAvalHtml = `<div><b>AVAL:</b> ${avalistaNome || 'INFORMAR AVALISTA'}${
-      avalistaCpf ? ` - ${avalistaCpf}` : ''
-    }</div>`;
+    linhaAvalHtml = `<div><b contenteditable="false">AVAL:</b> ${spanEdit(
+      'avalistaNome',
+      avalistaNome || 'INFORMAR AVALISTA'
+    )}${avalistaCpf ? ` - ${spanEdit('avalistaCpf', avalistaCpf)}` : ''}</div>`;
     linhaAvalPuro = `AVAL: ${avalistaNome || ''} - ${avalistaCpf || ''}\n`;
   }
 
@@ -98,20 +105,22 @@ export function montarHtmlCardSincronizado(params: {
       const label = formatarLabelTipo(opItem.tipo);
       const isLim = label === 'LCGH' || label === 'LCGA';
       const corEstilo = isLim ? ' style="color:#8B1530;"' : '';
-      linhasOperacoesHtml += `<div${corEstilo}><b>${label}:</b> R$ ${
-        opItem.valor || '0,00'
-      }</div>`;
-      linhasOperacoesPuro += `${label}: R$ ${opItem.valor || '0,00'}\n`;
+      linhasOperacoesHtml += `<div${corEstilo}><b contenteditable="false">${label}:</b> R$ ${spanEdit(
+        'valor',
+        opItem.valor || '0,00',
+        opItem.id
+      )}</div>`;
     });
   } else {
     const tipoUpper = (tipo || '').toUpperCase().trim();
     const isSomenteLimite = tipoUpper === 'LCGH' || tipoUpper === 'LCGA';
 
     if (isSomenteLimite) {
-      linhasOperacoesHtml = `<div style="color:#8B1530;"><b>${tipoUpper}:</b> R$ ${
-        valor || '0,00'
-      }</div>`;
-      linhasOperacoesPuro = `${tipoUpper}: R$ ${valor || '0,00'}\n`;
+      linhasOperacoesHtml = `<div style="color:#8B1530;"><b contenteditable="false">${tipoUpper}:</b> R$ ${spanEdit(
+        'valor',
+        valor || '0,00',
+        opNum || '' // Fallback id
+      )}</div>`;
     } else {
       if (
         !isPronafA &&
@@ -119,13 +128,18 @@ export function montarHtmlCardSincronizado(params: {
         lcgValor
       ) {
         const labelLcg = lcgTipo || tipoGarantia || 'LCGH';
-        linhasOperacoesHtml += `<div style="color:#8B1530;"><b>${labelLcg}:</b> R$ ${lcgValor}</div>`;
-        linhasOperacoesPuro += `${labelLcg}: R$ ${lcgValor}\n`;
+        linhasOperacoesHtml += `<div style="color:#8B1530;"><b contenteditable="false">${labelLcg}:</b> R$ ${spanEdit(
+          'valor',
+          lcgValor,
+          'lcg_op'
+        )}</div>`;
       }
       const labelDerivada = formatarLabelTipo(tipo);
-      linhasOperacoesHtml += `<div><b>${labelDerivada}:</b> R$ ${
-        valor || '0,00'
-      }</div>`;
+      linhasOperacoesHtml += `<div><b contenteditable="false">${labelDerivada}:</b> R$ ${spanEdit(
+        'valor',
+        valor || '0,00',
+        opNum || ''
+      )}</div>`;
       linhasOperacoesPuro += `${labelDerivada}: R$ ${valor || '0,00'}\n`;
     }
   }
@@ -184,20 +198,24 @@ export function montarHtmlCardSincronizado(params: {
   const linhasAnaliseHtml = formatarBlocoRicoOuTexto(textoAnalise, '-');
 
   const linhaOpDesemb = opNum
-    ? `<div><b>OPERAÇÃO:</b> ${opNum}${
+    ? `<div><b contenteditable="false">OPERAÇÃO:</b> ${opNum}${
         parcela ? ` (${parcela}ª PARCELA)` : ''
       }</div>`
     : '';
 
-  // ITEM 4 e ITEM 5: O cabeçalho permite seleção de texto (user-select: text),
-  // os títulos têm contenteditable="false", e SOMENTE as 3 caixas internas têm contenteditable="true"!
-  const html = `<div contenteditable="false" class="card-bloco-cliente"><div><b>${(
-    cliente || 'CLIENTE SEM NOME'
-  ).toUpperCase()}</b>${
-    cpf ? ` - <b>CPF:</b> ${cpf}` : ''
-  }</div><div><b>PORTE:</b> ${porte || '-'}</div><div><b>PROJETISTA:</b> ${
+  // ITEM 4 e ITEM 5: Cabeçalho selecionável e editável com duplo clique
+  const html = `<div contenteditable="false" class="card-bloco-cliente" title="Dê duplo clique aqui para editar Nome, CPF, Porte, Projetista, Aval ou Valores"><div><b contenteditable="false">${spanEdit(
+    'cliente',
+    (cliente || 'CLIENTE SEM NOME').toUpperCase()
+  )}</b>${
+    cpf ? ` - <b contenteditable="false">CPF:</b> ${spanEdit('cpf', cpf)}` : ''
+  }</div><div><b contenteditable="false">PORTE:</b> ${spanEdit(
+    'porte',
+    porte || '-'
+  )}</div><div><b contenteditable="false">PROJETISTA:</b> ${spanEdit(
+    'projetista',
     projetista || '-'
-  }</div>${linhaAvalHtml}${linhasOperacoesHtml}${linhaOpDesemb}</div><div contenteditable="false" class="card-titulo-situacao">📊 SITUAÇÃO:</div><div contenteditable="true" class="bloco-editavel-situacao">${linhasSitHtml}</div><div contenteditable="false" class="card-titulo-pendencias">📝 PENDÊNCIAS / OBSERVAÇÕES:</div><div contenteditable="true" class="bloco-editavel-pendencias">${linhasPendHtml}</div><div contenteditable="false" class="card-titulo-analise">🔍 ESPAÇO PARA ANÁLISE (CONFORMIDADE / CÁLCULOS):</div><div contenteditable="true" class="bloco-editavel-analise">${linhasAnaliseHtml}</div>`;
+  )}</div>${linhaAvalHtml}${linhasOperacoesHtml}${linhaOpDesemb}</div><div contenteditable="false" class="card-titulo-situacao">📊 SITUAÇÃO:</div><div contenteditable="true" class="bloco-editavel-situacao">${linhasSitHtml}</div><div contenteditable="false" class="card-titulo-pendencias">📝 PENDÊNCIAS / OBSERVAÇÕES:</div><div contenteditable="true" class="bloco-editavel-pendencias">${linhasPendHtml}</div><div contenteditable="false" class="card-titulo-analise">🔍 ESPAÇO PARA ANÁLISE (CONFORMIDADE / CÁLCULOS):</div><div contenteditable="true" class="bloco-editavel-analise">${linhasAnaliseHtml}</div>`;
 
   // Remove tags HTML apenas para gerar o índice de busca rápida (textoPuro)
   const removerTags = (s: string) =>

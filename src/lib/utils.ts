@@ -204,3 +204,28 @@ export function buscarTelefoneProjetista(nomeProjetista?: string): string {
   );
   return achado?.telefone ? achado.telefone.replace(/\D/g, '') : '';
 }
+
+// ============================================================================
+// MÁSCARAS PARA O EDITOR INLINE DO KANBAN
+// ============================================================================
+export function mascaraDocumento(v: string): string {
+  let r = v.replace(/\D/g, "");
+  if (r.length > 11) {
+    r = r.substring(0, 14);
+    return r.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2}).*/, "$1.$2.$3/$4-$5");
+  }
+  if (r.length > 0) {
+    r = r.substring(0, 11);
+    r = r.replace(/^(\d{3})(\d)/, "$1.$2");
+    r = r.replace(/^(\d{3})\.(\d{3})(\d)/, "$1.$2.$3");
+    r = r.replace(/^(\d{3})\.(\d{3})\.(\d{3})(\d)/, "$1.$2.$3-$4");
+  }
+  return r;
+}
+
+export function mascaraMoedaInput(v: string): string {
+  let num = v.replace(/\D/g, "");
+  if (num === "") return "";
+  num = (parseInt(num, 10) / 100).toFixed(2);
+  return num.replace(".", ",").replace(/(\d)(?=(\d{3})+(?!\d))/g, "$1.");
+}
