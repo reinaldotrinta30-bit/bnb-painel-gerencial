@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, } from 'react';
 import {
   CardKanban,
   EtapaKanban,
@@ -21,6 +21,7 @@ import {
 import {
   mapearEtapaKanbanParaSituacaoContratacao,
   extrairCamposLivresDoTextoKanban,
+  extrairCamposLivresDoHtmlKanban,
   exportarKanbanParaPDFExecutivo,
   OpcoesFiltroExportacaoPDF,
 } from '@/lib/integradorSincronizado';
@@ -42,6 +43,10 @@ interface ModuloKanbanProps {
   onLimparDestaqueExterno?: () => void;
   onAbrirClienteEmContratacoes?: (card: CardKanban) => void;
   onAbrirClienteEmDesembolsos?: (card: CardKanban) => void;
+  onAlterarSituacaoDesembolsoPeloKanban?: (
+    card: CardKanban,
+    novaSituacaoDesembolso: string
+  ) => void;
 }
 
 const ORDEM_ETAPAS: EtapaKanban[] = [
@@ -110,6 +115,7 @@ export default function ModuloKanban({
   onLimparDestaqueExterno,
   onAbrirClienteEmContratacoes,
   onAbrirClienteEmDesembolsos,
+  onAlterarSituacaoDesembolsoPeloKanban,
 }: ModuloKanbanProps) {
   const [termoBusca, setTermoBusca] = useState('');
   const [filtroCor, setFiltroCor] = useState<'TODOS' | StatusCorKanban>('TODOS');
@@ -200,6 +206,14 @@ export default function ModuloKanban({
     cardId: string;
     pos: 'top' | 'bottom';
   } | null>(null);
+
+  const execFormat = useCallback((comando: string, valor?: string) => {
+  document.execCommand(comando, false, valor);
+}, []);
+
+const aplicarHighlight = useCallback((cor: string) => {
+  document.execCommand('hiliteColor', false, cor);
+}, []);
 
   // ITEM 10: Gerador de mensagem estilizada para WhatsApp / Área de Transferência
   const gerarMensagemCobrancaWhatsApp = (card: CardKanban): string => {
@@ -623,18 +637,89 @@ export default function ModuloKanban({
   };
 
   // ITEM 2: Altera a Situação Rígida diretamente pela tarja do Card e reflete na tabela de Contratações!
+  const [menuHighlightFullscreenAberto, setMenuHighlightFullscreenAberto] =
+    useState(false);
+  const [menuEmojiFullscreenAberto, setMenuEmojiFullscreenAberto] =
+    useState(false);
+
+  const EMOJIS_RAPIDOS_KANBAN = [
+    { icone: '✅', desc: 'Concluído / OK' },
+    { icone: '⚠️', desc: 'Atenção / Alerta' },
+    { icone: '🚨', desc: 'Urgente / Prioridade' },
+    { icone: '⏳', desc: 'Aguardando / Prazo' },
+    { icone: '📌', desc: 'Fixar / Importante' },
+    { icone: '🔒', desc: 'Travado / Bloqueio' },
+    { icone: '📋', desc: 'Checklist / Laudo' },
+    { icone: '📞', desc: 'Cobrar / Contato' },
+    { icone: '💰', desc: 'Valor / Financeiro' },
+    { icone: '🏛️', desc: 'Cartório / Registro' },
+    { icone: '👀', desc: 'Em Verificação' },
+    { icone: '❌', desc: 'Pendente / Negado' },
+    { icone: '➡️', desc: 'Encaminhado / Seta' },
+    { icone: '🔔', desc: 'Lembrete' },
+  ];
+
+  // ITEM 2 e ITEM 10: Altera a Situação da Contratação pela tarja sem sujar o texto livre da Situação!
   const alterarSituacaoRigidaPelaTarja = (
     card: CardKanban,
     novaSitRigida: string
   ) => {
     const hoje = getHojeISO();
+    const novaEtapa =
+      novaSitRigida === 'Contratado' &&
+      card.etapa !== 'DESEMBOLSOS' &&
+      card.etapa !== 'ACOMPANHAMENTO'
+        ? 'DESEMBOLSOS'
+        : card.etapa;
+
     const atualizado: CardKanban = {
       ...card,
+      etapa: novaEtapa,
       situacaoVinculada: novaSitRigida,
+      situacaoDesembolsoVinculada:
+        novaSitRigida === 'Contratado'
+          ? card.situacaoDesembolsoVinculada || 'Desembolso Solicitado'
+          : card.situacaoDesembolsoVinculada,
       dataModificacao: hoje,
     };
     const novaLista = cards.map((c) => (c.id === card.id ? atualizado : c));
     salvarComHistorico(novaLista, false, atualizado);
+  };
+
+  // ITEM 7: Altera a Situação do Desembolso pela 2ª Tarja e sincroniza com a aba de Desembolsos!
+  const alterarSituacaoDesembolsoPelaTarja = (
+    card: CardKanban,
+    novaSitDesemb: string
+  ) => {
+    const hoje = getHojeISO();
+    const novaEtapa: EtapaKanban =
+      novaSitDesemb === 'Finalizado' || novaSitDesemb === 'Desembolso Efetivado'
+        ? 'ACOMPANHAMENTO'
+        : card.etapa === 'ACOMPANHAMENTO'
+        ? 'DESEMBOLSOS'
+        : card.etapa;
+
+    const novaCor: StatusCorKanban =
+      card.statusCor === 'roxo'
+        ? 'roxo'
+        : novaSitDesemb === 'Desembolso Pendente' ||
+          novaSitDesemb === 'Não Desembolsar'
+        ? 'vermelho'
+        : novaSitDesemb === 'Desembolso Efetivado' ||
+          novaSitDesemb === 'Finalizado'
+        ? 'verde'
+        : 'azul';
+
+    const atualizado: CardKanban = {
+      ...card,
+      etapa: novaEtapa,
+      statusCor: novaCor,
+      situacaoDesembolsoVinculada: novaSitDesemb,
+      dataModificacao: hoje,
+    };
+    const novaLista = cards.map((c) => (c.id === card.id ? atualizado : c));
+    salvarComHistorico(novaLista, false);
+    onAlterarSituacaoDesembolsoPeloKanban?.(atualizado, novaSitDesemb);
   };
 
   // ITEM 1: Interceptador Inteligente de Colagem (Smart Paste)
@@ -699,27 +784,22 @@ export default function ModuloKanban({
     novoHtml: string,
     novoTextoPuro: string
   ) => {
-    const htmlLimpo = novoHtml.replace(
-      /<mark class="kanban-busca-temp"[^>]*>(.*?)<\/mark>/gi,
-      '$1'
-    );
+    const cardAtual = cards.find((c) => c.id === cardId);
+    if (!cardAtual || cardAtual.texto === novoHtml) return;
+
     const hoje = getHojeISO();
-    let cardPropagar: CardKanban | undefined;
+    // ITEM 6: Extrai preservando o HTML rico (cores, negritos, grifos e emojis) de cada seção!
+    const extraidos = extrairCamposLivresDoHtmlKanban(novoHtml, novoTextoPuro);
 
-    const novaLista = cards.map((c) => {
+    let cardModificado: CardKanban | undefined;
+
+    const novos = cards.map((c) => {
       if (c.id !== cardId) return c;
-      const puroAntigo =
-        c.textoPuro !== undefined ? c.textoPuro : extrairTextoPuro(c.texto);
-      const mudouTexto =
-        puroAntigo.replace(/\s+/g, '') !== (novoTextoPuro || '').replace(/\s+/g, '');
-
-      // Extrai tanto a SITUAÇÃO livre quanto as PENDÊNCIAS / OBSERVAÇÕES digitadas diretamente no card!
-      const extraidos = extrairCamposLivresDoTextoKanban(novoTextoPuro);
-
-      const atualizado: CardKanban = {
+      cardModificado = {
         ...c,
-        texto: htmlLimpo,
+        texto: novoHtml,
         textoPuro: novoTextoPuro,
+        dataModificacao: hoje,
         situacaoDetalhadaVinculada:
           extraidos.situacaoDetalhada !== undefined
             ? extraidos.situacaoDetalhada
@@ -732,20 +812,15 @@ export default function ModuloKanban({
           extraidos.espacoAnalise !== undefined
             ? extraidos.espacoAnalise
             : c.espacoAnaliseVinculado,
-        dataModificacao: mudouTexto ? hoje : c.dataModificacao,
-        estagnacaoDispensada: false,
       };
-      if (atualizado.lembreteData && atualizado.lembreteData <= hoje) {
-        atualizado.lembreteDispensado = true;
-      }
-      delete atualizado.isNovo;
-      if (mudouTexto && atualizado.propostaIdVinculada) {
-        cardPropagar = atualizado;
-      }
-      return atualizado;
+      return cardModificado;
     });
 
-    salvarComHistorico(novaLista, false, cardPropagar);
+    salvarComHistorico(
+      novos,
+      true,
+      cardModificado?.propostaIdVinculada ? cardModificado : undefined
+    );
   };
 
   // =========================================================================
@@ -1743,78 +1818,145 @@ export default function ModuloKanban({
                                   </>
                                 )}
 
-                                {/* ITEM 2.1: Quando EXPANDIDO, a Tarja fica no cabeçalho logo após o WhatsApp e antes do aviso de Limite */}
+                                {/* ITEM 2.1 e ITEM 7: Quando EXPANDIDO, exibe a Tarja de Contratação e (se Contratado/Desembolso) a Tarja de Desembolso ao lado direito! */}
                                 {isFullscreen && card.etapa !== 'NOTAS' && (
-                                  <select
-                                    value={card.situacaoVinculada || 'Na Agência'}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onChange={(e) =>
-                                      alterarSituacaoRigidaPelaTarja(
-                                        card,
-                                        e.target.value
-                                      )
-                                    }
-                                    style={{
-                                      width: 'auto',
-                                      marginLeft: '4px',
-                                      padding: '2px 8px',
-                                      fontSize: '11px',
-                                      fontWeight: 'bold',
-                                      borderRadius: '10px',
-                                      cursor: 'pointer',
-                                      height: '24px',
-                                      background:
-                                        card.situacaoVinculada === 'Contratado'
-                                          ? '#e6f4ea'
-                                          : card.situacaoVinculada === 'Na Central'
-                                          ? '#fef7e0'
-                                          : card.situacaoVinculada === 'Devolvido AG'
-                                          ? '#fff3e0'
-                                          : card.situacaoVinculada ===
-                                            'Com Cliente/Projetista'
-                                          ? '#fce8e6'
-                                          : '#e8f0fe',
-                                      color:
-                                        card.situacaoVinculada === 'Contratado'
-                                          ? '#137333'
-                                          : card.situacaoVinculada === 'Na Central'
-                                          ? '#b06000'
-                                          : card.situacaoVinculada === 'Devolvido AG'
-                                          ? '#e65100'
-                                          : card.situacaoVinculada ===
-                                            'Com Cliente/Projetista'
-                                          ? '#c5221f'
-                                          : '#1967d2',
-                                      border:
-                                        card.situacaoVinculada === 'Contratado'
-                                          ? '1px solid #a8dab5'
-                                          : card.situacaoVinculada === 'Na Central'
-                                          ? '1px solid #fde293'
-                                          : card.situacaoVinculada === 'Devolvido AG'
-                                          ? '1px solid #ffb74d'
-                                          : card.situacaoVinculada ===
-                                            'Com Cliente/Projetista'
-                                          ? '1px solid #f1a8a2'
-                                          : '1px solid #a8c7fa',
-                                    }}
-                                    title="Situação Oficial vinculada à tabela de Contratações"
-                                  >
-                                    <option value="Com Cliente/Projetista" style={{ background: '#fff', color: '#333' }}>
-                                      Com Cliente/Projetista
-                                    </option>
-                                    <option value="Na Agência" style={{ background: '#fff', color: '#333' }}>
-                                      Na Agência (AG)
-                                    </option>
-                                    <option value="Devolvido AG" style={{ background: '#fff', color: '#333' }}>
-                                      Devolvido AG
-                                    </option>
-                                    <option value="Na Central" style={{ background: '#fff', color: '#333' }}>
-                                      Na Central (S522)
-                                    </option>
-                                    <option value="Contratado" style={{ background: '#fff', color: '#333' }}>
-                                      Contratado
-                                    </option>
-                                  </select>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '4px' }}>
+                                    <select
+                                      value={card.situacaoVinculada || 'Na Agência'}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onChange={(e) =>
+                                        alterarSituacaoRigidaPelaTarja(
+                                          card,
+                                          e.target.value
+                                        )
+                                      }
+                                      style={{
+                                        width: 'auto',
+                                        padding: '2px 7px',
+                                        fontSize: '10.5px',
+                                        fontWeight: 'bold',
+                                        borderRadius: '10px',
+                                        cursor: 'pointer',
+                                        height: '23px',
+                                        background:
+                                          card.situacaoVinculada === 'Contratado'
+                                            ? '#e6f4ea'
+                                            : card.situacaoVinculada === 'Na Central'
+                                            ? '#fef7e0'
+                                            : card.situacaoVinculada === 'Devolvido AG'
+                                            ? '#fff3e0'
+                                            : card.situacaoVinculada ===
+                                              'Com Cliente/Projetista'
+                                            ? '#fce8e6'
+                                            : '#e8f0fe',
+                                        color:
+                                          card.situacaoVinculada === 'Contratado'
+                                            ? '#137333'
+                                            : card.situacaoVinculada === 'Na Central'
+                                            ? '#b06000'
+                                            : card.situacaoVinculada === 'Devolvido AG'
+                                            ? '#e65100'
+                                            : card.situacaoVinculada ===
+                                              'Com Cliente/Projetista'
+                                            ? '#c5221f'
+                                            : '#1967d2',
+                                        border: '1px solid rgba(0,0,0,0.15)',
+                                      }}
+                                      title="Situação da Contratação"
+                                    >
+                                      <option value="Com Cliente/Projetista" style={{ background: '#fff', color: '#333' }}>
+                                        Com Cliente/Projetista
+                                      </option>
+                                      <option value="Na Agência" style={{ background: '#fff', color: '#333' }}>
+                                        Na Agência (AG)
+                                      </option>
+                                      <option value="Devolvido AG" style={{ background: '#fff', color: '#333' }}>
+                                        Devolvido AG
+                                      </option>
+                                      <option value="Na Central" style={{ background: '#fff', color: '#333' }}>
+                                        Na Central (S522)
+                                      </option>
+                                      <option value="Contratado" style={{ background: '#fff', color: '#333' }}>
+                                        Contratado
+                                      </option>
+                                    </select>
+
+                                    {/* ITEM 7: Segunda Tarja (Situação do Desembolso) ao lado direito quando Contratado / Desembolso */}
+                                    {(card.situacaoVinculada === 'Contratado' ||
+                                      card.etapa === 'DESEMBOLSOS' ||
+                                      card.etapa === 'ACOMPANHAMENTO') && (
+                                      <select
+                                        value={
+                                          card.situacaoDesembolsoVinculada ||
+                                          'Desembolso Solicitado'
+                                        }
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onChange={(e) =>
+                                          alterarSituacaoDesembolsoPelaTarja(
+                                            card,
+                                            e.target.value
+                                          )
+                                        }
+                                        style={{
+                                          width: 'auto',
+                                          padding: '2px 7px',
+                                          fontSize: '10.5px',
+                                          fontWeight: 'bold',
+                                          borderRadius: '10px',
+                                          cursor: 'pointer',
+                                          height: '23px',
+                                          background:
+                                            card.situacaoDesembolsoVinculada ===
+                                              'Desembolso Efetivado' ||
+                                            card.situacaoDesembolsoVinculada ===
+                                              'Finalizado'
+                                              ? '#dcfce7'
+                                              : card.situacaoDesembolsoVinculada ===
+                                                  'Desembolso Pendente' ||
+                                                card.situacaoDesembolsoVinculada ===
+                                                  'Não Desembolsar'
+                                              ? '#fee2e2'
+                                              : '#f3e8ff',
+                                          color:
+                                            card.situacaoDesembolsoVinculada ===
+                                              'Desembolso Efetivado' ||
+                                            card.situacaoDesembolsoVinculada ===
+                                              'Finalizado'
+                                              ? '#15803d'
+                                              : card.situacaoDesembolsoVinculada ===
+                                                  'Desembolso Pendente' ||
+                                                card.situacaoDesembolsoVinculada ===
+                                                  'Não Desembolsar'
+                                              ? '#b91c1c'
+                                              : '#6b21a8',
+                                          border: '1px solid rgba(107,33,168,0.25)',
+                                        }}
+                                        title="Situação do Desembolso (Sincronizada com a aba Desembolsos)"
+                                      >
+                                        <option value="Desembolso Solicitado" style={{ background: '#fff', color: '#333' }}>
+                                          💸 Desemb. Solicitado
+                                        </option>
+                                        <option value="Em Análise" style={{ background: '#fff', color: '#333' }}>
+                                          💸 Desemb. Em Análise
+                                        </option>
+                                        <option value="Desembolso Pendente" style={{ background: '#fff', color: '#333' }}>
+                                          💸 Desemb. Pendente
+                                        </option>
+                                        <option value="Desembolso Liberado" style={{ background: '#fff', color: '#333' }}>
+                                          💸 Desemb. Liberado
+                                        </option>
+                                        <option value="Desembolso Efetivado" style={{ background: '#fff', color: '#333' }}>
+                                          💸 Desemb. Efetivado
+                                        </option>
+                                        <option value="Finalizado" style={{ background: '#fff', color: '#333' }}>
+                                          💸 Finalizado
+                                        </option>
+                                        <option value="Não Desembolsar" style={{ background: '#fff', color: '#333' }}>
+                                          💸 Não Desembolsar
+                                        </option>
+                                      </select>
+                                    )}
+                                  </div>
                                 )}
 
                                 {/* ITEM 11: Alerta discreto de Derivada aguardando Limite LCGA/LCGH (Apenas com Card Expandido) */}
@@ -1827,7 +1969,7 @@ export default function ModuloKanban({
                                       border: '1px solid #ffeeba',
                                       padding: '2px 8px',
                                       borderRadius: '12px',
-                                      fontSize: '11px',
+                                      fontSize: '10.5px',
                                       fontWeight: 'bold',
                                     }}
                                     title="Esta operação derivada possui vínculo com limite LCGH/LCGA em andamento"
@@ -1873,7 +2015,11 @@ export default function ModuloKanban({
                               ) : (
                                 <button
                                   onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={() => toggleFullscreenCard(card.id)}
+                                  onClick={() => {
+                                    setMenuHighlightFullscreenAberto(false);
+                                    setMenuEmojiFullscreenAberto(false);
+                                    toggleFullscreenCard(card.id);
+                                  }}
                                   style={{
                                     background: 'transparent',
                                     border: 'none',
@@ -1891,6 +2037,7 @@ export default function ModuloKanban({
                             </div>
                           </div>
 
+                          {/* ITEM 6.1 e 6.2: BARRA DE FERRAMENTAS COMPLETA NO CARD MAXIMIZADO (Tópicos + Pincel 3 Cores + Emojis) */}
                           {isFullscreen && (
                             <div
                               className="notas-toolbar"
@@ -1908,14 +2055,175 @@ export default function ModuloKanban({
                               }}
                               onMouseDown={(e) => e.stopPropagation()}
                             >
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                                <button onMouseDown={(e) => { e.preventDefault(); document.execCommand('bold'); }}><b>B</b></button>
-                                <button onMouseDown={(e) => { e.preventDefault(); document.execCommand('italic'); }}><i>I</i></button>
-                                <button onMouseDown={(e) => { e.preventDefault(); document.execCommand('underline'); }}><u>U</u></button>
-                                <button onMouseDown={(e) => { e.preventDefault(); document.execCommand('strikeThrough'); }}><s>S</s></button>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexWrap: 'wrap' }}>
+                                <button onMouseDown={(e) => { e.preventDefault(); execFormat('bold'); }} title="Negrito"><b>B</b></button>
+                                <button onMouseDown={(e) => { e.preventDefault(); execFormat('italic'); }} title="Itálico"><i>I</i></button>
+                                <button onMouseDown={(e) => { e.preventDefault(); execFormat('underline'); }} title="Sublinhado"><u>U</u></button>
+                                <button onMouseDown={(e) => { e.preventDefault(); execFormat('strikeThrough'); }} title="Tachado"><s>S</s></button>
+
                                 <div className="toolbar-divisor" />
-                                <button onMouseDown={(e) => { e.preventDefault(); document.execCommand('foreColor', false, '#800000'); }}>🅰️</button>
-                                <button onMouseDown={(e) => { e.preventDefault(); document.execCommand('removeFormat'); }}>✖️</button>
+
+                                {/* ITEM 6.2: Marcação por Tópicos */}
+                                <button
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    execFormat('insertUnorderedList');
+                                  }}
+                                  title="Inserir Lista de Tópicos"
+                                >
+                                  • Lista
+                                </button>
+
+                                {/* Cor Vinho e Pincel de Marca-Texto com as 3 Cores */}
+                                <button
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    execFormat('foreColor', '#800000');
+                                  }}
+                                  title="Texto em Cor Vinho Destaque"
+                                >
+                                  🅰️
+                                </button>
+
+                                <div style={{ position: 'relative', display: 'inline-block' }}>
+                                  <button
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      setMenuHighlightFullscreenAberto((p) => !p);
+                                      setMenuEmojiFullscreenAberto(false);
+                                    }}
+                                    title="Pincel de Marca-Texto (3 Cores)"
+                                  >
+                                    🖍️ ▾
+                                  </button>
+                                  {menuHighlightFullscreenAberto && (
+                                    <div
+                                      style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: 0,
+                                        background: 'white',
+                                        border: '1px solid #ccc',
+                                        boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
+                                        borderRadius: '6px',
+                                        padding: '6px',
+                                        display: 'flex',
+                                        gap: '6px',
+                                        zIndex: 10000010,
+                                      }}
+                                    >
+                                      <button
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          aplicarHighlight('#fff3cd');
+                                          setMenuHighlightFullscreenAberto(false);
+                                        }}
+                                        style={{ background: '#fff3cd', width: '22px', height: '22px', borderRadius: '50%', border: '1px solid #ffeeba' }}
+                                        title="Marca-Texto Amarelo"
+                                      />
+                                      <button
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          aplicarHighlight('#d4edda');
+                                          setMenuHighlightFullscreenAberto(false);
+                                        }}
+                                        style={{ background: '#d4edda', width: '22px', height: '22px', borderRadius: '50%', border: '1px solid #c3e6cb' }}
+                                        title="Marca-Texto Verde"
+                                      />
+                                      <button
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          aplicarHighlight('#f8d7da');
+                                          setMenuHighlightFullscreenAberto(false);
+                                        }}
+                                        style={{ background: '#f8d7da', width: '22px', height: '22px', borderRadius: '50%', border: '1px solid #f5c6cb' }}
+                                        title="Marca-Texto Rosa/Vinho"
+                                      />
+                                      <button
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          aplicarHighlight('transparent');
+                                          setMenuHighlightFullscreenAberto(false);
+                                        }}
+                                        style={{ background: '#fff', width: '22px', height: '22px', borderRadius: '50%', border: '1px solid #ccc', fontSize: '10px' }}
+                                        title="Remover Marca-Texto"
+                                      >
+                                        ✖
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* ITEM 6.1: Seletor de Emojis de Check, Alerta, Fixação e Tópicos */}
+                                <div style={{ position: 'relative', display: 'inline-block' }}>
+                                  <button
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      setMenuEmojiFullscreenAberto((p) => !p);
+                                      setMenuHighlightFullscreenAberto(false);
+                                    }}
+                                    title="Inserir Emoji de Check, Alerta, Atenção ou Tópico"
+                                  >
+                                    ✅ Emojis ▾
+                                  </button>
+                                  {menuEmojiFullscreenAberto && (
+                                    <div
+                                      style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: 0,
+                                        background: 'white',
+                                        border: '1px solid #cbd5e1',
+                                        boxShadow: '0 6px 16px rgba(0,0,0,0.2)',
+                                        borderRadius: '8px',
+                                        padding: '8px',
+                                        display: 'grid',
+                                        gridTemplateColumns: 'repeat(7, 1fr)',
+                                        gap: '4px',
+                                        width: '230px',
+                                        zIndex: 10000010,
+                                      }}
+                                    >
+                                      {EMOJIS_RAPIDOS_KANBAN.map((em) => (
+                                        <button
+                                          key={em.icone}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            document.execCommand(
+                                              'insertText',
+                                              false,
+                                              `${em.icone} `
+                                            );
+                                            setMenuEmojiFullscreenAberto(false);
+                                          }}
+                                          style={{
+                                            background: '#f8fafc',
+                                            border: '1px solid #e2e8f0',
+                                            borderRadius: '4px',
+                                            padding: '4px',
+                                            fontSize: '14px',
+                                            cursor: 'pointer',
+                                          }}
+                                          title={em.desc}
+                                        >
+                                          {em.icone}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="toolbar-divisor" />
+
+                                <button
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    execFormat('removeFormat');
+                                  }}
+                                  title="Limpar Formatação do Texto Selecionado"
+                                >
+                                  ✖️
+                                </button>
                               </div>
 
                               <div style={{ display: 'flex', flex: 1, justifyContent: 'flex-end', alignItems: 'center', gap: '5px', minWidth: '180px' }}>
@@ -1945,15 +2253,17 @@ export default function ModuloKanban({
                           )}
                         </div>
 
-                          {/* ITEM 2.2: Quando MINIMIZADO, exibe a tarja compacta alinhada à esquerda abaixo do cabeçalho e acima dos dados do cliente */}
+                        {/* ITEM 2.2 e ITEM 7: Quando MINIMIZADO, exibe as tarjas compactas lado a lado (Contratação + Desembolso se aplicável) */}
                         {!isFullscreen && card.etapa !== 'NOTAS' && (
                           <div
                             onMouseDown={(e) => e.stopPropagation()}
                             style={{
-                              padding: '4px 10px 0 10px',
+                              padding: '4px 8px 0 8px',
                               display: 'flex',
-                              justifyContent: 'flex-start',
-                              background: '#fff',
+                              alignItems: 'center',
+                              gap: '4px',
+                              flexWrap: 'wrap',
+                              background: 'transparent',
                             }}
                           >
                             <select
@@ -1966,12 +2276,13 @@ export default function ModuloKanban({
                               }
                               style={{
                                 width: 'auto',
-                                padding: '1px 7px',
-                                fontSize: '9.5px',
+                                maxWidth: '135px',
+                                padding: '1px 5px',
+                                fontSize: '9px',
                                 fontWeight: 'bold',
-                                borderRadius: '8px',
+                                borderRadius: '6px',
                                 cursor: 'pointer',
-                                height: '20px',
+                                height: '19px',
                                 lineHeight: 1,
                                 background:
                                   card.situacaoVinculada === 'Contratado'
@@ -1995,22 +2306,12 @@ export default function ModuloKanban({
                                       'Com Cliente/Projetista'
                                     ? '#c5221f'
                                     : '#1967d2',
-                                border:
-                                  card.situacaoVinculada === 'Contratado'
-                                    ? '1px solid #a8dab5'
-                                    : card.situacaoVinculada === 'Na Central'
-                                    ? '1px solid #fde293'
-                                    : card.situacaoVinculada === 'Devolvido AG'
-                                    ? '1px solid #ffb74d'
-                                    : card.situacaoVinculada ===
-                                      'Com Cliente/Projetista'
-                                    ? '1px solid #f1a8a2'
-                                    : '1px solid #a8c7fa',
+                                border: '1px solid rgba(0,0,0,0.15)',
                               }}
-                              title="Situação Oficial vinculada à tabela de Contratações"
+                              title="Situação da Contratação"
                             >
                               <option value="Com Cliente/Projetista" style={{ background: '#fff', color: '#333' }}>
-                                Com Cliente/Projetista
+                                Com Cliente/Proj.
                               </option>
                               <option value="Na Agência" style={{ background: '#fff', color: '#333' }}>
                                 Na Agência (AG)
@@ -2025,12 +2326,94 @@ export default function ModuloKanban({
                                 Contratado
                               </option>
                             </select>
+
+                            {/* ITEM 7: Segunda Tarja compacta ao lado direito quando Contratado / Desembolso */}
+                            {(card.situacaoVinculada === 'Contratado' ||
+                              card.etapa === 'DESEMBOLSOS' ||
+                              card.etapa === 'ACOMPANHAMENTO') && (
+                              <select
+                                value={
+                                  card.situacaoDesembolsoVinculada ||
+                                  'Desembolso Solicitado'
+                                }
+                                onChange={(e) =>
+                                  alterarSituacaoDesembolsoPelaTarja(
+                                    card,
+                                    e.target.value
+                                  )
+                                }
+                                style={{
+                                  width: 'auto',
+                                  maxWidth: '140px',
+                                  padding: '1px 5px',
+                                  fontSize: '9px',
+                                  fontWeight: 'bold',
+                                  borderRadius: '6px',
+                                  cursor: 'pointer',
+                                  height: '19px',
+                                  lineHeight: 1,
+                                  background:
+                                    card.situacaoDesembolsoVinculada ===
+                                      'Desembolso Efetivado' ||
+                                    card.situacaoDesembolsoVinculada ===
+                                      'Finalizado'
+                                      ? '#dcfce7'
+                                      : card.situacaoDesembolsoVinculada ===
+                                          'Desembolso Pendente' ||
+                                        card.situacaoDesembolsoVinculada ===
+                                          'Não Desembolsar'
+                                      ? '#fee2e2'
+                                      : '#f3e8ff',
+                                  color:
+                                    card.situacaoDesembolsoVinculada ===
+                                      'Desembolso Efetivado' ||
+                                    card.situacaoDesembolsoVinculada ===
+                                      'Finalizado'
+                                      ? '#15803d'
+                                      : card.situacaoDesembolsoVinculada ===
+                                          'Desembolso Pendente' ||
+                                        card.situacaoDesembolsoVinculada ===
+                                          'Não Desembolsar'
+                                      ? '#b91c1c'
+                                      : '#6b21a8',
+                                  border: '1px solid rgba(107,33,168,0.25)',
+                                }}
+                                title="Situação do Desembolso"
+                              >
+                                <option value="Desembolso Solicitado" style={{ background: '#fff', color: '#333' }}>
+                                  💸 Solicitado
+                                </option>
+                                <option value="Em Análise" style={{ background: '#fff', color: '#333' }}>
+                                  💸 Em Análise
+                                </option>
+                                <option value="Desembolso Pendente" style={{ background: '#fff', color: '#333' }}>
+                                  💸 Pendente
+                                </option>
+                                <option value="Desembolso Liberado" style={{ background: '#fff', color: '#333' }}>
+                                  💸 Liberado
+                                </option>
+                                <option value="Desembolso Efetivado" style={{ background: '#fff', color: '#333' }}>
+                                  💸 Efetivado
+                                </option>
+                                <option value="Finalizado" style={{ background: '#fff', color: '#333' }}>
+                                  💸 Finalizado
+                                </option>
+                                <option value="Não Desembolsar" style={{ background: '#fff', color: '#333' }}>
+                                  💸 Não Desembolsar
+                                </option>
+                              </select>
+                            )}
                           </div>
                         )}
 
+                        {/* ITEM 4 e ITEM 5: Para cards de clientes, o contêiner externo tem contentEditable={false}
+                            (protegendo os títulos fixos e permitindo selecionar o cabeçalho), enquanto as 3 caixas internas são editáveis! */}
                         <div
                           className="card-editor"
-                          contentEditable
+                          contentEditable={
+                            card.etapa === 'NOTAS' ||
+                            !card.texto.includes('bloco-editavel-')
+                          }
                           suppressContentEditableWarning
                           style={estiloNotaConcluida}
                           onPaste={handleSmartPasteCard}
@@ -2038,13 +2421,20 @@ export default function ModuloKanban({
                           onFocus={() => {
                             if (isFullscreen) limparGrifosBuscaInterna(card.id);
                           }}
-                          onBlur={(e) =>
+                          onBlur={(e) => {
+                            // Só dispara o salvamento quando o foco realmente sai de dentro do card
+                            if (
+                              e.relatedTarget &&
+                              e.currentTarget.contains(e.relatedTarget as Node)
+                            ) {
+                              return;
+                            }
                             salvarTextoCardBlur(
                               card.id,
                               e.currentTarget.innerHTML,
                               e.currentTarget.innerText
-                            )
-                          }
+                            );
+                          }}
                           dangerouslySetInnerHTML={{ __html: card.texto }}
                         />
 

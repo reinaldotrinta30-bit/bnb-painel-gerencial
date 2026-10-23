@@ -645,6 +645,54 @@ export default function PainelGerencialPage() {
               });
               setGuiaAtiva('desembolsos');
             }}
+
+            onAlterarSituacaoDesembolsoPeloKanban={(card, novaSitDesemb) => {
+              const nomeCli = (card.clienteVinculado || '').toUpperCase().trim();
+              if (!nomeCli) return;
+
+              // Atualiza o último evento de desembolso desse cliente (ou cria um registro rápido se ainda não houver evento)
+              const opDoCli = operacoesBase.find(
+                (o) =>
+                  (card.propostaIdVinculada &&
+                    String(o.propostaIdOrigem) ===
+                      String(card.propostaIdVinculada)) ||
+                  o.cliente.toUpperCase().trim() === nomeCli
+              );
+
+              const indicesEv = eventos
+                .map((ev, idx) =>
+                  ev.cliente.toUpperCase().trim() === nomeCli ? idx : -1
+                )
+                .filter((idx) => idx !== -1);
+
+              if (indicesEv.length > 0) {
+                const ultimoIdx = indicesEv[indicesEv.length - 1];
+                const novosEv = [...eventos];
+                novosEv[ultimoIdx] = {
+                  ...novosEv[ultimoIdx],
+                  situacao: novaSitDesemb,
+                  data: getHojeBR(),
+                };
+                setEventos(novosEv);
+                salvarDesembEvSync(novosEv);
+              } else if (opDoCli) {
+                const novoEv = {
+                  id: String(Date.now()),
+                  cliente: opDoCli.cliente,
+                  op: opDoCli.op,
+                  parcela: '1',
+                  valor: opDoCli.valor,
+                  situacao: novaSitDesemb,
+                  data: getHojeBR(),
+                  obs: 'Atualizado via Tarja do Kanban',
+                } as EventoDesembolso;
+                
+                const novosEv = [...eventos, novoEv];
+                setEventos(novosEv);
+                salvarDesembEvSync(novosEv);
+              }
+            }}
+
           />
         )}
 

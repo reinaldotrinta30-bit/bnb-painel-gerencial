@@ -599,10 +599,16 @@ export function mapearEtapaKanbanParaSituacaoContratacao(
 }
 
 export function localizarCardDoClienteNoKanban(
-  reg: { id?: string; cliente: string; cpf?: string; op?: string },
+  reg: {
+    id?: string;
+    cliente: string;
+    cpf?: string;
+    op?: string;
+  },
   cards?: CardKanban[]
 ): CardKanban | undefined {
   if (!cards || !Array.isArray(cards)) return undefined;
+
   if (reg.id) {
     const porId = cards.find(
       (c) =>
@@ -610,21 +616,32 @@ export function localizarCardDoClienteNoKanban(
         String(c.lcgPropostaIdVinculada) === String(reg.id) ||
         c.idsPropostasAgrupadas?.includes(String(reg.id))
     );
+
     if (porId) return porId;
   }
+
   if (reg.op) {
-    const porOp = cards.find((c) => c.opDesembolsoVinculada === reg.op);
+    const porOp = cards.find(
+      (c) => c.opDesembolsoVinculada === reg.op
+    );
+
     if (porOp) return porOp;
   }
+
   if (reg.cpf && reg.cpf.trim() !== '') {
+    const cpf = reg.cpf.trim();
+
     const porCpf = cards.find(
       (c) =>
-        c.cpfVinculado === reg.cpf ||
-        (c.textoPuro || c.texto || '').includes(reg.cpf)
+        c.cpfVinculado === cpf ||
+        (c.textoPuro || c.texto || '').includes(cpf)
     );
+
     if (porCpf) return porCpf;
   }
+
   const nomeUpper = (reg.cliente || '').toUpperCase().trim();
+
   if (nomeUpper) {
     return cards.find(
       (c) =>
@@ -632,6 +649,7 @@ export function localizarCardDoClienteNoKanban(
         (c.textoPuro || c.texto || '').toUpperCase().includes(nomeUpper)
     );
   }
+
   return undefined;
 }
 
@@ -958,16 +976,20 @@ export function sincronizarAposEventoDesembolso(params: {
 
   const cardExistente = idxCard !== -1 ? cardsAtuais[idxCard] : undefined;
 
+  // ITEM 10: Mantém intacto o texto de Situação e Pendências que já estava no card!
+  const sitLivrePreservada = cardExistente?.situacaoDetalhadaVinculada || '-';
+  const pendPreservada = cardExistente?.obsVinculada || eventoSalvo.obs || '-';
+
   const { html, textoPuro } = montarHtmlCardSincronizado({
     cliente: eventoSalvo.cliente,
     cpf: operacaoBase?.cpf || cardExistente?.cpfVinculado || '',
     porte: operacaoBase?.porte || cardExistente?.porteVinculado || '',
     projetista: operacaoBase?.projetista || '',
-    tipo: 'DESEMBOLSO',
-    valor: eventoSalvo.valor,
-    situacaoMacro: eventoSalvo.situacao,
-    situacaoDetalhada: `- ${eventoSalvo.situacao} (Data: ${eventoSalvo.data})`,
-    pendenciasObs: eventoSalvo.obs,
+    tipo: cardExistente?.tipoOpVinculado || 'DESEMBOLSO',
+    valor: operacaoBase?.valor || eventoSalvo.valor,
+    situacaoMacro: cardExistente?.situacaoVinculada || 'Contratado',
+    situacaoDetalhada: sitLivrePreservada,
+    pendenciasObs: pendPreservada,
     espacoAnalise: cardExistente?.espacoAnaliseVinculado,
     opNum: eventoSalvo.op,
     parcela: eventoSalvo.parcela,
@@ -979,15 +1001,14 @@ export function sincronizarAposEventoDesembolso(params: {
     novosCards[idxCard] = {
       ...novosCards[idxCard],
       etapa: etapaAlvo,
-      statusCor: corAlvo,
+      statusCor:
+        novosCards[idxCard].statusCor === 'roxo' ? 'roxo' : corAlvo,
       texto: html,
       textoPuro,
       dataModificacao: hojeISO,
       opDesembolsoVinculada: eventoSalvo.op,
-      situacaoVinculada: eventoSalvo.situacao,
-      situacaoDetalhadaVinculada: `- ${eventoSalvo.situacao}`,
-      obsVinculada: eventoSalvo.obs,
-      valorVinculado: eventoSalvo.valor,
+      situacaoVinculada: 'Contratado',
+      situacaoDesembolsoVinculada: eventoSalvo.situacao, // 👈 ITEM 7: Atualiza a Tarja de Desembolso!
     };
   } else {
     novosCards.unshift({
@@ -1003,8 +1024,9 @@ export function sincronizarAposEventoDesembolso(params: {
       cpfVinculado: operacaoBase?.cpf,
       porteVinculado: operacaoBase?.porte,
       valorVinculado: eventoSalvo.valor,
-      situacaoVinculada: eventoSalvo.situacao,
-      situacaoDetalhadaVinculada: `- ${eventoSalvo.situacao}`,
+      situacaoVinculada: 'Contratado',
+      situacaoDesembolsoVinculada: eventoSalvo.situacao,
+      situacaoDetalhadaVinculada: '-',
       obsVinculada: eventoSalvo.obs,
     });
   }
@@ -1081,13 +1103,9 @@ export function propagarEdicaoKanbanParaBases(params: {
   }
 
   const regAtual = novasContratacoes[idxContrat];
+  // ITEM 9: Mantém a situação oficial atual do registro a menos que o usuário tenha explicitamente alterado a tarja!
   const novaSituacao =
-    cardEditado.situacaoVinculada ||
-    mapearEtapaKanbanParaSituacaoContratacao(
-      cardEditado.etapa,
-      cardEditado.statusCor,
-      regAtual.situacao
-    );
+    cardEditado.situacaoVinculada || regAtual.situacao || 'Na Agência';
 
   const novoValor = cardEditado.valorVinculado || regAtual.valor;
   const novaSitDetalhada =
