@@ -130,11 +130,48 @@ export function montarHtmlCardSincronizado(params: {
     }
   }
 
-  // 3. Formatação dos blocos editáveis: SITUAÇÃO, PENDÊNCIAS e ESPAÇO PARA ANÁLISE
+  // 3. Formatação inteligente que PRESERVA cores, negritos, grifos e emojis (Item 6)
+  // e elimina o bug de multiplicação de traços "- " vazios (Item 6.3)!
+  const formatarBlocoRicoOuTexto = (conteudoBruto?: string, padraoVazio = '-'): string => {
+    if (!conteudoBruto || !conteudoBruto.trim()) {
+      return `<div>${padraoVazio}</div>`;
+    }
+    const limpo = conteudoBruto.trim();
+
+    // Se já contém tags HTML de formatação (ex: <b>, <span style=...>, <font>, <div>),
+    // preserva o HTML intacto limpando apenas excessos de linhas "- " vazias consecutivas!
+    if (/<(div|span|b|strong|i|em|u|s|strike|font|br|ul|li)\b/i.test(limpo)) {
+      return limpo
+        .replace(/(<div>\s*-\s*<\/div>\s*){2,}/gi, '<div>-</div>')
+        .replace(/(<div>\s*(?:<br\s*\/?>)?\s*<\/div>\s*){2,}/gi, '<div><br></div>');
+    }
+
+    // Se for texto puro, converte quebras de linha sem duplicar traços soltos
+    const linhas = limpo.split('\n');
+    const resultado: string[] = [];
+    let ultimoFoiTracoVazio = false;
+
+    linhas.forEach((l) => {
+      const t = l.trim();
+      if (!t || t === '-') {
+        if (!ultimoFoiTracoVazio) {
+          resultado.push('<div>-</div>');
+          ultimoFoiTracoVazio = true;
+        }
+      } else {
+        ultimoFoiTracoVazio = false;
+        resultado.push(`<div>${t.startsWith('-') ? t : `- ${t}`}</div>`);
+      }
+    });
+
+    return resultado.length > 0 ? resultado.join('') : `<div>${padraoVazio}</div>`;
+  };
+
+  // ITEM 10: Se não houver situação detalhada escrita pelo usuário, inicia apenas com "-" (sem injetar o nome da tarja no texto!)
   const textoSitLivre =
     situacaoDetalhada && situacaoDetalhada.trim() !== ''
       ? situacaoDetalhada.trim()
-      : `- ${situacaoMacro || 'Em tramitação'}`;
+      : '-';
 
   const textoPendencias =
     pendenciasObs && pendenciasObs.trim() !== '' ? pendenciasObs.trim() : '-';
@@ -142,22 +179,9 @@ export function montarHtmlCardSincronizado(params: {
   const textoAnalise =
     espacoAnalise && espacoAnalise.trim() !== '' ? espacoAnalise.trim() : '-';
 
-  const formatarLinhasTopicos = (txt: string) =>
-    txt
-      .split('\n')
-      .map((l) => {
-        const limpa = l.trim();
-        if (!limpa) return '<div>-</div>';
-        return `<div>${limpa.startsWith('-') ? limpa : `- ${limpa}`}</div>`;
-      })
-      .join('');
-
-  const linhasSitHtml = formatarLinhasTopicos(textoSitLivre);
-  const linhasPendHtml = formatarLinhasTopicos(textoPendencias);
-  const linhasAnaliseHtml = textoAnalise
-    .split('\n')
-    .map((l) => `<div>${l.trim() || '-'}</div>`)
-    .join('');
+  const linhasSitHtml = formatarBlocoRicoOuTexto(textoSitLivre, '-');
+  const linhasPendHtml = formatarBlocoRicoOuTexto(textoPendencias, '-');
+  const linhasAnaliseHtml = formatarBlocoRicoOuTexto(textoAnalise, '-');
 
   const linhaOpDesemb = opNum
     ? `<div><b>OPERAÇÃO:</b> ${opNum}${
@@ -165,31 +189,117 @@ export function montarHtmlCardSincronizado(params: {
       }</div>`
     : '';
 
+  // ITEM 4 e ITEM 5: O cabeçalho permite seleção de texto (user-select: text),
+  // os títulos têm contenteditable="false", e SOMENTE as 3 caixas internas têm contenteditable="true"!
   const html = `<div contenteditable="false" class="card-bloco-cliente"><div><b>${(
     cliente || 'CLIENTE SEM NOME'
   ).toUpperCase()}</b>${
     cpf ? ` - <b>CPF:</b> ${cpf}` : ''
   }</div><div><b>PORTE:</b> ${porte || '-'}</div><div><b>PROJETISTA:</b> ${
     projetista || '-'
-  }</div>${linhaAvalHtml}${linhasOperacoesHtml}${linhaOpDesemb}</div><div contenteditable="false" class="card-titulo-situacao">📊 SITUAÇÃO:</div><div class="bloco-editavel-situacao">${linhasSitHtml}</div><div contenteditable="false" class="card-titulo-pendencias">📝 PENDÊNCIAS / OBSERVAÇÕES:</div><div class="bloco-editavel-pendencias">${linhasPendHtml}</div><div contenteditable="false" class="card-titulo-analise">🔍 ESPAÇO PARA ANÁLISE (CONFORMIDADE / CÁLCULOS):</div><div class="bloco-editavel-analise">${linhasAnaliseHtml}</div>`;
+  }</div>${linhaAvalHtml}${linhasOperacoesHtml}${linhaOpDesemb}</div><div contenteditable="false" class="card-titulo-situacao">📊 SITUAÇÃO:</div><div contenteditable="true" class="bloco-editavel-situacao">${linhasSitHtml}</div><div contenteditable="false" class="card-titulo-pendencias">📝 PENDÊNCIAS / OBSERVAÇÕES:</div><div contenteditable="true" class="bloco-editavel-pendencias">${linhasPendHtml}</div><div contenteditable="false" class="card-titulo-analise">🔍 ESPAÇO PARA ANÁLISE (CONFORMIDADE / CÁLCULOS):</div><div contenteditable="true" class="bloco-editavel-analise">${linhasAnaliseHtml}</div>`;
+
+  // Remove tags HTML apenas para gerar o índice de busca rápida (textoPuro)
+  const removerTags = (s: string) =>
+    s
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .trim();
 
   const textoPuro = `${cliente} - CPF: ${cpf}\nPORTE: ${porte}\nPROJETISTA: ${
     projetista || '-'
-  }\n${linhaAvalPuro}${linhasOperacoesPuro}\nSITUAÇÃO:\n${textoSitLivre}\n\nPENDÊNCIAS / OBSERVAÇÕES:\n${textoPendencias}\n\nESPAÇO PARA ANÁLISE:\n${textoAnalise}`;
+  }\n${linhaAvalPuro}${linhasOperacoesPuro}\nSITUAÇÃO:\n${removerTags(
+    linhasSitHtml
+  )}\n\nPENDÊNCIAS / OBSERVAÇÕES:\n${removerTags(
+    linhasPendHtml
+  )}\n\nESPAÇO PARA ANÁLISE:\n${removerTags(linhasAnaliseHtml)}`;
 
   return { html, textoPuro };
 }
 
 // ============================================================================
-// 2. EXTRATOR INTELIGENTE DOS 3 CAMPOS LIVRES DO CARD (SITUAÇÃO, PENDÊNCIAS E ANÁLISE)
+// 2. EXTRATOR RICO (PRESERVA CORES, NEGRITOS, MARCA-TEXTO E CORRIGE TRAÇOS DUPLICADOS)
 // ============================================================================
+export function extrairCamposLivresDoHtmlKanban(
+  htmlCard: string,
+  textoPuroFallback?: string
+): {
+  situacaoDetalhada?: string;
+  pendenciasObs?: string;
+  espacoAnalise?: string;
+} {
+  if (typeof document !== 'undefined' && htmlCard && htmlCard.includes('bloco-editavel-')) {
+    const temp = document.createElement('div');
+    temp.innerHTML = htmlCard;
+
+    // Remove grifos temporários da lupa de pesquisa interna se houver
+    temp.querySelectorAll('mark.highlight-find').forEach((m) => {
+      const parent = m.parentNode;
+      if (parent) {
+        parent.replaceChild(document.createTextNode(m.textContent || ''), m);
+        parent.normalize();
+      }
+    });
+
+    const limparHtmlCaixa = (el: Element | null): string | undefined => {
+      if (!el) return undefined;
+      const htmlInterno = el.innerHTML
+        .replace(/(<div>\s*-\s*<\/div>\s*){2,}/gi, '<div>-</div>')
+        .trim();
+      const textoLimpo = (el.textContent || '').trim();
+      if (!textoLimpo || textoLimpo === '-') return '';
+      return htmlInterno;
+    };
+
+    const elSit = temp.querySelector('.bloco-editavel-situacao');
+    const elPend = temp.querySelector('.bloco-editavel-pendencias');
+    const elAnalise = temp.querySelector('.bloco-editavel-analise');
+
+    return {
+      situacaoDetalhada: limparHtmlCaixa(elSit),
+      pendenciasObs: limparHtmlCaixa(elPend),
+      espacoAnalise: limparHtmlCaixa(elAnalise),
+    };
+  }
+
+  return extrairCamposLivresDoTextoKanban(textoPuroFallback || htmlCard);
+}
+
 export function extrairCamposLivresDoTextoKanban(textoPuro: string): {
   situacaoDetalhada?: string;
   pendenciasObs?: string;
   espacoAnalise?: string;
 } {
   if (!textoPuro) return {};
-  const textoNormalizado = textoPuro.replace(/\r/g, '');
+  const textoNormalizado = textoPuro
+    .replace(/\r/g, '')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+
+  const limparTracosRepetidos = (bloco: string): string => {
+    const linhas = bloco.split('\n');
+    const out: string[] = [];
+    let ultimoVazio = false;
+    linhas.forEach((l) => {
+      const t = l.trim();
+      if (t.includes('📌')) return;
+      if (!t || t === '-') {
+        if (!ultimoVazio && out.length > 0) {
+          out.push('-');
+          ultimoVazio = true;
+        }
+      } else {
+        ultimoVazio = false;
+        out.push(t);
+      }
+    });
+    while (out.length > 0 && out[out.length - 1] === '-') {
+      out.pop();
+    }
+    return out.join('\n').trim();
+  };
 
   let situacaoDetalhada: string | undefined;
   let pendenciasObs: string | undefined;
@@ -199,27 +309,21 @@ export function extrairCamposLivresDoTextoKanban(textoPuro: string): {
     /(?:📊\s*)?(?:SITUAÇÃO|SIRUAÇÃO)(?:\s*\/\s*OBSERVAÇÕES)?\s*:\s*([\s\S]*?)(?=(?:📝\s*)?PENDÊNCIAS|(?:🔍\s*)?ESPAÇO PARA ANÁLISE|$)/i;
   const matchSit = textoNormalizado.match(regexSit);
   if (matchSit && matchSit[1] !== undefined) {
-    situacaoDetalhada = matchSit[1]
-      .split('\n')
-      .filter((linha) => !linha.includes('📌'))
-      .join('\n')
-      .trim();
+    situacaoDetalhada = limparTracosRepetidos(matchSit[1]);
   }
 
   const regexPend =
     /(?:📝\s*)?PENDÊNCIAS(?:\s*\/\s*OBSERVAÇÕES)?\s*:\s*([\s\S]*?)(?=(?:🔍\s*)?ESPAÇO PARA ANÁLISE|$)/i;
   const matchPend = textoNormalizado.match(regexPend);
   if (matchPend && matchPend[1] !== undefined) {
-    const val = matchPend[1].trim();
-    pendenciasObs = val === '-' ? '' : val;
+    pendenciasObs = limparTracosRepetidos(matchPend[1]);
   }
 
   const regexAnalise =
     /(?:🔍\s*)?ESPAÇO PARA ANÁLISE(?:\s*\([^)]*\))?\s*:\s*([\s\S]*?)$/i;
   const matchAnalise = textoNormalizado.match(regexAnalise);
   if (matchAnalise && matchAnalise[1] !== undefined) {
-    const val = matchAnalise[1].trim();
-    espacoAnalise = val === '-' ? '' : val;
+    espacoAnalise = limparTracosRepetidos(matchAnalise[1]);
   }
 
   return { situacaoDetalhada, pendenciasObs, espacoAnalise };
@@ -676,33 +780,33 @@ export function sincronizarAposSalvarContratacao(params: {
     sitPadraoComLimite = `- ${opRepresentante.tipoGarantiaKanban}: ${opRepresentante.lcgSituacao}\n- ${labelDer}: ${sitDerLimpa}`;
   }
 
+  // ITEM 10: Preserva integralmente o texto que o usuário já escreveu no campo SITUAÇÃO,
+  // NUNCA injetando o nome da Situação Rígida ("Na Agência", "Contratado", etc.) por cima do texto!
   let sitDetalhadaFinal =
     cardExistente?.situacaoDetalhadaVinculada ||
-    sitPadraoComLimite ||
     registroSalvo.situacaoDetalhada ||
     opRepresentante.situacaoDetalhada ||
-    `- ${opRepresentante.situacao || 'Em Análise'}`;
+    sitPadraoComLimite ||
+    '-';
 
-  // Se o registro salvo trouxe explicitamente uma nova situacaoDetalhada (ou se havia limite novo para acrescentar)
-  if (registroSalvo.situacaoDetalhada && registroSalvo.situacaoDetalhada.trim() !== '') {
-    sitDetalhadaFinal =
-      sitPadraoComLimite &&
-      !registroSalvo.situacaoDetalhada.toUpperCase().includes('LCG')
-        ? sitPadraoComLimite
-        : registroSalvo.situacaoDetalhada;
+  if (
+    registroSalvo.situacaoDetalhada !== undefined &&
+    registroSalvo.situacaoDetalhada.trim() !== ''
+  ) {
+    sitDetalhadaFinal = registroSalvo.situacaoDetalhada;
   }
 
   const pendenciasFinal =
-    registroSalvo.obs !== undefined && registroSalvo.obs !== ''
+    cardExistente?.obsVinculada ||
+    (registroSalvo.obs !== undefined && registroSalvo.obs !== ''
       ? registroSalvo.obs
-      : opRepresentante.obs || cardExistente?.obsVinculada || '';
+      : opRepresentante.obs || '');
 
   const analiseFinal =
-    registroSalvo.espacoAnalise !== undefined
+    cardExistente?.espacoAnaliseVinculado ||
+    (registroSalvo.espacoAnalise !== undefined
       ? registroSalvo.espacoAnalise
-      : opRepresentante.espacoAnalise ||
-        cardExistente?.espacoAnaliseVinculado ||
-        '';
+      : opRepresentante.espacoAnalise || '');
 
   const { html, textoPuro } = montarHtmlCardSincronizado({
     cliente: opRepresentante.cliente,
@@ -723,14 +827,23 @@ export function sincronizarAposSalvarContratacao(params: {
 
   const novosCards = [...cardsAtuais];
 
-  // ITEM 5: BLINDAGEM DOS ARQUIVADOS! Se o card já estava como 'roxo' (Arquivado),
-  // jamais perde o status 'roxo' ao ser expandido, editado ou ter contratação salva!
   const corFinalPreservada: StatusCorKanban =
-    cardExistente?.statusCor === 'roxo' ? 'roxo' : cor;
+    cardExistente?.statusCor === 'roxo'
+      ? 'roxo'
+      : cardExistente?.statusCor || cor;
+
+  // ITEM 9: Só muda a coluna automaticamente se a situação rígida realmente mudou para Contratado ou se for card novo!
+  const etapaFinalPreservada: EtapaKanban =
+    opRepresentante.situacao === 'Contratado' &&
+    cardExistente?.etapa !== 'ACOMPANHAMENTO'
+      ? 'DESEMBOLSOS'
+      : cardExistente
+      ? cardExistente.etapa
+      : etapa;
 
   const dadosCardUnificado: CardKanban = {
     ...(cardExistente || { id: `wk_sync_${opRepresentante.id}` }),
-    etapa: cardExistente ? cardExistente.etapa : etapa,
+    etapa: etapaFinalPreservada,
     statusCor: corFinalPreservada,
     texto: html,
     textoPuro,
@@ -755,7 +868,6 @@ export function sincronizarAposSalvarContratacao(params: {
     novosCards.unshift(dadosCardUnificado);
   }
 
-  // Remove qualquer card duplicado antigo que pertencesse a outra operação do mesmo cliente
   const posCardPrincipal = idxCard !== -1 ? idxCard : 0;
   const cardsSemDuplicatasDoCliente = novosCards.filter((c, i) => {
     if (i === posCardPrincipal) return true;
@@ -768,29 +880,40 @@ export function sincronizarAposSalvarContratacao(params: {
     return true;
   });
 
-  // Se alguma operação derivada do cliente mudou para "Contratado", garante presença em Desembolsos
+  // ITEM 8: Sincronização Completa com Desembolsos!
+  // Se a operação derivada já existe em Desembolsos e teve o VALOR (ou Porte/CPF/Projetista) alterado em Contratações,
+  // atualiza imediatamente o "Valor Contratado" lá na aba de Desembolsos!
   const novasOperacoesDesemb = [...operacoesDesembAtuais];
   opsDerivadas.forEach((opDeriv) => {
-    if (opDeriv.situacao === 'Contratado') {
-      const jaExisteOp = novasOperacoesDesemb.findIndex(
-        (op) =>
-          op.propostaIdOrigem === opDeriv.id ||
-          (op.cliente.toUpperCase() === opDeriv.cliente.toUpperCase() &&
-            op.valor === opDeriv.valor)
-      );
+    const idxOpExistente = novasOperacoesDesemb.findIndex(
+      (op) =>
+        String(op.propostaIdOrigem) === String(opDeriv.id) ||
+        (opsDerivadas.length === 1 &&
+          op.cliente.toUpperCase().trim() ===
+            opDeriv.cliente.toUpperCase().trim())
+    );
 
-      if (jaExisteOp === -1) {
-        novasOperacoesDesemb.push({
-          id: `op_${opDeriv.id}`,
-          propostaIdOrigem: opDeriv.id,
-          porte: opDeriv.porte,
-          cliente: opDeriv.cliente.toUpperCase(),
-          cpf: opDeriv.cpf,
-          projetista: opDeriv.projetista.toUpperCase(),
-          op: `PENDENTE-OP (${opDeriv.tipo})`,
-          valor: opDeriv.valor,
-        });
-      }
+    if (idxOpExistente !== -1) {
+      novasOperacoesDesemb[idxOpExistente] = {
+        ...novasOperacoesDesemb[idxOpExistente],
+        propostaIdOrigem: opDeriv.id,
+        porte: opDeriv.porte,
+        cliente: opDeriv.cliente.toUpperCase(),
+        cpf: opDeriv.cpf,
+        projetista: opDeriv.projetista.toUpperCase(),
+        valor: opDeriv.valor, // 👈 Atualiza o Valor Contratado imediatamente!
+      };
+    } else if (opDeriv.situacao === 'Contratado') {
+      novasOperacoesDesemb.push({
+        id: `op_${opDeriv.id}`,
+        propostaIdOrigem: opDeriv.id,
+        porte: opDeriv.porte,
+        cliente: opDeriv.cliente.toUpperCase(),
+        cpf: opDeriv.cpf,
+        projetista: opDeriv.projetista.toUpperCase(),
+        op: `PENDENTE-OP (${opDeriv.tipo})`,
+        valor: opDeriv.valor,
+      });
     }
   });
 

@@ -629,65 +629,48 @@ button:hover {
 }
 
 /* =========================================================================
-   ITEM 8: CONTROLE DE DISTÂNCIAS E MARGENS INTERNAS DOS CARDS DO KANBAN
+   ITENS 4, 5 E 8: SELEÇÃO DE TEXTO NO CABEÇALHO + BLINDAGEM DOS TÍTULOS FIXOS
 ========================================================================= */
 
-/* 1. Caixa cinza com os Dados do Cliente (Cabeçalho interno do texto) */
+/* ITEM 4: Permite selecionar livremente com o mouse o Nome, CPF, Porte e Valores para copiar! */
 .kanban-card .card-bloco-cliente {
-  user-select: none;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
   background: #f8fafc;
   padding: 6px 8px;
   border-radius: 4px;
   border-bottom: 1px solid #e2e8f0;
-  margin-bottom: 8px; /* 👈 AJUSTE AQUI: Distância até "📊 SITUAÇÃO:" no card MINIMIZADO */
+  margin-bottom: 8px;
 }
 
-/* 1.1. Distância maior após os Dados do Cliente quando o Card está EXPANDIDO (Modo Foco) */
 .kanban-card.fullscreen-mode .card-bloco-cliente {
   padding: 10px 12px;
-  margin-bottom: 18px; /* 👈 AJUSTE AQUI: Distância até "📊 SITUAÇÃO:" no card EXPANDIDO */
+  margin-bottom: 16px;
 }
 
-/* 2. Título "📊 SITUAÇÃO:" */
+/* ITEM 5: Títulos 100% blindados contra exclusão por Backspace/Delete */
 .kanban-card .card-titulo-situacao {
   user-select: none;
+  pointer-events: none;
   font-weight: bold;
   color: #8B1530;
   margin-top: 4px;
-  margin-bottom: 4px; /* 👈 AJUSTE AQUI: Distância entre o título SITUAÇÃO e os tópicos abaixo dele */
+  margin-bottom: 4px;
 }
 
-/* 3. Bloco de texto livre da Situação */
-.kanban-card .bloco-editavel-situacao {
-  margin-bottom: 12px; /* 👈 AJUSTE AQUI: Distância padrão entre o FIM DA SITUAÇÃO e o título "📝 PENDÊNCIAS / OBSERVAÇÕES:" */
-}
-
-/* 3.1. Se quiser uma distância ainda maior entre Situação e Pendências quando EXPANDIDO: */
-.kanban-card.fullscreen-mode .bloco-editavel-situacao {
-  margin-bottom: 18px; /* 👈 AJUSTE AQUI: Distância entre Situação e Pendências no card EXPANDIDO */
-}
-
-/* 4. Título "📝 PENDÊNCIAS / OBSERVAÇÕES:" */
 .kanban-card .card-titulo-pendencias {
   user-select: none;
+  pointer-events: none;
   font-weight: bold;
   color: #e65100;
-  margin-bottom: 4px; /* 👈 AJUSTE AQUI: Distância entre o título PENDÊNCIAS e os tópicos abaixo dele */
-}
-
-/* =========================================================================
-   ITEM 3: ESPAÇO PARA ANÁLISE (CONFORMIDADE / CÁLCULOS) NO CARD DO KANBAN
-========================================================================= */
-.kanban-card .bloco-editavel-pendencias {
-  margin-bottom: 12px; /* 👈 Distância entre o fim de PENDÊNCIAS e o título ESPAÇO PARA ANÁLISE */
-}
-
-.kanban-card.fullscreen-mode .bloco-editavel-pendencias {
-  margin-bottom: 18px;
+  margin-top: 8px;
+  margin-bottom: 4px;
 }
 
 .kanban-card .card-titulo-analise {
   user-select: none;
+  pointer-events: none;
   font-weight: bold;
   color: #1e40af;
   border-top: 1px dashed #cbd5e1;
@@ -695,6 +678,41 @@ button:hover {
   margin-top: 8px;
   margin-bottom: 4px;
   font-size: 12px;
+}
+
+/* Caixas de edição independentes (preservam cores, negritos, emojis e marca-texto) */
+.kanban-card .bloco-editavel-situacao,
+.kanban-card .bloco-editavel-pendencias,
+.kanban-card .bloco-editavel-analise {
+  outline: none;
+  min-height: 22px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.kanban-card .bloco-editavel-situacao:focus,
+.kanban-card .bloco-editavel-pendencias:focus,
+.kanban-card .bloco-editavel-analise:focus {
+  border-color: #cbd5e1;
+  background-color: #ffffff;
+}
+
+.kanban-card .bloco-editavel-situacao {
+  margin-bottom: 10px;
+}
+
+.kanban-card.fullscreen-mode .bloco-editavel-situacao {
+  margin-bottom: 16px;
+}
+
+.kanban-card .bloco-editavel-pendencias {
+  margin-bottom: 10px;
+}
+
+.kanban-card.fullscreen-mode .bloco-editavel-pendencias {
+  margin-bottom: 16px;
 }
 
 .kanban-card .bloco-editavel-analise {
@@ -707,24 +725,16 @@ button:hover {
   min-height: 28px;
 }
 
-/* Quando o card está minimizado na coluna, limita a visualização da análise para não espichar o card */
 .kanban-card:not(.fullscreen-mode) .card-titulo-analise,
 .kanban-card:not(.fullscreen-mode) .bloco-editavel-analise {
-  display: none; /* 👈 DICA: Deixamos visível apenas ao EXPANDIR o card (ou na lupinha) para manter o card limpo! Se quiser ver mesmo minimizado, basta apagar esta regra. */
+  display: none;
 }
 
-/* =========================================================================
-   ITEM 4 E ITEM 5: COR ROXA (ARQUIVADO) E EXPANSÃO VERTICAL EM COLUNA ÚNICA
-========================================================================= */
-
-/* Borda Roxa para Cards Arquivados */
 .kanban-card.status-roxo {
   border-left-color: #7e22ce !important;
   background-color: #faf5ff;
 }
 
-/* ITEM 5: Quando uma única coluna está selecionada (.focus-single),
-   libera a altura máxima de 120px para mostrar Dados + Situação + Pendências completos! */
 .kanban-coluna-workflow.focus-single .kanban-card:not(.fullscreen-mode) .card-editor {
   max-height: none !important;
   overflow-y: visible !important;

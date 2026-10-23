@@ -80,6 +80,7 @@ export interface CardKanban {
   tipoOpVinculado?: string;
   valorVinculado?: string;
   situacaoVinculada?: string; // Etapa macro ("Na Agência", "Na Central", "Contratado", etc.)
+  situacaoDesembolsoVinculada?: string; // ITEM 7: Situação do Desembolso ("Desembolso Solicitado", "Desembolso Pendente", "Desembolso Efetivado", etc.)
   situacaoDetalhadaVinculada?: string; // Tópicos livres abaixo de SITUAÇÃO
   obsVinculada?: string; // Tópicos livres abaixo de PENDÊNCIAS / OBSERVAÇÕES
   espacoAnaliseVinculado?: string; // ITEM 3: Texto extenso de análise/conformidade (oculto no PDF)
