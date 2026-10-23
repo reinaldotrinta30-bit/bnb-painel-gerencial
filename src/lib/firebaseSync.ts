@@ -62,14 +62,13 @@ export function lerCacheLocal<T>(key: string, fallback: T): T {
 
 export function isModoEstritoLocal(): boolean {
   if (typeof window === 'undefined') return false;
-  const salvo = window.localStorage.getItem(STORAGE_KEYS_V2.MODO_ESTRITO_LOCAL);
-  // Agora inicia com a Nuvem V2 ATIVA por padrão (false = não restrito apenas ao local)
-  return salvo === null ? false : salvo === 'true';
+  // Nova chave limpa: por padrão é SEMPRE false (Nuvem V2 100% ligada em qualquer navegador/PC)
+  return window.localStorage.getItem('bnb_v2_forcar_offline') === 'true';
 }
 
-export function setModoEstritoLocal(apenasLocal: boolean) {
+export function setModoEstritoLocal(valor: boolean) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(STORAGE_KEYS_V2.MODO_ESTRITO_LOCAL, String(apenasLocal));
+  window.localStorage.setItem('bnb_v2_forcar_offline', valor ? 'true' : 'false');
 }
 
 // ============================================================================
@@ -182,6 +181,9 @@ export async function clonarDadosDaProducaoLegada(): Promise<{
 // ============================================================================
 // CARREGAMENTO INICIAL INTELIGENTE
 // ============================================================================
+// ============================================================================
+// CARREGAMENTO INICIAL INTELIGENTE (PRIORIDADE ABSOLUTA NA NUVEM V2)
+// ============================================================================
 export async function carregarTudoDaNuvem(): Promise<{
   contratacoes: RegistroContratacao[];
   desembOp: OperacaoBaseDesembolso[];
@@ -191,16 +193,8 @@ export async function carregarTudoDaNuvem(): Promise<{
   modoLocal: boolean;
 }> {
   const modoLocal = isModoEstritoLocal();
-  const jaClonou =
-    typeof window !== 'undefined' &&
-    window.localStorage.getItem(STORAGE_KEYS_V2.JA_CLONOU_INICIAL) === 'true';
 
-  // Na 1ª vez que você abre o sistema novo, ele tira uma "foto" (somente leitura) do seu Firebase atual!
-  if (!jaClonou) {
-    const clone = await clonarDadosDaProducaoLegada();
-    return { ...clone, online: true, modoLocal };
-  }
-
+  // Se estiver em Modo Estrito Local, usa apenas o banco local V2 sem chamar a rede
   const localContrat = lerCacheLocal<RegistroContratacao[]>(STORAGE_KEYS_V2.CONTRATACOES, []);
   const localOp = lerCacheLocal<OperacaoBaseDesembolso[]>(STORAGE_KEYS_V2.DESEMB_OP, []);
   const localEv = lerCacheLocal<EventoDesembolso[]>(STORAGE_KEYS_V2.DESEMB_EV, []);
@@ -208,7 +202,6 @@ export async function carregarTudoDaNuvem(): Promise<{
     lerCacheLocal<unknown>(STORAGE_KEYS_V2.KANBAN, [])
   );
 
-  // Se estiver em Modo Estrito Local (Desconectado de envios/recebimentos), usa apenas o banco local V2!
   if (modoLocal) {
     return {
       contratacoes: localContrat,
@@ -220,7 +213,7 @@ export async function carregarTudoDaNuvem(): Promise<{
     };
   }
 
-  // Se você ativar o Sandbox Nuvem V2, ele lê da pasta separada 'sistema_bnb_v2_homolog'
+  // 1º Tenta ler DIRETAMENTE da Nuvem V2 Oficial ('sistema_bnb_v2_homolog')
   try {
     const snapshot = await get(ref(dbNuvem, PATH_SANDBOX_V2));
     if (snapshot.exists()) {
@@ -232,6 +225,7 @@ export async function carregarTudoDaNuvem(): Promise<{
         ? normalizarDadosKanban(val.kanban_tarefas)
         : localKanban;
 
+      // Atualiza o cache local deste navegador com os dados frescos da Nuvem V2
       safeSetLocal(STORAGE_KEYS_V2.CONTRATACOES, contratacoes);
       safeSetLocal(STORAGE_KEYS_V2.DESEMB_OP, desembOp);
       safeSetLocal(STORAGE_KEYS_V2.DESEMB_EV, desembEv);
@@ -240,17 +234,25 @@ export async function carregarTudoDaNuvem(): Promise<{
       return { contratacoes, desembOp, desembEv, kanban, online: true, modoLocal: false };
     }
   } catch (err) {
-    console.warn('Operando offline no Sandbox V2:', err);
+    console.warn('Falha ao ler Sandbox V2, usando cache local:', err);
   }
 
-  return {
-    contratacoes: localContrat,
-    desembOp: localOp,
-    desembEv: localEv,
-    kanban: localKanban,
-    online: false,
-    modoLocal: false,
-  };
+  // 2º Se a Nuvem V2 estiver vazia (ex: primeiro acesso absoluto em outro PC),
+  // verifica se já temos dados salvos no cache local deste aparelho.
+  if (localContrat.length > 0 || localKanban.length > 0) {
+    return {
+      contratacoes: localContrat,
+      desembOp: localOp,
+      desembEv: localEv,
+      kanban: localKanban,
+      online: false,
+      modoLocal: false,
+    };
+  }
+
+  // 3º Último recurso (apenas se tudo mais estiver vazio): Executa a clonagem inicial da produção antiga
+  const clone = await clonarDadosDaProducaoLegada();
+  return { ...clone, online: true, modoLocal };
 }
 
 export function normalizarDadosKanban(dados: unknown): CardKanban[] {
