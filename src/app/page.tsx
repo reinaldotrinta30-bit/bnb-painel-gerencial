@@ -261,6 +261,19 @@ export default function PainelGerencialPage() {
     }
   };
 
+  const handleEventoDesembolsoSalvo = (
+    evSalvo: EventoDesembolso,
+    opBase?: OperacaoBaseDesembolso
+  ) => {
+    const novosCards = sincronizarAposEventoDesembolso({
+      eventoSalvo: evSalvo,
+      operacaoBase: opBase,
+      cardsAtuais: cardsKanban,
+    });
+    setCardsKanban(novosCards);
+    salvarKanbanSync(novosCards);
+  };
+
   const handleAtualizarKanban = (novos: CardKanban[]) => {
     setCardsKanban(novos);
     salvarKanbanSync(novos);
@@ -595,8 +608,27 @@ export default function PainelGerencialPage() {
       </header>
 
       {/* ÁREA DE CONTEÚDO DA GUIA SELECIONADA */}
-      <main style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-        {guiaAtiva === 'contratacoes' && (
+      <main
+        style={{
+          flex: 1,
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'relative',
+        }}
+      >
+        {/* ITEM 1: Modo "Guias Abertas Persistentes" ocupando 100% da tela */}
+        <div
+          style={{
+            display: guiaAtiva === 'contratacoes' ? 'block' : 'none',
+            flex: 1,
+            width: '100%',
+            height: '100%',
+            overflowY: 'auto',
+          }}
+        >
           <ModuloContratacoes
             registros={contratacoes}
             cardsKanban={cardsKanban}
@@ -606,9 +638,17 @@ export default function PainelGerencialPage() {
             focoExternoContratacao={focoContratacao}
             onLimparFocoExterno={() => setFocoContratacao(null)}
           />
-        )}
+        </div>
 
-        {guiaAtiva === 'desembolsos' && (
+        <div
+          style={{
+            display: guiaAtiva === 'desembolsos' ? 'block' : 'none',
+            flex: 1,
+            width: '100%',
+            height: '100%',
+            overflowY: 'auto',
+          }}
+        >
           <ModuloDesembolsos
             contratacoes={contratacoes}
             operacoesBase={operacoesBase}
@@ -616,14 +656,29 @@ export default function PainelGerencialPage() {
             onAtualizarOperacoesBase={handleAtualizarOperacoesBase}
             onAtualizarEventos={handleAtualizarEventos}
             onInspecionarNoKanban={handleInspecionarDesembolsoNoKanban}
-            focoExternoDesembolso={focoDesembolso}
-            onLimparFocoExternoDesembolso={() => setFocoDesembolso(null)}
           />
-        )}
+        </div>
 
-        {guiaAtiva === 'kanban' && (
+        <div
+          style={{
+            display: guiaAtiva === 'kanban' ? 'flex' : 'none',
+            flexDirection: 'column',
+            flex: 1,
+            width: '100%',
+            height: '100%',
+            overflow: 'hidden',
+          }}
+        >
           <ModuloKanban
             cards={cardsKanban}
+            contratacoes={contratacoes}
+            operacoesBase={operacoesBase}
+            eventos={eventos}
+            onAtualizarContratacoes={handleAtualizarContratacoes}
+            onRegistroContratacaoSalvo={handleRegistroContratacaoSalvo}
+            onAtualizarOperacoesBase={handleAtualizarOperacoesBase}
+            onAtualizarEventos={handleAtualizarEventos}
+            onEventoDesembolsoSalvo={handleEventoDesembolsoSalvo}
             onAtualizarCards={handleAtualizarKanban}
             onCardSincronizadoAlterado={handleCardKanbanSincronizadoAlterado}
             onCriarClientePeloKanban={handleCriarClientePeloKanban}
@@ -645,12 +700,10 @@ export default function PainelGerencialPage() {
               });
               setGuiaAtiva('desembolsos');
             }}
-
             onAlterarSituacaoDesembolsoPeloKanban={(card, novaSitDesemb) => {
               const nomeCli = (card.clienteVinculado || '').toUpperCase().trim();
               if (!nomeCli) return;
 
-              // Atualiza o último evento de desembolso desse cliente (ou cria um registro rápido se ainda não houver evento)
               const opDoCli = operacoesBase.find(
                 (o) =>
                   (card.propostaIdVinculada &&
@@ -686,21 +739,18 @@ export default function PainelGerencialPage() {
                   data: getHojeBR(),
                   obs: 'Atualizado via Tarja do Kanban',
                 } as EventoDesembolso;
-                
+
                 const novosEv = [...eventos, novoEv];
                 setEventos(novosEv);
                 salvarDesembEvSync(novosEv);
               }
             }}
-
-
             onInlineEditCabecalho={(card, updates) => {
               const novasContratacoes = [...contratacoes];
               const cpfAntigoLimpo = (card.cpfVinculado || '').replace(/\D/g, '');
               const nomeAntigoUpper = (card.clienteVinculado || '').toUpperCase().trim();
               const idsGrupo = card.idsPropostasAgrupadas || [];
 
-              // Localiza todas as linhas deste cliente na aba de Contratações
               const indicesCliente: number[] = [];
               novasContratacoes.forEach((r, idx) => {
                 const matchId =
@@ -727,7 +777,6 @@ export default function PainelGerencialPage() {
                     ? 'RENOV. CUSTEIO'
                     : tipoRegUpper;
 
-                  // Procura se o valor desta operação específica foi editado no cabeçalho
                   const opEditada =
                     updates.operacoesEditadas.find(
                       (op) => op.opId && String(op.opId) === String(reg.id)
@@ -736,10 +785,8 @@ export default function PainelGerencialPage() {
                       (op) => op.tipo.toUpperCase() === labelComp
                     );
 
-                  // Verifica também se havia um limite LCG embutido nos campos de garantia da operação principal
                   const lcgEmbutidaEditada = updates.operacoesEditadas.find(
-                    (op) =>
-                      op.tipo === 'LCGH' || op.tipo === 'LCGA'
+                    (op) => op.tipo === 'LCGH' || op.tipo === 'LCGA'
                   );
 
                   novasContratacoes[idx] = {
@@ -777,29 +824,32 @@ export default function PainelGerencialPage() {
                 }
               }
             }}
-
-
           />
-        )}
+        </div>
 
-        
-
-        
-
-        {guiaAtiva === 'carteira' && (
+        <div style={{ display: guiaAtiva === 'carteira' ? 'block' : 'none', flex: 1,
+            width: '100%',
+            height: '100%',
+            overflowY: 'auto', }}>
           <ModuloRelatorioCarteira
             contratacoes={contratacoes}
             cardsKanban={cardsKanban}
           />
-        )}
+        </div>
 
-       {guiaAtiva === 'ferramentas' && (
+        <div style={{ display: guiaAtiva === 'ferramentas' ? 'block' : 'none', flex: 1,
+            width: '100%',
+            height: '100%',
+            overflowY: 'auto',}}>
           <ModuloFerramentas
             contratacoes={contratacoes}
             operacoesBase={operacoesBase}
             eventos={eventos}
             cardsKanban={cardsKanban}
-            onRestaurarBackupCompleto={(dados) => {
+            onRestaurarBackupCompleto={async (dados) => {
+              setModoIsoladoLocal(false);
+              setModoEstritoLocal(false);
+
               setContratacoes(dados.contratacoes);
               salvarContratacoesSync(dados.contratacoes);
               setOperacoesBase(dados.operacoesBase);
@@ -808,10 +858,24 @@ export default function PainelGerencialPage() {
               salvarDesembEvSync(dados.eventos);
               setCardsKanban(dados.cardsKanban);
               salvarKanbanSync(dados.cardsKanban);
+
+              setCarregandoNuvem(true);
+              const gravouNaNuvem = await publicarEstadoAtualNaNuvemV2({
+                contratacoes: dados.contratacoes,
+                desembOp: dados.operacoesBase,
+                desembEv: dados.eventos,
+                kanban: dados.cardsKanban,
+              });
+              setCarregandoNuvem(false);
+
+              if (gravouNaNuvem) {
+                alert(
+                  '☁️ SUCESSO TOTAL! O seu Backup foi restaurado e GRAVADO DEFINITIVAMENTE no Firebase V2!'
+                );
+              }
             }}
           />
-        )} 
-
+        </div>
       </main>
 
       {/* MODAL UNIFICADO DA LUPINHA (INSPEÇÃO DA NOTA DO KANBAN + ATALHO DIRETO) */}

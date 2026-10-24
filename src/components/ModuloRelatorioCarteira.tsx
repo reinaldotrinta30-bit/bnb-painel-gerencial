@@ -706,13 +706,14 @@ export default function ModuloRelatorioCarteira({
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '20px', background: '#f4f7f9' }}>
       <div style={{ maxWidth: '1250px', margin: '0 auto' }}>
-        {/* BARRA DE COMANDO DO RELATÓRIO DO GERENTE GERAL */}
+        {/* BARRA DE COMANDO DO RELATÓRIO DO GERENTE GERAL (DESIGN EXECUTIVO COMPACTO) */}
         <div
           className="person-card"
           style={{
             borderLeftColor: 'var(--primary-color)',
-            background: '#fff',
-            padding: '18px 20px',
+            background: '#ffffff',
+            padding: '12px 18px',
+            marginBottom: '15px',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
@@ -720,44 +721,67 @@ export default function ModuloRelatorioCarteira({
             gap: '12px',
           }}
         >
-          <div>
-            <h2 style={{ margin: 0, color: 'var(--primary-color)', fontSize: '18px', textTransform: 'uppercase' }}>
-              📑 PLANILHA DE ANÁLISE DA CARTEIRA (VISÃO DO GERENTE GERAL)
-            </h2>
-            <span style={{ fontSize: '12px', color: 'var(--support-gray)' }}>
-              Consolidado Oficial: <strong>FNE PRONAF + FNE MINI</strong> • Exclusão automática de LCGH/LCGA ({apuracaoCarteira.qtdExcluidasLCG} ignoradas) • Sem dupla contagem de Cada Vez Melhor / PRONAF A
-            </span>
+          {/* Título e Subtítulo Informativo */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <h2
+                style={{
+                  margin: 0,
+                  color: 'var(--primary-color)',
+                  fontSize: '15px',
+                  fontWeight: 800,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.2px',
+                }}
+              >
+                📑 PLANILHA DE ANÁLISE DA CARTEIRA
+              </h2>
+              <span
+                style={{
+                  fontSize: '10.5px',
+                  fontWeight: 700,
+                  background: '#fdf2f4',
+                  color: 'var(--primary-color)',
+                  border: '1px solid #f5c2c7',
+                  padding: '2px 8px',
+                  borderRadius: '12px',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Visão GG
+              </span>
+            </div>
+            
           </div>
 
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-            <button
-              onClick={puxarRealizadoDaAbaContratacoes}
+          {/* Toolbar de Ações Compacta e Alinhada */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <label
               style={{
-                background: '#e8f0fe',
-                color: '#1967d2',
-                border: '1px solid #a8c7fa',
-                padding: '8px 14px',
-                fontSize: '12px',
-              }}
-              title="Substitui o Realizado Oficial pela soma das propostas com status Contratado na aba Contratações"
-            >
-              ⚡ Puxar &quot;Realizado&quot; das Contratações
-            </button>
-
-           <label
-              style={{
-                display: 'flex',
+                display: 'inline-flex',
                 alignItems: 'center',
                 gap: '6px',
+                width: 'auto',
+                height: '32px',
+                padding: '0 12px',
                 background: considerarArquivados ? '#f3e8ff' : '#f8fafc',
-                color: considerarArquivados ? '#6b21a8' : '#64748b',
-                border: '1px solid #cbd5e1',
-                padding: '8px 14px',
-                borderRadius: '4px',
-                fontSize: '12px',
+                color: considerarArquivados ? '#6b21a8' : '#475569',
+                border: `1px solid ${considerarArquivados ? '#d8b4fe' : '#cbd5e1'}`,
+                borderRadius: '6px',
+                fontSize: '11.5px',
+                fontWeight: 600,
                 cursor: 'pointer',
-                fontWeight: 'bold',
-                marginBottom: 0
+                margin: 0,
+                whiteSpace: 'nowrap',
+                userSelect: 'none',
+                transition: 'all 0.15s ease',
               }}
               title="Se marcado, inclui as propostas arquivadas no cálculo de estoque."
             >
@@ -765,35 +789,87 @@ export default function ModuloRelatorioCarteira({
                 type="checkbox"
                 checked={considerarArquivados}
                 onChange={(e) => setConsiderarArquivados(e.target.checked)}
-                style={{ margin: 0 }}
+                style={{
+                  width: '13px',
+                  height: '13px',
+                  margin: 0,
+                  padding: 0,
+                  cursor: 'pointer',
+                  accentColor: '#7e22ce',
+                }}
               />
               📦 Considerar Arquivados?
             </label>
 
             <button
-              onClick={() => setModoEdicaoParametros((prev) => !prev)}
+              type="button"
+              onClick={puxarRealizadoDaAbaContratacoes}
               style={{
-                background: modoEdicaoParametros ? 'var(--accent-color)' : '#f1f5f9',
-                color: modoEdicaoParametros ? '#fff' : '#333',
-                border: '1px solid #cbd5e1',
-                padding: '8px 14px',
-                fontSize: '12px',
+                width: 'auto',
+                height: '32px',
+                padding: '0 12px',
+                background: '#eff6ff',
+                color: '#1d4ed8',
+                border: '1px solid #bfdbfe',
+                borderRadius: '6px',
+                fontSize: '11.5px',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                whiteSpace: 'nowrap',
+                cursor: 'pointer',
               }}
+              title="Substitui o Realizado Oficial pela soma das propostas com status Contratado na aba Contratações"
             >
-              ⚙️ {modoEdicaoParametros ? 'Concluir Edição de Metas/Sistema' : 'Editar Metas / Dados do Banco'}
+              ⚡ Puxar &quot;Realizado&quot;
             </button>
 
             <button
-              onClick={exportarPlanilhaGerenteGeral}
+              type="button"
+              onClick={() => setModoEdicaoParametros((prev) => !prev)}
               style={{
-                background: '#137333',
-                color: '#fff',
-                padding: '8px 18px',
-                fontSize: '13px',
-                boxShadow: '0 2px 6px rgba(19,115,51,0.3)',
+                width: 'auto',
+                height: '32px',
+                padding: '0 12px',
+                background: modoEdicaoParametros ? 'var(--accent-color)' : '#ffffff',
+                color: modoEdicaoParametros ? '#ffffff' : '#334155',
+                border: `1px solid ${modoEdicaoParametros ? 'var(--accent-color)' : '#cbd5e1'}`,
+                borderRadius: '6px',
+                fontSize: '11.5px',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                whiteSpace: 'nowrap',
+                cursor: 'pointer',
               }}
             >
-              📊 Exportar Planilha Oficial (.XLSX)
+              ⚙️ {modoEdicaoParametros ? 'Concluir Edição' : 'Editar Metas / Banco'}
+            </button>
+
+            <button
+              type="button"
+              onClick={exportarPlanilhaGerenteGeral}
+              style={{
+                width: 'auto',
+                height: '32px',
+                padding: '0 14px',
+                background: '#15803d',
+                color: '#ffffff',
+                border: '1px solid #166534',
+                borderRadius: '6px',
+                fontSize: '11.5px',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                whiteSpace: 'nowrap',
+                cursor: 'pointer',
+                boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+              }}
+            >
+              📊 Exportar (.XLSX)
             </button>
           </div>
         </div>
@@ -1002,7 +1078,7 @@ export default function ModuloRelatorioCarteira({
                 {/* FNE CADA VEZ MELHOR */}
                 <tr style={{ background: '#fff9fb' }}>
                   <td style={{ fontWeight: 'bold', textAlign: 'left', paddingLeft: '12px', color: '#ad1457' }}>
-                    FNE CADA VEZ MELHOR (Recorte Mulher PRONAF)
+                    FNE CADA VEZ MELHOR 
                   </td>
                   <td style={{ textAlign: 'right', fontWeight: 'bold' }}>
                     {modoEdicaoParametros ? (

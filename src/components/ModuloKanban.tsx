@@ -6,6 +6,8 @@ import {
   EtapaKanban,
   StatusCorKanban,
   RegistroContratacao,
+  OperacaoBaseDesembolso,
+  EventoDesembolso,
 } from '@/types/painel';
 import {
   getHojeISO,
@@ -30,6 +32,20 @@ import {
 
 interface ModuloKanbanProps {
   cards: CardKanban[];
+  contratacoes?: RegistroContratacao[];
+  operacoesBase?: OperacaoBaseDesembolso[];
+  eventos?: EventoDesembolso[];
+  onAtualizarContratacoes?: (novos: RegistroContratacao[]) => void;
+  onRegistroContratacaoSalvo?: (
+    regSalvo: RegistroContratacao,
+    todas: RegistroContratacao[]
+  ) => void;
+  onAtualizarOperacoesBase?: (novas: OperacaoBaseDesembolso[]) => void;
+  onAtualizarEventos?: (novos: EventoDesembolso[]) => void;
+  onEventoDesembolsoSalvo?: (
+    evSalvo: EventoDesembolso,
+    opBase?: OperacaoBaseDesembolso
+  ) => void;
   onAtualizarCards: (novos: CardKanban[]) => void;
   onCardSincronizadoAlterado?: (
     cardAtualizado: CardKanban,
@@ -121,6 +137,14 @@ function ordenarCardsPorPeso(lista: CardKanban[]): CardKanban[] {
 
 export default function ModuloKanban({
   cards,
+  contratacoes = [],
+  operacoesBase = [],
+  eventos = [],
+  onAtualizarContratacoes,
+  onRegistroContratacaoSalvo,
+  onAtualizarOperacoesBase,
+  onAtualizarEventos,
+  onEventoDesembolsoSalvo,
   onAtualizarCards,
   onCardSincronizadoAlterado,
   onCriarClientePeloKanban,
@@ -657,6 +681,284 @@ const aplicarHighlight = useCallback((cor: string) => {
   const [menuEmojiFullscreenAberto, setMenuEmojiFullscreenAberto] =
     useState(false);
 
+   
+   // =========================================================================
+  // ITEM 2: ABAS ESTILO PLANILHA EXCEL NO RODAPÉ DO CARD MAXIMIZADO
+  // =========================================================================
+  const [abaInternaCard, setAbaInternaCard] = useState<
+    'notas' | 'contratacoes' | 'desembolsos'
+  >('notas');
+
+  // Estados do Editor de Contratação na Página 2 do Card
+  const [editContratCardId, setEditContratCardId] = useState<string | null>(null);
+  const [fcPorte, setFcPorte] = useState('PRONAF V');
+  const [fcTipo, setFcTipo] = useState('INVESTIMENTO');
+  const [fcSituacao, setFcSituacao] = useState('Na Agência');
+  const [fcValor, setFcValor] = useState('');
+  const [fcData, setFcData] = useState('');
+  const [fcObs, setFcObs] = useState('');
+  const [fcSitDetalhada, setFcSitDetalhada] = useState('');
+
+  // Estados do Editor de Desembolso na Página 3 do Card
+  const [editEventoCardId, setEditEventoCardId] = useState<string | null>(null);
+  const [fdOp, setFdOp] = useState('');
+  const [fdParcela, setFdParcela] = useState('1');
+  const [fdValor, setFdValor] = useState('');
+  const [fdSituacao, setFdSituacao] = useState('Desembolso Solicitado');
+  const [fdData, setFdData] = useState('');
+  const [fdObs, setFdObs] = useState('');
+
+  // Localiza todas as Contratações vinculadas ao Card aberto
+  const obterContratacoesDoCard = (card: CardKanban): RegistroContratacao[] => {
+    const cpfLimpo = (card.cpfVinculado || '').replace(/\D/g, '');
+    const nomeUpper = (card.clienteVinculado || '').toUpperCase().trim();
+    const idsGrupo = card.idsPropostasAgrupadas || [];
+
+    return contratacoes.filter((r) => {
+      const matchId =
+        String(r.id) === String(card.propostaIdVinculada) ||
+        String(r.id) === String(card.lcgPropostaIdVinculada) ||
+        idsGrupo.includes(String(r.id));
+      const matchCpf =
+        cpfLimpo.length === 11 && (r.cpf || '').replace(/\D/g, '') === cpfLimpo;
+      const matchNome =
+        nomeUpper.length > 3 &&
+        (r.cliente || '').toUpperCase().trim() === nomeUpper;
+      return matchId || matchCpf || matchNome;
+    });
+  };
+
+  // Localiza Operações Base e Eventos de Desembolso vinculados ao Card aberto
+  const obterDesembolsosDoCard = (card: CardKanban) => {
+    const cpfLimpo = (card.cpfVinculado || '').replace(/\D/g, '');
+    const nomeUpper = (card.clienteVinculado || '').toUpperCase().trim();
+    const idsGrupo = card.idsPropostasAgrupadas || [];
+
+    const ops = operacoesBase.filter((o) => {
+      const matchId =
+        o.propostaIdOrigem &&
+        (String(o.propostaIdOrigem) === String(card.propostaIdVinculada) ||
+          idsGrupo.includes(String(o.propostaIdOrigem)));
+      const matchCpf =
+        cpfLimpo.length === 11 && (o.cpf || '').replace(/\D/g, '') === cpfLimpo;
+      const matchNome =
+        nomeUpper.length > 3 &&
+        (o.cliente || '').toUpperCase().trim() === nomeUpper;
+      return matchId || matchCpf || matchNome;
+    });
+
+    const opsNumeros = ops.map((o) => o.op.toUpperCase().trim());
+    const evs = eventos.filter((e) => {
+      const matchNome =
+        nomeUpper.length > 3 &&
+        (e.cliente || '').toUpperCase().trim() === nomeUpper;
+      const matchOp =
+        (card.opDesembolsoVinculada &&
+          e.op === card.opDesembolsoVinculada) ||
+        opsNumeros.includes((e.op || '').toUpperCase().trim());
+      return matchNome || matchOp;
+    });
+
+    return { ops, evs };
+  };
+
+  const iniciarEdicaoContratacaoNoCard = (reg?: RegistroContratacao, card?: CardKanban) => {
+    if (reg) {
+      setEditContratCardId(String(reg.id));
+      setFcPorte(reg.porte || 'PRONAF V');
+      setFcTipo(reg.tipo || 'INVESTIMENTO');
+      setFcSituacao(reg.situacao || 'Na Agência');
+      setFcValor(reg.valor || '');
+      setFcData(reg.data || getHojeBR());
+      setFcObs(reg.obs || '');
+      setFcSitDetalhada(reg.situacaoDetalhada || '');
+    } else {
+      setEditContratCardId(null);
+      setFcPorte(card?.porteVinculado || 'PRONAF V');
+      setFcTipo('INVESTIMENTO');
+      setFcSituacao(card?.situacaoVinculada || 'Na Agência');
+      setFcValor('');
+      setFcData(getHojeBR());
+      setFcObs('');
+      setFcSitDetalhada('');
+    }
+  };
+
+  const salvarContratacaoPeloCard = (card: CardKanban) => {
+    if (!fcValor.trim()) {
+      alert('Informe o valor da operação!');
+      return;
+    }
+    const listaCli = obterContratacoesDoCard(card);
+    const refBase = listaCli[0];
+    const clienteNome = (
+      card.clienteVinculado ||
+      refBase?.cliente ||
+      'CLIENTE'
+    ).toUpperCase();
+    const clienteCpf = card.cpfVinculado || refBase?.cpf || '';
+    const clienteProj = refBase?.projetista || '';
+
+    let novas = [...contratacoes];
+    let regSalvo: RegistroContratacao;
+
+    if (editContratCardId) {
+      const idx = novas.findIndex((r) => String(r.id) === String(editContratCardId));
+      if (idx !== -1) {
+        regSalvo = {
+          ...novas[idx],
+          porte: fcPorte,
+          tipo: fcTipo,
+          situacao: fcSituacao,
+          valor: fcValor,
+          data: fcData || getHojeBR(),
+          obs: fcObs,
+          situacaoDetalhada: fcSitDetalhada,
+        };
+        novas[idx] = regSalvo;
+      } else {
+        return;
+      }
+    } else {
+      regSalvo = {
+        id: String(Date.now()),
+        cliente: clienteNome,
+        cpf: clienteCpf,
+        porte: fcPorte,
+        projetista: clienteProj,
+        responsavel: refBase?.responsavel || '',
+        telefone: refBase?.telefone || '',
+        tipo: fcTipo,
+        situacao: fcSituacao,
+        valor: fcValor,
+        data: fcData || getHojeBR(),
+        obs: fcObs,
+        situacaoDetalhada: fcSitDetalhada,
+      };
+      novas = [regSalvo, ...novas];
+    }
+
+    onAtualizarContratacoes?.(novas);
+    onRegistroContratacaoSalvo?.(regSalvo, novas);
+    iniciarEdicaoContratacaoNoCard(undefined, card);
+  };
+
+  const excluirContratacaoPeloCard = (idReg: string, card: CardKanban) => {
+    if (!window.confirm('Deseja realmente excluir esta proposta de contratação?')) return;
+    const novas = contratacoes.filter((r) => String(r.id) !== String(idReg));
+    onAtualizarContratacoes?.(novas);
+    const restantes = novas.filter(
+      (r) =>
+        (r.cliente || '').toUpperCase().trim() ===
+        (card.clienteVinculado || '').toUpperCase().trim()
+    );
+    if (restantes[0]) {
+      onRegistroContratacaoSalvo?.(restantes[0], novas);
+    }
+    if (editContratCardId === String(idReg)) {
+      iniciarEdicaoContratacaoNoCard(undefined, card);
+    }
+  };
+
+  const iniciarEdicaoEventoNoCard = (ev?: EventoDesembolso, card?: CardKanban) => {
+    const { ops } = obterDesembolsosDoCard(card || ({} as CardKanban));
+    if (ev) {
+      setEditEventoCardId(String(ev.id));
+      setFdOp(ev.op || ops[0]?.op || '');
+      setFdParcela(ev.parcela || '1');
+      setFdValor(ev.valor || '');
+      setFdSituacao(ev.situacao || 'Desembolso Solicitado');
+      setFdData(ev.data || getHojeBR());
+      setFdObs(ev.obs || '');
+    } else {
+      setEditEventoCardId(null);
+      setFdOp(ops[0]?.op || card?.opDesembolsoVinculada || 'PENDENTE-OP');
+      setFdParcela('1');
+      setFdValor(ops[0]?.valor || card?.valorVinculado || '');
+      setFdSituacao(card?.situacaoDesembolsoVinculada || 'Desembolso Solicitado');
+      setFdData(getHojeBR());
+      setFdObs('');
+    }
+  };
+
+  const salvarEventoDesembolsoPeloCard = (card: CardKanban) => {
+    if (!fdValor.trim()) {
+      alert('Informe o valor da liberação/parcela!');
+      return;
+    }
+    const { ops } = obterDesembolsosDoCard(card);
+    const clienteNome = (
+      card.clienteVinculado ||
+      ops[0]?.cliente ||
+      'CLIENTE'
+    ).toUpperCase();
+    const opNumero = fdOp.trim() || ops[0]?.op || 'PENDENTE-OP';
+
+    // Se ainda não existir Operação Base de Desembolso para este cliente, cria automaticamente
+    let opBaseVinc = ops.find((o) => o.op === opNumero) || ops[0];
+    if (!opBaseVinc) {
+      opBaseVinc = {
+        id: `op_${Date.now()}`,
+        propostaIdOrigem: card.propostaIdVinculada,
+        porte: card.porteVinculado || 'PRONAF V',
+        cliente: clienteNome,
+        cpf: card.cpfVinculado || '',
+        projetista: '',
+        op: opNumero,
+        valor: card.valorVinculado || fdValor,
+      };
+      onAtualizarOperacoesBase?.([...operacoesBase, opBaseVinc]);
+    }
+
+    let novosEv = [...eventos];
+    let evSalvo: EventoDesembolso;
+
+    if (editEventoCardId) {
+      const idx = novosEv.findIndex((e) => String(e.id) === String(editEventoCardId));
+      if (idx !== -1) {
+        evSalvo = {
+          ...novosEv[idx],
+          op: opNumero,
+          parcela: fdParcela,
+          valor: fdValor,
+          situacao: fdSituacao,
+          data: fdData || getHojeBR(),
+          obs: fdObs,
+        };
+        novosEv[idx] = evSalvo;
+      } else {
+        return;
+      }
+    } else {
+      evSalvo = {
+        id: String(Date.now()),
+        timestamp: Date.now(),
+        cliente: clienteNome,
+        op: opNumero,
+        parcela: fdParcela,
+        valor: fdValor,
+        situacao: fdSituacao,
+        data: fdData || getHojeBR(),
+        obs: fdObs,
+      };
+      novosEv = [...novosEv, evSalvo];
+    }
+
+    onAtualizarEventos?.(novosEv);
+    onEventoDesembolsoSalvo?.(evSalvo, opBaseVinc);
+    iniciarEdicaoEventoNoCard(undefined, card);
+  };
+
+  const excluirEventoDesembolsoPeloCard = (idEv: string, card: CardKanban) => {
+    if (!window.confirm('Deseja realmente excluir este evento de desembolso?')) return;
+    const novos = eventos.filter((e) => String(e.id) !== String(idEv));
+    onAtualizarEventos?.(novos);
+    if (editEventoCardId === String(idEv)) {
+      iniciarEdicaoEventoNoCard(undefined, card);
+    }
+  };
+   
+   
     // Estados da Edição Rápida por Duplo Clique no Cabeçalho do Card
   const [cardHeaderEditId, setCardHeaderEditId] = useState<string | null>(null);
   const [heCliente, setHeCliente] = useState('');
@@ -1124,6 +1426,9 @@ const aplicarHighlight = useCallback((cor: string) => {
   };
 
   const toggleFullscreenCard = (cardId: string) => {
+    setAbaInternaCard('notas');
+    setEditContratCardId(null);
+    setEditEventoCardId(null);
     limparGrifosBuscaInterna(cardId);
     setTermoBuscaInterna('');
     setBuscaInternaStatus('neutro');
@@ -2341,7 +2646,7 @@ const aplicarHighlight = useCallback((cor: string) => {
                                     }}
                                     title="Inserir Emoji de Check, Alerta, Atenção ou Tópico"
                                   >
-                                    ✅ Emojis ▾
+                                    ✅▾
                                   </button>
                                   {menuEmojiFullscreenAberto && (
                                     <div
@@ -2716,27 +3021,29 @@ const aplicarHighlight = useCallback((cor: string) => {
                         )}
 
 
-                        {/* ITEM 4 e ITEM 5: Para cards de clientes, o contêiner externo tem contentEditable={false}
-                            (protegendo os títulos fixos e permitindo selecionar o cabeçalho), enquanto as 3 caixas internas são editáveis! */}
+                        {/* PÁGINA 1 (PADRÃO): Notas, Situação, Pendências e Espaço para Análise */}
                         <div
                           className="card-editor"
+                          style={{
+                            ...estiloNotaConcluida,
+                            display:
+                              !isFullscreen || abaInternaCard === 'notas'
+                                ? 'block'
+                                : 'none',
+                          }}
                           contentEditable={
                             card.etapa === 'NOTAS' ||
                             !card.texto.includes('bloco-editavel-')
                           }
                           suppressContentEditableWarning
-                          style={estiloNotaConcluida}
                           onPaste={handleSmartPasteCard}
                           onMouseDown={() => setDragHabilitadoId(null)}
                           onDoubleClick={(e) => {
                             const target = e.target as HTMLElement;
-                            // Se deu duplo clique dentro do cabeçalho cinza do cliente (ou nas primeiras linhas de dados), abre a edição inline!
+                            // Abre a edição inline APENAS se o clique for estritamente dentro da área do cabeçalho do cliente!
                             if (
                               target.closest('.card-bloco-cliente') ||
-                              target.classList.contains('inline-edit-value') ||
-                              (!target.closest('.bloco-editavel-situacao') &&
-                                !target.closest('.bloco-editavel-pendencias') &&
-                                !target.closest('.bloco-editavel-analise'))
+                              target.classList.contains('inline-edit-value')
                             ) {
                               e.preventDefault();
                               abrirEdicaoInlineCabecalho(card);
@@ -2746,7 +3053,6 @@ const aplicarHighlight = useCallback((cor: string) => {
                             if (isFullscreen) limparGrifosBuscaInterna(card.id);
                           }}
                           onBlur={(e) => {
-                            // Só dispara o salvamento quando o foco realmente sai de dentro do card
                             if (
                               e.relatedTarget &&
                               e.currentTarget.contains(e.relatedTarget as Node)
@@ -2761,6 +3067,585 @@ const aplicarHighlight = useCallback((cor: string) => {
                           }}
                           dangerouslySetInnerHTML={{ __html: card.texto }}
                         />
+
+                        {/* ITEM 2: PÁGINA 2 (CONTRATAÇÕES DO CLIENTE) E PÁGINA 3 (DESEMBOLSOS DO CLIENTE) DENTRO DO CARD */}
+                        {isFullscreen &&
+                          card.etapa !== 'NOTAS' &&
+                          abaInternaCard !== 'notas' && (() => {
+                            const opsContratCliente = obterContratacoesDoCard(card);
+                            const { ops: opsDesembCliente, evs: evsDesembCliente } =
+                              obterDesembolsosDoCard(card);
+
+                            return (
+                              <div
+                                onMouseDown={(e) => e.stopPropagation()}
+                                style={{
+                                  flex: 1,
+                                  overflowY: 'auto',
+                                  padding: '16px 24px 70px 24px',
+                                  background: '#f8fafc',
+                                }}
+                              >
+                                {/* CABEÇALHO DO CLIENTE PRESERVADO NO TOPO DAS PÁGINAS 2 E 3 (Duplo Clique Ativo!) */}
+                                <div
+                                  onDoubleClick={() => abrirEdicaoInlineCabecalho(card)}
+                                  title="Editar"
+                                  style={{
+                                    background: '#fff',
+                                    border: '1px solid #cbd5e1',
+                                    borderLeft: '5px solid #8B1530',
+                                    borderRadius: '6px',
+                                    padding: '10px 14px',
+                                    marginBottom: '16px',
+                                    fontSize: '13px',
+                                    cursor: 'pointer',
+                                    userSelect: 'text',
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                                    <div>
+                                      <b>CLIENTE:</b> {(card.clienteVinculado || 'CLIENTE').toUpperCase()}{' '}
+                                      {card.cpfVinculado && (
+                                        <span>
+                                          • <b>CPF:</b> {card.cpfVinculado}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#64748b' }}>
+                                      <b>PORTE:</b> {card.porteVinculado || '-'} •{' '}
+                                      <span style={{ color: '#8B1530', fontWeight: 'bold' }}>
+                                        ✏️
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* CONTEÚDO DA PÁGINA 2: CONTRATAÇÕES DO CLIENTE */}
+                                {abaInternaCard === 'contratacoes' && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                    {/* Formulário: Editando Operação Selecionada / Nova Operação */}
+                                    <div
+                                      style={{
+                                        background: '#fff',
+                                        border: `1.5px solid ${
+                                          editContratCardId ? '#f59e0b' : '#cbd5e1'
+                                        }`,
+                                        borderRadius: '8px',
+                                        padding: '14px 16px',
+                                      }}
+                                    >
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                                        <strong style={{ color: editContratCardId ? '#b45309' : '#8B1530', fontSize: '13px' }}>
+                                          {editContratCardId
+                                            ? '📝 EDITANDO OPERAÇÃO SELECIONADA'
+                                            : '➕ INSERIR NOVA PROPOSTA / OPERAÇÃO PARA ESTE CLIENTE'}
+                                        </strong>
+                                        {editContratCardId && (
+                                          <button
+                                            type="button"
+                                            onClick={() => iniciarEdicaoContratacaoNoCard(undefined, card)}
+                                            style={{ width: 'auto', padding: '4px 10px', fontSize: '11px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '4px', color: '#000' }}
+                                          >
+                                            ✖ Cancelar Edição
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Porte</label>
+                                          <select value={fcPorte} onChange={(e) => setFcPorte(e.target.value)} style={{ height: '32px', fontSize: '12px' }}>
+                                            <option value="PRONAF V">PRONAF V</option>
+                                            <option value="PRONAF A">PRONAF A</option>
+                                            <option value="MINI">MINI</option>
+                                            <option value="PEQUENO">PEQUENO</option>
+                                            <option value="MÉDIO">MÉDIO</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Tipo de Operação</label>
+                                          <select value={fcTipo} onChange={(e) => setFcTipo(e.target.value)} style={{ height: '32px', fontSize: '12px' }}>
+                                            <option value="INVESTIMENTO">INVESTIMENTO</option>
+                                            <option value="CUSTEIO">CUSTEIO</option>
+                                            <option value="RENOVAÇÃO DE CUSTEIO">RENOVAÇÃO DE CUSTEIO</option>
+                                            <option value="LCGH">LCGH (Limite Hipotecário)</option>
+                                            <option value="LCGA">LCGA (Limite Alienação)</option>
+                                            <option value="CARTÃO BNB">CARTÃO BNB</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Situação Oficial</label>
+                                          <select value={fcSituacao} onChange={(e) => setFcSituacao(e.target.value)} style={{ height: '32px', fontSize: '12px' }}>
+                                            <option value="Com Cliente/Projetista">Com Cliente/Projetista</option>
+                                            <option value="Na Agência">Na Agência</option>
+                                            <option value="Devolvido AG">Devolvido AG</option>
+                                            <option value="Na Central">Na Central</option>
+                                            <option value="Contratado">Contratado</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Valor da Proposta (R$)</label>
+                                          <input
+                                            type="text"
+                                            value={fcValor}
+                                            onChange={(e) => setFcValor(mascaraMoedaInput(e.target.value))}
+                                            placeholder="0,00"
+                                            style={{ height: '32px', fontSize: '12px', fontWeight: 'bold' }}
+                                          />
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Data Atualização</label>
+                                          <input
+                                            type="text"
+                                            value={fcData}
+                                            onChange={(e) => setFcData(e.target.value)}
+                                            placeholder="DD/MM/AAAA"
+                                            style={{ height: '32px', fontSize: '12px' }}
+                                          />
+                                        </div>
+                                      </div>
+
+                                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                                        <button
+                                          type="button"
+                                          onClick={() => salvarContratacaoPeloCard(card)}
+                                          style={{
+                                            width: 'auto',
+                                            padding: '6px 16px',
+                                            background: editContratCardId ? '#d97706' : '#8B1530',
+                                            color: '#fff',
+                                            border: 'none',
+                                            borderRadius: '6px',
+                                            fontWeight: 'bold',
+                                            fontSize: '12px',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          {editContratCardId
+                                            ? '💾 Salvar Alterações na Proposta'
+                                            : '➕ Adicionar Proposta ao Cliente'}
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {/* Tabela: Registros Salvos deste Cliente */}
+                                    <div style={{ background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '14px 16px' }}>
+                                      <strong style={{ color: '#1e293b', fontSize: '13px', display: 'block', marginBottom: '10px' }}>
+                                        🗂️ REGISTROS SALVOS DESTE CLIENTE EM CONTRATAÇÕES ({opsContratCliente.length})
+                                      </strong>
+                                      {opsContratCliente.length === 0 ? (
+                                        <p style={{ fontSize: '12px', color: '#64748b' }}>
+                                          Nenhuma proposta localizada na base de Contratações para este cliente. Use o formulário acima para inserir!
+                                        </p>
+                                      ) : (
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                          <thead>
+                                            <tr style={{ background: '#f1f5f9', textAlign: 'left' }}>
+                                              <th style={{ padding: '8px' }}>Tipo Operação</th>
+                                              <th style={{ padding: '8px' }}>Porte</th>
+                                              <th style={{ padding: '8px' }}>Valor (R$)</th>
+                                              <th style={{ padding: '8px' }}>Situação ↕️</th>
+                                              <th style={{ padding: '8px' }}>Data</th>
+                                              <th style={{ padding: '8px', textAlign: 'right' }}>Ações</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {opsContratCliente.map((reg) => {
+                                              const isSel = String(reg.id) === String(editContratCardId);
+                                              return (
+                                                <tr
+                                                  key={reg.id}
+                                                  style={{
+                                                    borderBottom: '1px solid #e2e8f0',
+                                                    background: isSel ? '#fffbeb' : 'transparent',
+                                                  }}
+                                                >
+                                                  <td style={{ padding: '8px', fontWeight: 'bold', color: (reg.tipo || '').includes('LCG') ? '#8B1530' : '#1e293b' }}>
+                                                    {reg.tipo}
+                                                  </td>
+                                                  <td style={{ padding: '8px' }}>{reg.porte}</td>
+                                                  <td style={{ padding: '8px', fontWeight: 'bold' }}>R$ {reg.valor}</td>
+                                                  <td style={{ padding: '8px' }}>
+                                                    <span style={{ padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold', background: reg.situacao === 'Contratado' ? '#e6f4ea' : '#e8f0fe', color: reg.situacao === 'Contratado' ? '#137333' : '#1967d2' }}>
+                                                      {reg.situacao}
+                                                    </span>
+                                                  </td>
+                                                  <td style={{ padding: '8px' }}>{reg.data || '-'}</td>
+                                                  <td style={{ padding: '8px', textAlign: 'right', display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => iniciarEdicaoContratacaoNoCard(reg, card)}
+                                                      style={{ width: 'auto', padding: '3px 8px', fontSize: '11px', background: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd', borderRadius: '4px', cursor: 'pointer' }}
+                                                    >
+                                                      ✏️ Editar
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => excluirContratacaoPeloCard(String(reg.id), card)}
+                                                      style={{ width: 'auto', padding: '3px 8px', fontSize: '11px', background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '4px', cursor: 'pointer' }}
+                                                    >
+                                                      🗑️ Excluir
+                                                    </button>
+                                                  </td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* CONTEÚDO DA PÁGINA 3: DESEMBOLSOS DO CLIENTE */}
+                                {abaInternaCard === 'desembolsos' && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                    {/* Resumo das Operações Contratadas Base para Desembolso */}
+                                    <div style={{ background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '12px 16px' }}>
+                                      <strong style={{ color: '#1e293b', fontSize: '12.5px', display: 'block', marginBottom: '8px' }}>
+                                        🏦 OPERAÇÕES CONTRATADAS VINCULADAS AO DESEMBOLSO ({opsDesembCliente.length})
+                                      </strong>
+                                      {opsDesembCliente.length === 0 ? (
+                                        <span style={{ fontSize: '12px', color: '#64748b' }}>
+                                          Nenhuma operação base cadastrada ainda. Ao registrar um evento abaixo, a operação será criada automaticamente!
+                                        </span>
+                                      ) : (
+                                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                                          {opsDesembCliente.map((opB) => (
+                                            <div
+                                              key={opB.id}
+                                              style={{
+                                                background: '#f8fafc',
+                                                border: '1px solid #cbd5e1',
+                                                borderRadius: '6px',
+                                                padding: '6px 12px',
+                                                fontSize: '12px',
+                                              }}
+                                            >
+                                              <b>OP:</b>{' '}
+                                              <input
+                                                type="text"
+                                                value={opB.op}
+                                                onChange={(e) => {
+                                                  const novoNumOp = e.target.value;
+                                                  const novasOps = operacoesBase.map((o) =>
+                                                    o.id === opB.id ? { ...o, op: novoNumOp } : o
+                                                  );
+                                                  onAtualizarOperacoesBase?.(novasOps);
+                                                }}
+                                                style={{ width: '130px', display: 'inline-block', padding: '2px 6px', fontSize: '12px', fontWeight: 'bold', height: '24px', margin: '0 6px' }}
+                                                title="Altere o número da OP diretamente aqui"
+                                              />
+                                              • <b>Valor Contratado:</b> R$ {opB.valor}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Formulário: Registrar Novo Evento / Editar Evento */}
+                                    <div
+                                      style={{
+                                        background: '#fff',
+                                        border: `1.5px solid ${
+                                          editEventoCardId ? '#f59e0b' : '#cbd5e1'
+                                        }`,
+                                        borderRadius: '8px',
+                                        padding: '14px 16px',
+                                      }}
+                                    >
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                                        <strong style={{ color: editContratCardId ? '#b45309' : '#8B1530', fontSize: '13px' }}>
+                                          {editEventoCardId
+                                            ? '📝 EDITANDO EVENTO DE DESEMBOLSO SELECIONADO'
+                                            : '⏱️ REGISTRAR NOVO EVENTO / LIBERAÇÃO DE DESEMBOLSO'}
+                                        </strong>
+                                        {editEventoCardId && (
+                                          <button
+                                            type="button"
+                                            onClick={() => iniciarEdicaoEventoNoCard(undefined, card)}
+                                            style={{ width: 'auto', padding: '4px 10px', fontSize: '11px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '4px', color: '#000'}}
+                                          >
+                                            ✖ Cancelar Edição
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Nº da Operação (OP)</label>
+                                          <input
+                                            type="text"
+                                            value={fdOp}
+                                            onChange={(e) => setFdOp(e.target.value)}
+                                            placeholder="Ex: 192.2026..."
+                                            style={{ height: '32px', fontSize: '12px' }}
+                                          />
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Parcela</label>
+                                          <select value={fdParcela} onChange={(e) => setFdParcela(e.target.value)} style={{ height: '32px', fontSize: '12px' }}>
+                                            <option value="1">1ª Parcela (Ou Única)</option>
+                                            <option value="2">2ª Parcela</option>
+                                            <option value="3">3ª Parcela</option>
+                                            <option value="4">4ª Parcela</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Valor do Desembolso (R$)</label>
+                                          <input
+                                            type="text"
+                                            value={fdValor}
+                                            onChange={(e) => setFdValor(mascaraMoedaInput(e.target.value))}
+                                            placeholder="0,00"
+                                            style={{ height: '32px', fontSize: '12px', fontWeight: 'bold' }}
+                                          />
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Situação do Desembolso</label>
+                                          <select value={fdSituacao} onChange={(e) => setFdSituacao(e.target.value)} style={{ height: '32px', fontSize: '12px' }}>
+                                            <option value="Desembolso Solicitado">Desembolso Solicitado</option>
+                                            <option value="Em Análise">Em Análise</option>
+                                            <option value="Desembolso Pendente">Desembolso Pendente</option>
+                                            <option value="Desembolso Liberado">Desembolso Liberado</option>
+                                            <option value="Desembolso Efetivado">Desembolso Efetivado</option>
+                                            <option value="Finalizado">Finalizado</option>
+                                            <option value="Não Desembolsar">Não Desembolsar</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Data do Evento</label>
+                                          <input
+                                            type="text"
+                                            value={fdData}
+                                            onChange={(e) => setFdData(e.target.value)}
+                                            placeholder="DD/MM/AAAA"
+                                            style={{ height: '32px', fontSize: '12px' }}
+                                          />
+                                        </div>
+                                      </div>
+
+                                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                                        <input
+                                          type="text"
+                                          value={fdObs}
+                                          onChange={(e) => setFdObs(e.target.value)}
+                                          placeholder="Observações da liberação / pendência de notas fiscais..."
+                                          style={{ flex: 1, height: '32px', fontSize: '12px' }}
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => salvarEventoDesembolsoPeloCard(card)}
+                                          style={{
+                                            width: 'auto',
+                                            padding: '6px 16px',
+                                            background: editContratCardId ? '#d97706' : '#8B1530',
+                                            color: '#fff',
+                                            border: 'none',
+                                            borderRadius: '6px',
+                                            fontWeight: 'bold',
+                                            fontSize: '12px',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          {editEventoCardId
+                                            ? '💾 Salvar Evento'
+                                            : '➕ Registrar Evento'}
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {/* Tabela: Histórico de Eventos Registrados */}
+                                    <div style={{ background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '14px 16px' }}>
+                                      <strong style={{ color: '#1e293b', fontSize: '13px', display: 'block', marginBottom: '10px' }}>
+                                        📜 HISTÓRICO DE EVENTOS REGISTRADOS DESTE CLIENTE ({evsDesembCliente.length})
+                                      </strong>
+                                      {evsDesembCliente.length === 0 ? (
+                                        <p style={{ fontSize: '12px', color: '#64748b' }}>
+                                          Nenhum evento de desembolso registrado ainda para este cliente.
+                                        </p>
+                                      ) : (
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                          <thead>
+                                            <tr style={{ background: '#f1f5f9', textAlign: 'left' }}>
+                                              <th style={{ padding: '8px' }}>OP</th>
+                                              <th style={{ padding: '8px' }}>Parcela</th>
+                                              <th style={{ padding: '8px' }}>Valor (R$)</th>
+                                              <th style={{ padding: '8px' }}>Situação</th>
+                                              <th style={{ padding: '8px' }}>Data</th>
+                                              <th style={{ padding: '8px' }}>Observações</th>
+                                              <th style={{ padding: '8px', textAlign: 'right' }}>Ações</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {evsDesembCliente.map((ev) => (
+                                              <tr key={ev.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                                                <td style={{ padding: '8px', fontWeight: 'bold' }}>{ev.op}</td>
+                                                <td style={{ padding: '8px' }}>{ev.parcela}ª</td>
+                                                <td style={{ padding: '8px', fontWeight: 'bold' }}>R$ {ev.valor}</td>
+                                                <td style={{ padding: '8px' }}>
+                                                  <span style={{ padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold', background: '#f3e8ff', color: '#6b21a8' }}>
+                                                    {ev.situacao}
+                                                  </span>
+                                                </td>
+                                                <td style={{ padding: '8px' }}>{ev.data}</td>
+                                                <td style={{ padding: '8px' }}>{ev.obs || '-'}</td>
+                                                <td style={{ padding: '8px', textAlign: 'right', display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => iniciarEdicaoEventoNoCard(ev, card)}
+                                                    style={{ width: 'auto', padding: '3px 8px', fontSize: '11px', background: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd', borderRadius: '4px', cursor: 'pointer' }}
+                                                  >
+                                                    ✏️ Editar
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => excluirEventoDesembolsoPeloCard(String(ev.id), card)}
+                                                    style={{ width: 'auto', padding: '3px 8px', fontSize: '11px', background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '4px', cursor: 'pointer' }}
+                                                  >
+                                                    🗑️ Excluir
+                                                  </button>
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+
+                        {/* ITEM 2: BARRA DE ABAS ESTILO PLANILHA EXCEL NO CENTRO DO RODAPÉ INFERIOR (Apenas com Card Maximizado) */}
+                        {isFullscreen && card.etapa !== 'NOTAS' && (() => {
+                          const qtdContrat = obterContratacoesDoCard(card).length;
+                          const qtdDesemb = obterDesembolsosDoCard(card).evs.length;
+
+                          return (
+                            <div
+                              onMouseDown={(e) => e.stopPropagation()}
+                              style={{
+                                position: 'absolute',
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                height: '42px',
+                                background: '#e2e8f0',
+                                borderTop: '1px solid #cbd5e1',
+                                display: 'flex',
+                                alignItems: 'flex-end',
+                                justifyContent: 'center',
+                                padding: '0 16px',
+                                gap: '6px',
+                                zIndex: 20,
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => setAbaInternaCard('notas')}
+                                style={{
+                                  width: 'auto',
+                                  height: '34px',
+                                  padding: '0 18px',
+                                  borderRadius: '8px 8px 0 0',
+                                  border: '1px solid #cbd5e1',
+                                  borderBottom: abaInternaCard === 'notas' ? '3px solid #8B1530' : 'none',
+                                  background: abaInternaCard === 'notas' ? '#ffffff' : '#f1f5f9',
+                                  color: abaInternaCard === 'notas' ? '#8B1530' : '#475569',
+                                  fontWeight: 'bold',
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  boxShadow: abaInternaCard === 'notas' ? '0 -2px 6px rgba(0,0,0,0.06)' : 'none',
+                                }}
+                              >
+                                📝 1. Notas & Análise
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  iniciarEdicaoContratacaoNoCard(undefined, card);
+                                  setAbaInternaCard('contratacoes');
+                                }}
+                                style={{
+                                  width: 'auto',
+                                  height: '34px',
+                                  padding: '0 18px',
+                                  borderRadius: '8px 8px 0 0',
+                                  border: '1px solid #cbd5e1',
+                                  borderBottom: abaInternaCard === 'contratacoes' ? '3px solid #1967d2' : 'none',
+                                  background: abaInternaCard === 'contratacoes' ? '#ffffff' : '#f1f5f9',
+                                  color: abaInternaCard === 'contratacoes' ? '#1967d2' : '#475569',
+                                  fontWeight: 'bold',
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  boxShadow: abaInternaCard === 'contratacoes' ? '0 -2px 6px rgba(0,0,0,0.06)' : 'none',
+                                }}
+                              >
+                                💼 2. Contratações ({qtdContrat})
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  iniciarEdicaoEventoNoCard(undefined, card);
+                                  setAbaInternaCard('desembolsos');
+                                }}
+                                style={{
+                                  width: 'auto',
+                                  height: '34px',
+                                  padding: '0 18px',
+                                  borderRadius: '8px 8px 0 0',
+                                  border: '1px solid #cbd5e1',
+                                  borderBottom: abaInternaCard === 'desembolsos' ? '3px solid #6b21a8' : 'none',
+                                  background: abaInternaCard === 'desembolsos' ? '#ffffff' : '#f1f5f9',
+                                  color: abaInternaCard === 'desembolsos' ? '#6b21a8' : '#475569',
+                                  fontWeight: 'bold',
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  boxShadow: abaInternaCard === 'desembolsos' ? '0 -2px 6px rgba(0,0,0,0.06)' : 'none',
+                                }}
+                              >
+                                💸 3. Desembolsos ({qtdDesemb})
+                              </button>
+
+                              {/* Botão discreto de alternância rápida no canto inferior direito do Card */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (abaInternaCard === 'notas') {
+                                    iniciarEdicaoContratacaoNoCard(undefined, card);
+                                    setAbaInternaCard('contratacoes');
+                                  } else if (abaInternaCard === 'contratacoes') {
+                                    iniciarEdicaoEventoNoCard(undefined, card);
+                                    setAbaInternaCard('desembolsos');
+                                  } else {
+                                    setAbaInternaCard('notas');
+                                  }
+                                }}
+                                style={{
+                                  position: 'absolute',
+                                  right: '14px',
+                                  bottom: '6px',
+                                  width: 'auto',
+                                  padding: '4px 10px',
+                                  fontSize: '11px',
+                                  fontWeight: 'bold',
+                                  background: '#fff',
+                                  color: '#334155',
+                                  border: '1px solid #cbd5e1',
+                                  borderRadius: '14px',
+                                  cursor: 'pointer',
+                                }}
+                                title="Alternar rapidamente entre as páginas internas do Card"
+                              >
+                                📑 Próxima Guia ➔
+                              </button>
+                            </div>
+                          );
+                        })()}
 
                         {!isFullscreen && (
                           <button
