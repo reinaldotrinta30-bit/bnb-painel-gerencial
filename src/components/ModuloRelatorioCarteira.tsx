@@ -116,6 +116,7 @@ export default function ModuloRelatorioCarteira({
           STORAGE_KEY_PARAMETROS_CARTEIRA,
           JSON.stringify(novo)
         );
+        window.dispatchEvent(new Event('bnb_parametros_carteira_atualizados'));
       }
       return novo;
     });
@@ -312,6 +313,7 @@ export default function ModuloRelatorioCarteira({
           STORAGE_KEY_PARAMETROS_CARTEIRA,
           JSON.stringify(novo)
         );
+        window.dispatchEvent(new Event('bnb_parametros_carteira_atualizados'));
       }
       return novo;
     });

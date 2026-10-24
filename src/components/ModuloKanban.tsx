@@ -22,6 +22,7 @@ import {
   aplicarMascaraMoedaInput,
   aplicarMascaraDataBR,
   classificarCategoriaPorte,
+  htmlKanbanParaTextoLimpo,
 } from '@/lib/utils';
 import {
   mapearEtapaKanbanParaSituacaoContratacao,
@@ -158,6 +159,7 @@ export default function ModuloKanban({
   onInlineEditCabecalho,
 }: ModuloKanbanProps) {
   const [termoBusca, setTermoBusca] = useState('');
+  const [incluirArquivadosNaBusca, setIncluirArquivadosNaBusca] = useState(false);
   const [filtroCor, setFiltroCor] = useState<'TODOS' | StatusCorKanban>('TODOS');
   const [filtroEtapa, setFiltroEtapa] = useState<'TODOS' | 'ARQUIVADOS' | EtapaKanban>('TODOS');
 
@@ -340,32 +342,39 @@ const aplicarHighlight = useCallback((cor: string) => {
     }, 120);
   }, [cardDestaqueExternoId, cards, onLimparDestaqueExterno]);
 
+  // ITEM 2: Motor de Histórico (Desfazer / Refazer) 100% Sincronizado e Imune a Closure Stale
+  const histRef = useRef<{ snaps: string[]; ptr: number }>({
+    snaps: [],
+    ptr: -1,
+  });
+
+  // Inicializa o histórico assim que os cards reais são carregados pela primeira vez
   useEffect(() => {
-    const trintaDiasMs = 30 * 24 * 60 * 60 * 1000;
-    const agora = Date.now();
-    let expurgou = false;
+    if (histRef.current.snaps.length === 0 && cards.length > 0) {
+      const trintaDiasMs = 30 * 24 * 60 * 60 * 1000;
+      const agora = Date.now();
+      let expurgou = false;
 
-    const limpos = cards.filter((c) => {
-      if (c.etapa === 'NOTAS' && c.statusCor === 'verde' && c.dataConclusaoNota) {
-        if (agora - c.dataConclusaoNota >= trintaDiasMs) {
-          expurgou = true;
-          return false;
+      const limpos = cards.filter((c) => {
+        if (c.etapa === 'NOTAS' && c.statusCor === 'verde' && c.dataConclusaoNota) {
+          if (agora - c.dataConclusaoNota >= trintaDiasMs) {
+            expurgou = true;
+            return false;
+          }
         }
+        return true;
+      });
+
+      if (expurgou) {
+        onAtualizarCards(limpos);
       }
-      return true;
-    });
 
-    if (expurgou) {
-      onAtualizarCards(limpos);
-    }
-
-    if (historico.length === 0 && limpos.length >= 0) {
-      const snap = JSON.stringify(limpos);
-      setHistorico([snap]);
+      const snapInicial = JSON.stringify(limpos);
+      histRef.current = { snaps: [snapInicial], ptr: 0 };
+      setHistorico([snapInicial]);
       setPonteiroHist(0);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cards, onAtualizarCards]);
 
   const salvarComHistorico = useCallback(
     (novaLista: CardKanban[], pularHistorico = false, cardParaPropagar?: CardKanban) => {
@@ -378,36 +387,42 @@ const aplicarHighlight = useCallback((cor: string) => {
 
       if (!pularHistorico) {
         const snap = JSON.stringify(ordenada);
-        setHistorico((prev) => {
-          const cortado = prev.slice(0, ponteiroHist + 1);
-          if (cortado[cortado.length - 1] === snap) return cortado;
+        const { snaps, ptr } = histRef.current;
+        const cortado = snaps.slice(0, ptr + 1);
+        if (cortado[cortado.length - 1] !== snap) {
           const novo = [...cortado, snap];
           if (novo.length > 50) novo.shift();
-          setPonteiroHist(novo.length - 1);
-          return novo;
-        });
+          const novoPtr = novo.length - 1;
+          histRef.current = { snaps: novo, ptr: novoPtr };
+          setHistorico(novo);
+          setPonteiroHist(novoPtr);
+        }
       }
     },
-    [onAtualizarCards, onCardSincronizadoAlterado, ponteiroHist]
+    [onAtualizarCards, onCardSincronizadoAlterado]
   );
 
   const desfazer = useCallback(() => {
-    if (ponteiroHist > 0) {
-      const novoPonteiro = ponteiroHist - 1;
-      const restaurado = JSON.parse(historico[novoPonteiro]) as CardKanban[];
+    const { snaps, ptr } = histRef.current;
+    if (ptr > 0) {
+      const novoPonteiro = ptr - 1;
+      const restaurado = JSON.parse(snaps[novoPonteiro]) as CardKanban[];
+      histRef.current.ptr = novoPonteiro;
       setPonteiroHist(novoPonteiro);
       onAtualizarCards(restaurado);
     }
-  }, [ponteiroHist, historico, onAtualizarCards]);
+  }, [onAtualizarCards]);
 
   const refazer = useCallback(() => {
-    if (ponteiroHist < historico.length - 1) {
-      const novoPonteiro = ponteiroHist + 1;
-      const restaurado = JSON.parse(historico[novoPonteiro]) as CardKanban[];
+    const { snaps, ptr } = histRef.current;
+    if (ptr < snaps.length - 1) {
+      const novoPonteiro = ptr + 1;
+      const restaurado = JSON.parse(snaps[novoPonteiro]) as CardKanban[];
+      histRef.current.ptr = novoPonteiro;
       setPonteiroHist(novoPonteiro);
       onAtualizarCards(restaurado);
     }
-  }, [ponteiroHist, historico, onAtualizarCards]);
+  }, [onAtualizarCards]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -698,8 +713,171 @@ const aplicarHighlight = useCallback((cor: string) => {
   // ITEM 2: ABAS ESTILO PLANILHA EXCEL NO RODAPÉ DO CARD MAXIMIZADO
   // =========================================================================
   const [abaInternaCard, setAbaInternaCard] = useState<
-    'notas' | 'contratacoes' | 'desembolsos'
+    'notas' | 'contratacoes' | 'desembolsos' | 'parecer'
   >('notas');
+
+  // ITEM 4: Estados e Motor de Regras do Gerador de Pareceres Técnicos BNB
+  const [modeloParecer, setModeloParecer] = useState<
+    'APROVACAO_S522' | 'DEVOLUCAO_PENDENCIAS' | 'CONTRATACAO' | 'DESEMBOLSO'
+  >('APROVACAO_S522');
+  const [textoParecerEditavel, setTextoParecerEditavel] = useState('');
+
+  const gerarParecerTecnicoDoCard = useCallback(
+    (
+      card: CardKanban,
+      modelo: 'APROVACAO_S522' | 'DEVOLUCAO_PENDENCIAS' | 'CONTRATACAO' | 'DESEMBOLSO'
+    ) => {
+      const opsCli = obterContratacoesDoCard(card);
+      const { ops: opsDesemb, evs: evsDesemb } = obterDesembolsosDoCard(card);
+      const extraidos = extrairCamposLivresDoHtmlKanban(
+        card.texto,
+        card.textoPuro
+      );
+
+      const nomeCli = (
+        card.clienteVinculado ||
+        opsCli[0]?.cliente ||
+        'CLIENTE NÃO IDENTIFICADO'
+      ).toUpperCase();
+      const cpfCli = card.cpfVinculado || opsCli[0]?.cpf || 'Não informado';
+      const porteCli = (
+        card.porteVinculado ||
+        opsCli[0]?.porte ||
+        'PRONAF V'
+      ).toUpperCase();
+      const projCli =
+        Array.from(
+          new Set(opsCli.map((o) => (o.projetista || '').toUpperCase()).filter(Boolean))
+        ).join(' / ') || 'Não informado';
+
+      const opsDerivadas = opsCli.filter((o) => {
+        const t = (o.tipo || '').toUpperCase().trim();
+        return t !== 'LCGH' && t !== 'LCGA';
+      });
+      const opsLimites = opsCli.filter((o) => {
+        const t = (o.tipo || '').toUpperCase().trim();
+        return t === 'LCGH' || t === 'LCGA';
+      });
+
+      const linhasOpsTexto =
+        opsDerivadas.length > 0
+          ? opsDerivadas
+              .map(
+                (o, i) =>
+                  `  • OP${i + 1} - ${o.tipo.toUpperCase()}: R$ ${o.valor}${
+                    o.programa ? ` | Programa: ${o.programa}` : ''
+                  } (Status: ${o.situacao})`
+              )
+              .join('\n')
+          : `  • ${(card.tipoOpVinculado || 'Operação Rural').toUpperCase()}: R$ ${
+              card.valorVinculado || '0,00'
+            }`;
+
+      // Regra Automática de Garantia
+      let blocoGarantia = '';
+      if (porteCli === 'PRONAF A') {
+        blocoGarantia =
+          '• GARANTIA: Operação enquadrada no PRONAF Grupo A, dispensada de exigência de garantias reais ou fidejussórias adicionais conforme normativo vigente.';
+      } else if (opsLimites.length > 0) {
+        blocoGarantia = opsLimites
+          .map(
+            (l) =>
+              `• GARANTIA REAL (${l.tipo.toUpperCase()}): Amparada por processo de limite no valor de R$ ${
+                l.valor
+              } (${l.lcgSituacao || l.situacaoDetalhada || l.situacao}).`
+          )
+          .join('\n');
+      } else {
+        const regComAval = opsCli.find((o) => o.avalistaNome || o.avalistaCpf);
+        if (regComAval) {
+          blocoGarantia = `• GARANTIA FIDEJUSSÓRIA (AVAL): Prestada por ${
+            regComAval.avalistaNome || 'Avalista indicado'
+          }${regComAval.avalistaCpf ? `, CPF nº ${regComAval.avalistaCpf}` : ''}.`;
+        } else {
+          blocoGarantia =
+            '• GARANTIA: Conforme minuta e proposta técnica vinculada ao processo.';
+        }
+      }
+
+      const sitTexto = htmlKanbanParaTextoLimpo(
+        extraidos.situacaoDetalhada || card.situacaoDetalhadaVinculada || '-'
+      );
+      const pendTexto = htmlKanbanParaTextoLimpo(
+        extraidos.pendenciasObs || card.obsVinculada || '-'
+      );
+      const analiseTexto = htmlKanbanParaTextoLimpo(
+        extraidos.espacoAnalise || card.espacoAnaliseVinculado || '-'
+      );
+
+      const titulosModelo: Record<typeof modelo, string> = {
+        APROVACAO_S522:
+          'PARECER DE CONFORMIDADE E ENCAMINHAMENTO À CENTRAL DE CRÉDITO (PCE / S522)',
+        DEVOLUCAO_PENDENCIAS:
+          'DESPACHO TÉCNICO DE PENDÊNCIAS E SOLICITAÇÃO DE REGULARIZAÇÃO',
+        CONTRATACAO:
+          'PARECER DE CONFORMIDADE PARA EMISSÃO E FORMALIZAÇÃO DE CONTRATO',
+        DESEMBOLSO:
+          'PARECER DE CONFORMIDADE PARA LIBERAÇÃO DE DESEMBOLSO RURAL',
+      };
+
+      let conclusaoPadrao = '';
+      if (modelo === 'APROVACAO_S522') {
+        conclusaoPadrao =
+          'CONCLUSÃO / ENCAMINHAMENTO:\nApós verificação prévia da documentação cadastral, capacidade produtiva e garantias vinculadas na Agência, encaminha-se a proposta para análise técnica e deliberação pela Central de Crédito (S522).';
+      } else if (modelo === 'DEVOLUCAO_PENDENCIAS') {
+        conclusaoPadrao =
+          'CONCLUSÃO / PROVIDÊNCIAS:\nSolicita-se ao projetista/proponente o saneamento integral das pendências listadas no item 3 deste despacho para prosseguimento da análise e contratação.';
+      } else if (modelo === 'CONTRATACAO') {
+        conclusaoPadrao =
+          'CONCLUSÃO / FORMALIZAÇÃO:\nVerificada a conformidade da aprovação e das condicionantes prévias, o processo encontra-se apto para emissão do instrumento de crédito, coleta de assinaturas e registro de garantias.';
+      } else {
+        const resumoDesemb =
+          evsDesemb.length > 0
+            ? evsDesemb
+                .map(
+                  (e) =>
+                    `  • OP ${e.op} (${e.parcela}ª Parcela): R$ ${e.valor} — ${e.situacao} (${e.data})`
+                )
+                .join('\n')
+            : opsDesemb
+                .map((o) => `  • OP ${o.op}: Valor Contratado R$ ${o.valor}`)
+                .join('\n');
+        conclusaoPadrao = `DADOS DE LIBERAÇÃO / DESEMBOLSO:\n${
+          resumoDesemb || '  • Aguardando detalhamento da parcela.'
+        }\n\nCONCLUSÃO / LIBERAÇÃO:\nVerificada a regularidade da aplicação/comprovantes da etapa, opina-se favoravelmente ao processamento do desembolso conforme valores discriminados.`;
+      }
+
+      const corpoParecer =
+        `BANCO DO NORDESTE DO BRASIL S.A. - BNB\n` +
+        `${titulosModelo[modelo]}\n` +
+        `Data de Emissão: ${getHojeBR()}\n` +
+        `====================================================================\n\n` +
+        `1. IDENTIFICAÇÃO DO PROPONENTE E OPERAÇÕES:\n` +
+        `• Cliente: ${nomeCli} | CPF: ${cpfCli}\n` +
+        `• Porte / Enquadramento: ${porteCli} | Assistência Técnica: ${projCli}\n` +
+        `• Operações Vinculadas:\n${linhasOpsTexto}\n` +
+        `${blocoGarantia}\n\n` +
+        `2. SITUAÇÃO ATUAL E APONTAMENTOS DE ANÁLISE / CONFORMIDADE:\n` +
+        `${sitTexto !== '-' && sitTexto !== '' ? sitTexto : '• Em tramitação regular.'}\n` +
+        `${
+          analiseTexto !== '-' && analiseTexto !== ''
+            ? `\n[CONFORMIDADE / CÁLCULOS E VERIFICAÇÕES S400/GED]:\n${analiseTexto}\n`
+            : ''
+        }\n` +
+        `3. PENDÊNCIAS / CONDICIONANTES OBSERVADAS:\n` +
+        `${
+          pendTexto !== '-' && pendTexto !== ''
+            ? pendTexto
+            : '• Sem pendências impeditivas registradas no momento.'
+        }\n\n` +
+        `4. ${conclusaoPadrao}`;
+
+      setModeloParecer(modelo);
+      setTextoParecerEditavel(corpoParecer);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [contratacoes, operacoesBase, eventos]
+  );
 
   // Estados do Editor de Contratação na Página 2 do Card
   const [editContratCardId, setEditContratCardId] = useState<string | null>(null);
@@ -884,7 +1062,14 @@ const aplicarHighlight = useCallback((cor: string) => {
       setFdObs(ev.obs || '');
     } else {
       setEditEventoCardId(null);
-      setFdOp(ops[0]?.op || card?.opDesembolsoVinculada || 'PENDENTE-OP');
+      const derivs = obterContratacoesDoCard(card || ({} as CardKanban)).filter(
+  (o) => !['LCGH', 'LCGA'].includes((o.tipo || '').toUpperCase().trim())
+);
+const opPadrao =
+  derivs.length > 0
+    ? `OP1 (${derivs[0].tipo})`
+    : 'OP1 (Investimento)';
+setFdOp(ops[0]?.op || card?.opDesembolsoVinculada || opPadrao);
       setFdParcela('1');
       setFdValor(ops[0]?.valor || card?.valorVinculado || '');
       setFdSituacao(card?.situacaoDesembolsoVinculada || 'Desembolso Solicitado');
@@ -904,7 +1089,13 @@ const aplicarHighlight = useCallback((cor: string) => {
       ops[0]?.cliente ||
       'CLIENTE'
     ).toUpperCase();
-    const opNumero = fdOp.trim() || ops[0]?.op || 'PENDENTE-OP';
+    const derivs = obterContratacoesDoCard(card).filter(
+  (o) => !['LCGH', 'LCGA'].includes((o.tipo || '').toUpperCase().trim())
+);
+const opNumero =
+  fdOp.trim() ||
+  ops[0]?.op ||
+  `OP${ ops.length + 1 } (${derivs[0]?.tipo || 'Investimento'})`;
 
     // Se ainda não existir Operação Base de Desembolso para este cliente, cria automaticamente
     let opBaseVinc = ops.find((o) => o.op === opNumero) || ops[0];
@@ -1136,6 +1327,64 @@ const aplicarHighlight = useCallback((cor: string) => {
     { icone: '🔔', desc: 'Lembrete' },
   ];
 
+  // ITEM 2: Lista completa das 11 situações oficiais de Desembolso
+  const SITUACOES_DESEMBOLSO_OFICIAIS = [
+    'Sem Registro',
+    'Solicitar Documentação',
+    'Verificar Conformidade',
+    'Solicitar Desembolso',
+    'Desembolso Solicitado',
+    'Desembolso Pendente',
+    'Desembolso na Vinculada',
+    'Disponível para C/C',
+    'Desembolso Efetivado',
+    'Não Desembolsar',
+    'Finalizado',
+  ];
+
+  // ITEM 9.1: A Tag de Desembolso SÓ deve aparecer se:
+  // 1) Estiver nas etapas DESEMBOLSOS ou ACOMPANHAMENTO
+  // 2) Estiver com situação da contratação = "Contratado"
+  // 3) Possuir pelo menos uma Operação Derivada (não aparece se o cliente tiver apenas limite LCGH / LCGA!)
+  const cardElegivelParaTagDesembolso = (card: CardKanban): boolean => {
+    if (card.etapa !== 'DESEMBOLSOS' && card.etapa !== 'ACOMPANHAMENTO') {
+      return false;
+    }
+    const opsCli = obterContratacoesDoCard(card);
+    const temContratado =
+      card.situacaoVinculada === 'Contratado' ||
+      opsCli.some((o) => o.situacao === 'Contratado');
+    if (!temContratado) return false;
+
+    if (opsCli.length > 0) {
+      return opsCli.some((o) => {
+        const t = (o.tipo || '').toUpperCase().trim();
+        return t !== 'LCGH' && t !== 'LCGA';
+      });
+    }
+
+    const tipoCard = (card.tipoOpVinculado || '').toUpperCase();
+    const PartesTipo = tipoCard
+      .split('+')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (PartesTipo.length > 0) {
+      return PartesTipo.some((t) => t !== 'LCGH' && t !== 'LCGA');
+    }
+
+    const puro = (card.textoPuro || card.texto || '').toUpperCase();
+    const temDerivadaNoTexto =
+      puro.includes('INVESTIMENTO:') ||
+      puro.includes('CUSTEIO:') ||
+      puro.includes('RENOV. CUSTEIO:') ||
+      puro.includes('RENOVAÇÃO') ||
+      puro.includes('CARTÃO BNB:');
+    const temApenasLimiteNoTexto =
+      (puro.includes('LCGH:') || puro.includes('LCGA:')) && !temDerivadaNoTexto;
+
+    return !temApenasLimiteNoTexto;
+  };
+
   // ITEM 2 e ITEM 10: Altera a Situação da Contratação pela tarja sem sujar o texto livre da Situação!
   const alterarSituacaoRigidaPelaTarja = (
     card: CardKanban,
@@ -1163,11 +1412,15 @@ const aplicarHighlight = useCallback((cor: string) => {
     salvarComHistorico(novaLista, false, atualizado);
   };
 
-  // ITEM 7: Altera a Situação do Desembolso pela 2ª Tarja e sincroniza com a aba de Desembolsos!
+  // ITEM 9.1, 9.2 e 9.3: Aciona o motor de Desembolso que verifica múltiplas OPs, pergunta o valor quando necessário e grava no Histórico!
   const alterarSituacaoDesembolsoPelaTarja = (
     card: CardKanban,
     novaSitDesemb: string
   ) => {
+    if (onAlterarSituacaoDesembolsoPeloKanban) {
+      onAlterarSituacaoDesembolsoPeloKanban(card, novaSitDesemb);
+      return;
+    }
     const hoje = getHojeISO();
     const novaEtapa: EtapaKanban =
       novaSitDesemb === 'Finalizado' || novaSitDesemb === 'Desembolso Efetivado'
@@ -1183,7 +1436,8 @@ const aplicarHighlight = useCallback((cor: string) => {
           novaSitDesemb === 'Não Desembolsar'
         ? 'vermelho'
         : novaSitDesemb === 'Desembolso Efetivado' ||
-          novaSitDesemb === 'Finalizado'
+          novaSitDesemb === 'Finalizado' ||
+          novaSitDesemb === 'Disponível para C/C'
         ? 'verde'
         : 'azul';
 
@@ -1196,7 +1450,6 @@ const aplicarHighlight = useCallback((cor: string) => {
     };
     const novaLista = cards.map((c) => (c.id === card.id ? atualizado : c));
     salvarComHistorico(novaLista, false);
-    onAlterarSituacaoDesembolsoPeloKanban?.(atualizado, novaSitDesemb);
   };
 
   // ITEM 1: Interceptador Inteligente de Colagem (Smart Paste)
@@ -1312,7 +1565,7 @@ const aplicarHighlight = useCallback((cor: string) => {
 
     salvarComHistorico(
       novos,
-      true,
+      false,
       cardModificado?.propostaIdVinculada ? cardModificado : undefined
     );
   };
@@ -1559,10 +1812,11 @@ const aplicarHighlight = useCallback((cor: string) => {
     if (filtroEtapa === 'ARQUIVADOS') {
       if (!isArquivado) return false;
     } else {
-      if (isArquivado && !temBuscaTextoAtiva && filtroCor !== 'roxo') {
-        return false;
-      }
-      if (filtroEtapa !== 'TODOS' && card.etapa !== filtroEtapa) {
+      if (
+        isArquivado &&
+        !(temBuscaTextoAtiva && incluirArquivadosNaBusca) &&
+        filtroCor !== 'roxo'
+      ) {
         return false;
       }
     }
@@ -1587,15 +1841,13 @@ const aplicarHighlight = useCallback((cor: string) => {
     return true;
   };
 
+  // ITEM 1.2: Filtrar por Porte NÃO esconde as colunas vazias! Mantém a visão panorâmica de todas as etapas do processo!
   const modoFiltroCruzadoAtivo =
     temBuscaTextoAtiva ||
     filtroCor !== 'TODOS' ||
-    filtroEtapa === 'ARQUIVADOS' ||
-    filtroPortesKanban.length < 4;
+    filtroEtapa === 'ARQUIVADOS';
 
-  // ITEM 5: Conta quantas colunas possuem resultados visíveis no momento.
-  // Se apenas 1 coluna tiver resultados (ex: numa busca por nome ou ao selecionar 1 guia),
-  // ela ganha automaticamente a classe .focus-single (cards largos com altura vertical completa)!
+  // Só ativa o modo foco de coluna única se o usuário clicou em 1 etapa específica ou pesquisou texto/cor que restou em 1 coluna
   const etapasComCardsVisiveis = ORDEM_ETAPAS.filter((et) =>
     cards.some((c) => c.etapa === et && cardPassaNoFiltro(c))
   );
@@ -1799,20 +2051,53 @@ const aplicarHighlight = useCallback((cor: string) => {
 
         {/* Busca Global, Filtro de Cor e Botões Desfazer/Refazer */}
         <div style={{ display: 'flex', flex: 1, minWidth: '250px', maxWidth: '420px', margin: '0 10px', alignItems: 'center', gap: '8px', position: 'relative' }}>
-          <input
-            type="text"
-            value={termoBusca}
-            onChange={(e) => setTermoBusca(e.target.value)}
-            placeholder="🔍 Pesquisar tarefa, cliente, nota ou CPF..."
-            style={{
-              flex: 1,
-              padding: '8px 15px',
-              border: '1px solid #ccc',
-              borderRadius: '20px',
-              fontSize: '12px',
-              background: '#f9f9f9',
-            }}
-          />
+          <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
+            <input
+              type="text"
+              value={termoBusca}
+              onChange={(e) => setTermoBusca(e.target.value)}
+              placeholder="🔍 Pesquisar tarefa, cliente, nota ou CPF..."
+              style={{
+                width: '100%',
+                padding: '7px 72px 7px 14px',
+                border: '1px solid #ccc',
+                borderRadius: '20px',
+                fontSize: '11.5px',
+                background: '#f9f9f9',
+                height: '32px',
+              }}
+            />
+            <label
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'absolute',
+                right: '8px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '3px',
+                fontSize: '9.5px',
+                fontWeight: 'bold',
+                color: incluirArquivadosNaBusca ? '#6b21a8' : '#64748b',
+                background: incluirArquivadosNaBusca ? '#f3e8ff' : '#eef2f6',
+                border: `1px solid ${incluirArquivadosNaBusca ? '#d8b4fe' : '#cbd5e1'}`,
+                padding: '2px 6px',
+                borderRadius: '10px',
+                cursor: 'pointer',
+                margin: 0,
+                userSelect: 'none',
+                lineHeight: 1,
+              }}
+              title="Se marcado, a busca por texto também incluirá os cards Arquivados (roxos)"
+            >
+              <input
+                type="checkbox"
+                checked={incluirArquivadosNaBusca}
+                onChange={(e) => setIncluirArquivadosNaBusca(e.target.checked)}
+                style={{ width: '10px', height: '10px', margin: 0, cursor: 'pointer', accentColor: '#7e22ce' }}
+              />
+              📦 Arq.
+            </label>
+          </div>
 
           <button
             onClick={(e) => {
@@ -1932,11 +2217,12 @@ const aplicarHighlight = useCallback((cor: string) => {
           )}
         </div>
 
-        {/* Botões de Filtro de Coluna */}
-        <div className="kanban-filter-controls">
+        {/* ITEM 3: Botões de Filtro de Coluna Compactados para melhor alocação de espaço */}
+        <div className="kanban-filter-controls" style={{ gap: '4px' }}>
           <button
             className={`btn-filter-kanban ${filtroEtapa === 'TODOS' ? 'active' : ''}`}
             onClick={() => setFiltroEtapa('TODOS')}
+            style={{ padding: '4px 8px', fontSize: '10.5px' }}
           >
             👁️ TODAS
           </button>
@@ -1948,6 +2234,7 @@ const aplicarHighlight = useCallback((cor: string) => {
                 setFiltroEtapa(et);
                 if (et === 'NOTAS') setNotasMinimizadas(false);
               }}
+              style={{ padding: '4px 8px', fontSize: '10.5px' }}
             >
               {et === 'NOTAS' ? '📌 NOTAS' : et === 'S522' ? 'S522/CENTRAL' : et}
             </button>
@@ -1962,8 +2249,8 @@ const aplicarHighlight = useCallback((cor: string) => {
               color: filtroEtapa === 'ARQUIVADOS' ? '#fff' : '#6b21a8',
               background:
                 filtroEtapa === 'ARQUIVADOS' ? '#7e22ce' : '#faf5ff',
-              padding: '6px 10px',
-              fontSize: '13px',
+              padding: '4px 8px',
+              fontSize: '10.5px',
             }}
             title={`Pasta de Clientes Arquivados (${totalArquivados})`}
           >
@@ -1978,14 +2265,8 @@ const aplicarHighlight = useCallback((cor: string) => {
           const cardsDaColuna = cards.filter(
             (c) => c.etapa === etapa && cardPassaNoFiltro(c)
           );
-          // Em modo normal, o contador do topo da coluna ignora os arquivados para não confundir
-          const totalRealColuna = cards.filter(
-            (c) =>
-              c.etapa === etapa &&
-              (filtroEtapa === 'ARQUIVADOS'
-                ? c.statusCor === 'roxo'
-                : c.statusCor !== 'roxo')
-          ).length;
+          // Contador da coluna reflete os cards visíveis (respeitando o filtro de Porte ativo!)
+          const totalRealColuna = cardsDaColuna.length;
 
           let mostrarColuna = true;
           if (
@@ -2002,17 +2283,16 @@ const aplicarHighlight = useCallback((cor: string) => {
 
           const configCol = TITULOS_COLUNAS[etapa];
           const isNotas = etapa === 'NOTAS';
+          // ITEM 1.1: Permite minimizar a coluna de NOTAS mesmo quando há filtros ativos!
           const isMinimized =
             isNotas &&
             notasMinimizadas &&
-            !modoFiltroCruzadoAtivo &&
-            filtroEtapa === 'TODOS';
+            filtroEtapa !== 'NOTAS';
 
-          // ITEM 5: Fica em modo expandido vertical (.focus-single) se o usuário clicou na guia da coluna
-          // OU se uma pesquisa/filtro deixou apenas esta coluna com resultados na tela!
+          // ITEM 1.2: Só expande em coluna única se o usuário clicou na guia de uma etapa ou se há busca de texto/cor com 1 coluna restante
           const isFocusSingle =
             (filtroEtapa === etapa && !modoFiltroCruzadoAtivo) ||
-            etapasComCardsVisiveis.length === 1;
+            (modoFiltroCruzadoAtivo && etapasComCardsVisiveis.length === 1);
 
           return (
             <React.Fragment key={etapa}>
@@ -2485,14 +2765,12 @@ const aplicarHighlight = useCallback((cor: string) => {
                                       </option>
                                     </select>
 
-                                    {/* ITEM 7: Segunda Tarja (Situação do Desembolso) ao lado direito quando Contratado / Desembolso */}
-                                    {(card.situacaoVinculada === 'Contratado' ||
-                                      card.etapa === 'DESEMBOLSOS' ||
-                                      card.etapa === 'ACOMPANHAMENTO') && (
+                                    {/* ITEM 2 e 9.1: Segunda Tarja (11 Situações de Desembolso) — Só aparece se tiver OP Derivada Contratada em Desembolsos/Acompanhamento! */}
+                                    {cardElegivelParaTagDesembolso(card) && (
                                       <select
                                         value={
                                           card.situacaoDesembolsoVinculada ||
-                                          'Desembolso Solicitado'
+                                          'Sem Registro'
                                         }
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onChange={(e) =>
@@ -2513,51 +2791,57 @@ const aplicarHighlight = useCallback((cor: string) => {
                                             card.situacaoDesembolsoVinculada ===
                                               'Desembolso Efetivado' ||
                                             card.situacaoDesembolsoVinculada ===
-                                              'Finalizado'
+                                              'Finalizado' ||
+                                            card.situacaoDesembolsoVinculada ===
+                                              'Disponível para C/C'
                                               ? '#dcfce7'
                                               : card.situacaoDesembolsoVinculada ===
                                                   'Desembolso Pendente' ||
                                                 card.situacaoDesembolsoVinculada ===
                                                   'Não Desembolsar'
                                               ? '#fee2e2'
+                                              : card.situacaoDesembolsoVinculada ===
+                                                  'Desembolso na Vinculada' ||
+                                                card.situacaoDesembolsoVinculada ===
+                                                  'Desembolso Solicitado' ||
+                                                card.situacaoDesembolsoVinculada ===
+                                                  'Solicitar Desembolso'
+                                              ? '#fef7e0'
                                               : '#f3e8ff',
                                           color:
                                             card.situacaoDesembolsoVinculada ===
                                               'Desembolso Efetivado' ||
                                             card.situacaoDesembolsoVinculada ===
-                                              'Finalizado'
+                                              'Finalizado' ||
+                                            card.situacaoDesembolsoVinculada ===
+                                              'Disponível para C/C'
                                               ? '#15803d'
                                               : card.situacaoDesembolsoVinculada ===
                                                   'Desembolso Pendente' ||
                                                 card.situacaoDesembolsoVinculada ===
                                                   'Não Desembolsar'
                                               ? '#b91c1c'
+                                              : card.situacaoDesembolsoVinculada ===
+                                                  'Desembolso na Vinculada' ||
+                                                card.situacaoDesembolsoVinculada ===
+                                                  'Desembolso Solicitado' ||
+                                                card.situacaoDesembolsoVinculada ===
+                                                  'Solicitar Desembolso'
+                                              ? '#b06000'
                                               : '#6b21a8',
                                           border: '1px solid rgba(107,33,168,0.25)',
                                         }}
-                                        title="Situação do Desembolso (Sincronizada com a aba Desembolsos)"
+                                        title="Situação do Desembolso (Registra automaticamente no Histórico da aba Desembolsos)"
                                       >
-                                        <option value="Desembolso Solicitado" style={{ background: '#fff', color: '#333' }}>
-                                          💸 Desemb. Solicitado
-                                        </option>
-                                        <option value="Em Análise" style={{ background: '#fff', color: '#333' }}>
-                                          💸 Desemb. Em Análise
-                                        </option>
-                                        <option value="Desembolso Pendente" style={{ background: '#fff', color: '#333' }}>
-                                          💸 Desemb. Pendente
-                                        </option>
-                                        <option value="Desembolso Liberado" style={{ background: '#fff', color: '#333' }}>
-                                          💸 Desemb. Liberado
-                                        </option>
-                                        <option value="Desembolso Efetivado" style={{ background: '#fff', color: '#333' }}>
-                                          💸 Desemb. Efetivado
-                                        </option>
-                                        <option value="Finalizado" style={{ background: '#fff', color: '#333' }}>
-                                          💸 Finalizado
-                                        </option>
-                                        <option value="Não Desembolsar" style={{ background: '#fff', color: '#333' }}>
-                                          💸 Não Desembolsar
-                                        </option>
+                                        {SITUACOES_DESEMBOLSO_OFICIAIS.map((sit) => (
+                                          <option
+                                            key={sit}
+                                            value={sit}
+                                            style={{ background: '#fff', color: '#333' }}
+                                          >
+                                            💸 {sit}
+                                          </option>
+                                        ))}
                                       </select>
                                     )}
                                   </div>
@@ -2944,14 +3228,12 @@ const aplicarHighlight = useCallback((cor: string) => {
                               </option>
                             </select>
 
-                            {/* ITEM 7: Segunda Tarja compacta ao lado direito quando Contratado / Desembolso */}
-                            {(card.situacaoVinculada === 'Contratado' ||
-                              card.etapa === 'DESEMBOLSOS' ||
-                              card.etapa === 'ACOMPANHAMENTO') && (
+                            {/* ITEM 2 e 9.1: Segunda Tarja compacta (11 Situações) — Apenas para Derivada Contratada em Desembolsos/Acompanhamento */}
+                            {cardElegivelParaTagDesembolso(card) && (
                               <select
                                 value={
                                   card.situacaoDesembolsoVinculada ||
-                                  'Desembolso Solicitado'
+                                  'Sem Registro'
                                 }
                                 onChange={(e) =>
                                   alterarSituacaoDesembolsoPelaTarja(
@@ -2961,7 +3243,7 @@ const aplicarHighlight = useCallback((cor: string) => {
                                 }
                                 style={{
                                   width: 'auto',
-                                  maxWidth: '140px',
+                                  maxWidth: '150px',
                                   padding: '1px 5px',
                                   fontSize: '9px',
                                   fontWeight: 'bold',
@@ -2973,51 +3255,57 @@ const aplicarHighlight = useCallback((cor: string) => {
                                     card.situacaoDesembolsoVinculada ===
                                       'Desembolso Efetivado' ||
                                     card.situacaoDesembolsoVinculada ===
-                                      'Finalizado'
+                                      'Finalizado' ||
+                                    card.situacaoDesembolsoVinculada ===
+                                      'Disponível para C/C'
                                       ? '#dcfce7'
                                       : card.situacaoDesembolsoVinculada ===
                                           'Desembolso Pendente' ||
                                         card.situacaoDesembolsoVinculada ===
                                           'Não Desembolsar'
                                       ? '#fee2e2'
+                                      : card.situacaoDesembolsoVinculada ===
+                                          'Desembolso na Vinculada' ||
+                                        card.situacaoDesembolsoVinculada ===
+                                          'Desembolso Solicitado' ||
+                                        card.situacaoDesembolsoVinculada ===
+                                          'Solicitar Desembolso'
+                                      ? '#fef7e0'
                                       : '#f3e8ff',
                                   color:
                                     card.situacaoDesembolsoVinculada ===
                                       'Desembolso Efetivado' ||
                                     card.situacaoDesembolsoVinculada ===
-                                      'Finalizado'
+                                      'Finalizado' ||
+                                    card.situacaoDesembolsoVinculada ===
+                                      'Disponível para C/C'
                                       ? '#15803d'
                                       : card.situacaoDesembolsoVinculada ===
                                           'Desembolso Pendente' ||
                                         card.situacaoDesembolsoVinculada ===
                                           'Não Desembolsar'
                                       ? '#b91c1c'
+                                      : card.situacaoDesembolsoVinculada ===
+                                          'Desembolso na Vinculada' ||
+                                        card.situacaoDesembolsoVinculada ===
+                                          'Desembolso Solicitado' ||
+                                        card.situacaoDesembolsoVinculada ===
+                                          'Solicitar Desembolso'
+                                      ? '#b06000'
                                       : '#6b21a8',
                                   border: '1px solid rgba(107,33,168,0.25)',
                                 }}
                                 title="Situação do Desembolso"
                               >
-                                <option value="Desembolso Solicitado" style={{ background: '#fff', color: '#333' }}>
-                                  💸 Solicitado
-                                </option>
-                                <option value="Em Análise" style={{ background: '#fff', color: '#333' }}>
-                                  💸 Em Análise
-                                </option>
-                                <option value="Desembolso Pendente" style={{ background: '#fff', color: '#333' }}>
-                                  💸 Pendente
-                                </option>
-                                <option value="Desembolso Liberado" style={{ background: '#fff', color: '#333' }}>
-                                  💸 Liberado
-                                </option>
-                                <option value="Desembolso Efetivado" style={{ background: '#fff', color: '#333' }}>
-                                  💸 Efetivado
-                                </option>
-                                <option value="Finalizado" style={{ background: '#fff', color: '#333' }}>
-                                  💸 Finalizado
-                                </option>
-                                <option value="Não Desembolsar" style={{ background: '#fff', color: '#333' }}>
-                                  💸 Não Desembolsar
-                                </option>
+                                {SITUACOES_DESEMBOLSO_OFICIAIS.map((sit) => (
+                                  <option
+                                    key={sit}
+                                    value={sit}
+                                    style={{ background: '#fff', color: '#333' }}
+                                  >
+                                    💸 {sit}
+                                  </option>
+                                ))}
                               </select>
                             )}
                           </div>
@@ -3561,13 +3849,11 @@ const aplicarHighlight = useCallback((cor: string) => {
                                         <div>
                                           <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Situação do Desembolso</label>
                                           <select value={fdSituacao} onChange={(e) => setFdSituacao(e.target.value)} style={{ height: '32px', fontSize: '12px' }}>
-                                            <option value="Desembolso Solicitado">Desembolso Solicitado</option>
-                                            <option value="Em Análise">Em Análise</option>
-                                            <option value="Desembolso Pendente">Desembolso Pendente</option>
-                                            <option value="Desembolso Liberado">Desembolso Liberado</option>
-                                            <option value="Desembolso Efetivado">Desembolso Efetivado</option>
-                                            <option value="Finalizado">Finalizado</option>
-                                            <option value="Não Desembolsar">Não Desembolsar</option>
+                                            {SITUACOES_DESEMBOLSO_OFICIAIS.filter((s) => s !== 'Sem Registro').map((sit) => (
+                                              <option key={sit} value={sit}>
+                                                {sit}
+                                              </option>
+                                            ))}
                                           </select>
                                         </div>
                                         <div>
@@ -3671,6 +3957,110 @@ const aplicarHighlight = useCallback((cor: string) => {
                                     </div>
                                   </div>
                                 )}
+                                
+                                {/* ITEM 4: CONTEÚDO DA PÁGINA 4: GERADOR DE PARECER TÉCNICO BNB */}
+                                {abaInternaCard === 'parecer' && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                    <div
+                                      style={{
+                                        background: '#fff',
+                                        border: '1px solid #cbd5e1',
+                                        borderRadius: '8px',
+                                        padding: '12px 16px',
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        flexWrap: 'wrap',
+                                        gap: '10px',
+                                      }}
+                                    >
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                        <strong style={{ color: '#8B1530', fontSize: '12.5px' }}>
+                                          📄 MODELO DE PARECER / DESPACHO:
+                                        </strong>
+                                        <select
+                                          value={modeloParecer}
+                                          onChange={(e) => {
+                                            const novoMod = e.target.value as
+                                              | 'APROVACAO_S522'
+                                              | 'DEVOLUCAO_PENDENCIAS'
+                                              | 'CONTRATACAO'
+                                              | 'DESEMBOLSO';
+                                            gerarParecerTecnicoDoCard(card, novoMod);
+                                          }}
+                                          style={{ width: 'auto', height: '32px', fontSize: '12px', fontWeight: 'bold', padding: '0 10px' }}
+                                        >
+                                          <option value="APROVACAO_S522">
+                                            1. Encaminhamento / Aprovação à Central (PCE / S522)
+                                          </option>
+                                          <option value="DEVOLUCAO_PENDENCIAS">
+                                            2. Despacho de Pendências / Solicitação de Regularização
+                                          </option>
+                                          <option value="CONTRATACAO">
+                                            3. Conformidade para Emissão / Assinatura de Contrato
+                                          </option>
+                                          <option value="DESEMBOLSO">
+                                            4. Conformidade para Liberação de Desembolso
+                                          </option>
+                                        </select>
+                                      </div>
+
+                                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                        <button
+                                          type="button"
+                                          onClick={() => gerarParecerTecnicoDoCard(card, modeloParecer)}
+                                          style={{ width: 'auto', padding: '6px 12px', fontSize: '11.5px', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+                                        >
+                                          🔄 Atualizar com Dados do Card
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(textoParecerEditavel);
+                                            alert('📋 Parecer Técnico copiado para a área de transferência! Pronto para colar no S400 / GED / Despacho.');
+                                          }}
+                                          style={{ width: 'auto', padding: '6px 14px', fontSize: '11.5px', background: '#8B1530', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+                                        >
+                                          📋 Copiar Parecer (S400 / GED)
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const jan = window.open('', '_blank');
+                                            if (!jan) return;
+                                            jan.document.write(
+                                              `<html><head><title>Parecer Técnico - ${card.clienteVinculado || 'Cliente'}</title><style>body{font-family:Arial,sans-serif;padding:30px;line-height:1.6;color:#111;}pre{white-space:pre-wrap;font-family:Arial,sans-serif;font-size:13px;}</style></head><body><pre>${textoParecerEditavel}</pre><script>window.print();</script></body></html>`
+                                            );
+                                            jan.document.close();
+                                          }}
+                                          style={{ width: 'auto', padding: '6px 14px', fontSize: '11.5px', background: '#15803d', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+                                        >
+                                          🖨️ Imprimir / PDF
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    <textarea
+                                      value={textoParecerEditavel}
+                                      onChange={(e) => setTextoParecerEditavel(e.target.value)}
+                                      rows={18}
+                                      style={{
+                                        width: '100%',
+                                        padding: '14px',
+                                        fontSize: '12.5px',
+                                        lineHeight: 1.55,
+                                        fontFamily: 'monospace',
+                                        border: '1px solid #cbd5e1',
+                                        borderRadius: '8px',
+                                        background: '#ffffff',
+                                        color: '#0f172a',
+                                      }}
+                                    />
+                                  </div>
+                                )}
+
+
+
                               </div>
                             );
                           })()}
@@ -3768,38 +4158,31 @@ const aplicarHighlight = useCallback((cor: string) => {
                                 💸 3. Desembolsos ({qtdDesemb})
                               </button>
 
-                              {/* Botão discreto de alternância rápida no canto inferior direito do Card */}
                               <button
                                 type="button"
                                 onClick={() => {
-                                  if (abaInternaCard === 'notas') {
-                                    iniciarEdicaoContratacaoNoCard(undefined, card);
-                                    setAbaInternaCard('contratacoes');
-                                  } else if (abaInternaCard === 'contratacoes') {
-                                    iniciarEdicaoEventoNoCard(undefined, card);
-                                    setAbaInternaCard('desembolsos');
-                                  } else {
-                                    setAbaInternaCard('notas');
-                                  }
+                                  gerarParecerTecnicoDoCard(card, modeloParecer);
+                                  setAbaInternaCard('parecer');
                                 }}
                                 style={{
-                                  position: 'absolute',
-                                  right: '14px',
-                                  bottom: '6px',
                                   width: 'auto',
-                                  padding: '4px 10px',
-                                  fontSize: '11px',
-                                  fontWeight: 'bold',
-                                  background: '#fff',
-                                  color: '#334155',
+                                  height: '34px',
+                                  padding: '0 18px',
+                                  borderRadius: '8px 8px 0 0',
                                   border: '1px solid #cbd5e1',
-                                  borderRadius: '14px',
+                                  borderBottom: abaInternaCard === 'parecer' ? '3px solid #15803d' : 'none',
+                                  background: abaInternaCard === 'parecer' ? '#ffffff' : '#f1f5f9',
+                                  color: abaInternaCard === 'parecer' ? '#15803d' : '#475569',
+                                  fontWeight: 'bold',
+                                  fontSize: '12px',
                                   cursor: 'pointer',
+                                  boxShadow: abaInternaCard === 'parecer' ? '0 -2px 6px rgba(0,0,0,0.06)' : 'none',
                                 }}
-                                title="Alternar rapidamente entre as páginas internas do Card"
                               >
-                                📑 Próxima Guia ➔
+                                📄 4. Parecer Técnico
                               </button>
+
+                  
                             </div>
                           );
                         })()}

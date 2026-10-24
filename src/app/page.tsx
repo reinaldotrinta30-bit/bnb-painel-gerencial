@@ -7,7 +7,7 @@ import ModuloKanban from '@/components/ModuloKanban';
 import ModuloRelatorioCarteira from '@/components/ModuloRelatorioCarteira';
 import ModuloFerramentas from '@/components/ModuloFerramentas';
 import ModalInspecaoKanban from '@/components/ModalInspecaoKanban';
-import { parseMoeda, getHojeBR, isEnquadradoCadaVezMelhor } from '@/lib/utils';
+import { parseMoeda, getHojeBR, isEnquadradoCadaVezMelhor, formatarMoedaBD, aplicarMascaraMoedaInput } from '@/lib/utils';
 import {
   RegistroContratacao,
   OperacaoBaseDesembolso,
@@ -731,49 +731,335 @@ export default function PainelGerencialPage() {
               setGuiaAtiva('desembolsos');
             }}
             onAlterarSituacaoDesembolsoPeloKanban={(card, novaSitDesemb) => {
-              const nomeCli = (card.clienteVinculado || '').toUpperCase().trim();
-              if (!nomeCli) return;
-
-              const opDoCli = operacoesBase.find(
-                (o) =>
-                  (card.propostaIdVinculada &&
-                    String(o.propostaIdOrigem) ===
-                      String(card.propostaIdVinculada)) ||
-                  o.cliente.toUpperCase().trim() === nomeCli
-              );
-
-              const indicesEv = eventos
-                .map((ev, idx) =>
-                  ev.cliente.toUpperCase().trim() === nomeCli ? idx : -1
-                )
-                .filter((idx) => idx !== -1);
-
-              if (indicesEv.length > 0) {
-                const ultimoIdx = indicesEv[indicesEv.length - 1];
-                const novosEv = [...eventos];
-                novosEv[ultimoIdx] = {
-                  ...novosEv[ultimoIdx],
-                  situacao: novaSitDesemb,
-                  data: getHojeBR(),
-                };
-                setEventos(novosEv);
-                salvarDesembEvSync(novosEv);
-              } else if (opDoCli) {
-                const novoEv = {
-                  id: String(Date.now()),
-                  cliente: opDoCli.cliente,
-                  op: opDoCli.op,
-                  parcela: '1',
-                  valor: opDoCli.valor,
-                  situacao: novaSitDesemb,
-                  data: getHojeBR(),
-                  obs: 'Atualizado via Tarja do Kanban',
-                } as EventoDesembolso;
-
-                const novosEv = [...eventos, novoEv];
-                setEventos(novosEv);
-                salvarDesembEvSync(novosEv);
+              if (novaSitDesemb === 'Sem Registro') {
+                const novosCards = cardsKanban.map((c) =>
+                  c.id === card.id
+                    ? { ...c, situacaoDesembolsoVinculada: 'Sem Registro' }
+                    : c
+                );
+                setCardsKanban(novosCards);
+                salvarKanbanSync(novosCards);
+                return;
               }
+
+              const cpfCardLimpo = (card.cpfVinculado || '').replace(/\D/g, '');
+              const nomeCli = (card.clienteVinculado || '').toUpperCase().trim();
+              const idsGrupo = card.idsPropostasAgrupadas || [];
+
+              // 1. Localiza todas as operações DERIVADAS deste cliente em Contratações (ignora LCGH / LCGA!)
+              const derivadasContratadas = contratacoes.filter((r) => {
+                const t = (r.tipo || '').toUpperCase().trim();
+                if (t === 'LCGH' || t === 'LCGA') return false;
+                const matchId =
+                  String(r.id) === String(card.propostaIdVinculada) ||
+                  idsGrupo.includes(String(r.id));
+                const matchCpf =
+                  cpfCardLimpo.length === 11 &&
+                  (r.cpf || '').replace(/\D/g, '') === cpfCardLimpo;
+                const matchNome =
+                  nomeCli.length > 3 &&
+                  (r.cliente || '').toUpperCase().trim() === nomeCli;
+                return (matchId || matchCpf || matchNome) && r.situacao === 'Contratado';
+              });
+
+              // 2. Garante que cada derivada contratada tenha sua Operação Base correspondente em Desembolsos
+              const listaOpsBaseAtualizada = [...operacoesBase];
+              let mudouOpBase = false;
+
+              const formatarTipoCurto = (tipoBruto?: string): string => {
+                const t = (tipoBruto || '').toUpperCase().trim();
+                if (t.includes('RENOVA')) return 'Renov. Custeio';
+                if (t.includes('CUSTEIO')) return 'Custeio';
+                if (t.includes('INVEST')) return 'Investimento';
+                if (t.includes('CARTÃO') || t.includes('CARTAO')) return 'Cartão BNB';
+                return tipoBruto || 'Proposta';
+              };
+
+              // Todas as derivadas do cliente (na ordem de cadastro) para manter a numeração OP1, OP2, OP3 fiel à ordem das contratações!
+              const todasDerivadasCliente = contratacoes.filter((r) => {
+                const t = (r.tipo || '').toUpperCase().trim();
+                if (t === 'LCGH' || t === 'LCGA') return false;
+                const matchId =
+                  String(r.id) === String(card.propostaIdVinculada) ||
+                  idsGrupo.includes(String(r.id));
+                const matchCpf =
+                  cpfCardLimpo.length === 11 &&
+                  (r.cpf || '').replace(/\D/g, '') === cpfCardLimpo;
+                const matchNome =
+                  nomeCli.length > 3 &&
+                  (r.cliente || '').toUpperCase().trim() === nomeCli;
+                return matchId || matchCpf || matchNome;
+              });
+
+              derivadasContratadas.forEach((der) => {
+                const idxOrdem = todasDerivadasCliente.findIndex(
+                  (d) => String(d.id) === String(der.id)
+                );
+                const numSeq = idxOrdem !== -1 ? idxOrdem + 1 : 1;
+                const nomeOpPadrao = `OP${numSeq} (${formatarTipoCurto(der.tipo)})`;
+
+                const idxOpBase = listaOpsBaseAtualizada.findIndex(
+                  (o) =>
+                    String(o.propostaIdOrigem) === String(der.id) ||
+                    (derivadasContratadas.length === 1 &&
+                      o.cliente.toUpperCase().trim() ===
+                        der.cliente.toUpperCase().trim())
+                );
+
+                if (idxOpBase === -1) {
+                  listaOpsBaseAtualizada.push({
+                    id: `op_${der.id}`,
+                    propostaIdOrigem: der.id,
+                    porte: der.porte,
+                    cliente: der.cliente.toUpperCase(),
+                    cpf: der.cpf,
+                    projetista: (der.projetista || '').toUpperCase(),
+                    op: nomeOpPadrao,
+                    valor: der.valor,
+                  });
+                  mudouOpBase = true;
+                } else if (
+                  listaOpsBaseAtualizada[idxOpBase].op
+                    .toUpperCase()
+                    .startsWith('PENDENTE-OP')
+                ) {
+                  listaOpsBaseAtualizada[idxOpBase] = {
+                    ...listaOpsBaseAtualizada[idxOpBase],
+                    propostaIdOrigem: der.id,
+                    op: nomeOpPadrao,
+                  };
+                  mudouOpBase = true;
+                }
+              });
+
+              if (mudouOpBase) {
+                setOperacoesBase(listaOpsBaseAtualizada);
+                salvarDesembOpSync(listaOpsBaseAtualizada);
+              }
+
+              // 3. Filtra todas as Operações Base de Desembolso pertencentes a este cliente
+              const opsDoCliente = listaOpsBaseAtualizada.filter((o) => {
+                const matchId =
+                  o.propostaIdOrigem &&
+                  (String(o.propostaIdOrigem) ===
+                    String(card.propostaIdVinculada) ||
+                    idsGrupo.includes(String(o.propostaIdOrigem)));
+                const matchCpf =
+                  cpfCardLimpo.length === 11 &&
+                  (o.cpf || '').replace(/\D/g, '') === cpfCardLimpo;
+                const matchNome =
+                  nomeCli.length > 3 &&
+                  o.cliente.toUpperCase().trim() === nomeCli;
+                return matchId || matchCpf || matchNome;
+              });
+
+              if (opsDoCliente.length === 0) {
+                alert(
+                  '⚠️ Nenhuma operação derivada contratada foi encontrada para registrar o desembolso deste cliente.'
+                );
+                return;
+              }
+
+              // 4. Calcula o status e o saldo restante de cada Operação Base do cliente
+              const analisarEstadoDaOp = (opB: OperacaoBaseDesembolso) => {
+                const evsDaOp = eventos
+                  .filter(
+                    (e) =>
+                      e.cliente.toUpperCase().trim() ===
+                        opB.cliente.toUpperCase().trim() && e.op === opB.op
+                  )
+                  .sort((a, b) => a.timestamp - b.timestamp);
+
+                let totalJaEfetivado = 0;
+                evsDaOp.forEach((e) => {
+                  if (
+                    e.situacao === 'Desembolso Efetivado' ||
+                    e.situacao === 'Finalizado'
+                  ) {
+                    totalJaEfetivado += parseMoeda(e.valor);
+                  }
+                });
+
+                const valContrato = parseMoeda(opB.valor);
+                const saldoRestante = Math.max(0, valContrato - totalJaEfetivado);
+                const ultimoEv =
+                  evsDaOp.length > 0 ? evsDaOp[evsDaOp.length - 1] : undefined;
+
+                const isFinalizada =
+                  evsDaOp.length > 0 &&
+                  (ultimoEv?.situacao === 'Finalizado' ||
+                    ((ultimoEv?.situacao === 'Desembolso Efetivado' ||
+                      ultimoEv?.situacao === 'Finalizado') &&
+                      saldoRestante <= 0.01));
+
+                return {
+                  opB,
+                  evsDaOp,
+                  ultimoEv,
+                  valContrato,
+                  totalJaEfetivado,
+                  saldoRestante,
+                  isFinalizada,
+                };
+              };
+
+              const analisesOps = opsDoCliente.map(analisarEstadoDaOp);
+
+              // ITEM 9.1: Se houver mais de uma operação derivada, ignora automaticamente as que já estão Finalizadas!
+              // Se restar mais de uma em aberto, pergunta ao usuário para qual OP é a mudança.
+              let analiseEscolhida = analisesOps[0];
+              const opsEmAberto = analisesOps.filter((a) => !a.isFinalizada);
+
+              if (analisesOps.length > 1) {
+                if (opsEmAberto.length === 1) {
+                  // Só 1 operação está em aberto (a anterior já está Finalizada): seleciona automaticamente!
+                  analiseEscolhida = opsEmAberto[0];
+                } else {
+                  const listaParaEscolha =
+                    opsEmAberto.length > 1 ? opsEmAberto : analisesOps;
+                  const opcoesTexto = listaParaEscolha
+                    .map(
+                      (a, idx) =>
+                        `${idx + 1} - OP: ${a.opB.op} | Contratado: R$ ${
+                          a.opB.valor
+                        } | Saldo a Liberar: R$ ${formatarMoedaBD(
+                          a.saldoRestante
+                        )} (${a.ultimoEv?.situacao || 'Sem Registro'})`
+                    )
+                    .join('\n');
+
+                  const respOp = window.prompt(
+                    `🚜 O cliente ${nomeCli} possui ${listaParaEscolha.length} operações derivadas.\nPara qual operação deseja registrar "${novaSitDesemb}"?\n\n${opcoesTexto}\n\nDigite o número da opção (1 a ${listaParaEscolha.length}):`,
+                    '1'
+                  );
+                  if (!respOp) return; // Cancelou
+                  const idxEsc = parseInt(respOp.trim(), 10) - 1;
+                  if (
+                    isNaN(idxEsc) ||
+                    idxEsc < 0 ||
+                    idxEsc >= listaParaEscolha.length
+                  ) {
+                    alert('Opção inválida. Alteração cancelada.');
+                    return;
+                  }
+                  analiseEscolhida = listaParaEscolha[idxEsc];
+                }
+              }
+
+              const { opB, ultimoEv, saldoRestante } = analiseEscolhida;
+
+              // ITEM 9.2 e 9.3: Determina o número da Parcela e se deve perguntar o Valor Solicitado!
+              // Pergunta o valor quando:
+              // a) A nova situação for "Desembolso Solicitado"
+              // b) OU não houver nenhum evento anterior nesta OP
+              // c) OU o último evento já tinha encerrado uma parcela ("Desembolso Efetivado" ou "Finalizado") e ainda há saldo restante para uma nova parcela!
+              const encerrouParcelaAnterior =
+                ultimoEv?.situacao === 'Desembolso Efetivado' ||
+                ultimoEv?.situacao === 'Finalizado';
+
+              let numParcelaAtual = ultimoEv?.parcela || '1';
+              if (
+                encerrouParcelaAnterior &&
+                saldoRestante > 0.01 &&
+                novaSitDesemb !== 'Finalizado'
+              ) {
+                // Se o evento automático de "Solicitar Documentação" já não tiver incrementado a parcela, incrementa agora
+                numParcelaAtual = String((parseInt(ultimoEv?.parcela || '1', 10) || 1) + 1);
+              }
+
+              const devePerguntarValor =
+                novaSitDesemb === 'Desembolso Solicitado' ||
+                !ultimoEv ||
+                (encerrouParcelaAnterior &&
+                  saldoRestante > 0.01 &&
+                  novaSitDesemb !== 'Finalizado');
+
+              let valorEventoFinal =
+                ultimoEv && !encerrouParcelaAnterior
+                  ? ultimoEv.valor
+                  : formatarMoedaBD(saldoRestante > 0 ? saldoRestante : analiseEscolhida.valContrato);
+
+              if (devePerguntarValor) {
+                const sugestaoValor =
+                  ultimoEv &&
+                  !encerrouParcelaAnterior &&
+                  parseMoeda(ultimoEv.valor) > 0
+                    ? ultimoEv.valor
+                    : formatarMoedaBD(
+                        saldoRestante > 0
+                          ? saldoRestante
+                          : analiseEscolhida.valContrato
+                      );
+
+                const inputVal = window.prompt(
+                  `💰 [${novaSitDesemb}] — Cliente: ${opB.cliente}\n` +
+                    `Operação: ${opB.op} (${numParcelaAtual}ª Parcela)\n` +
+                    `Valor Contratado: R$ ${opB.valor} | Saldo Disponível: R$ ${formatarMoedaBD(
+                      saldoRestante
+                    )}\n\n` +
+                    `Informe o VALOR desta parcela/desembolso (R$):`,
+                  sugestaoValor
+                );
+
+                if (inputVal === null) return; // Se o usuário clicou em Cancelar, aborta a mudança de situação
+                const valorNumerico = parseMoeda(inputVal);
+                if (valorNumerico <= 0) {
+                  alert('Informe um valor válido maior que zero!');
+                  return;
+                }
+                valorEventoFinal = formatarMoedaBD(valorNumerico);
+              }
+
+              // 5. Cria o novo registro oficial no Histórico de Eventos de Desembolso!
+              const agoraTs = Date.now();
+              const novoEv: EventoDesembolso = {
+                id: String(agoraTs),
+                timestamp: agoraTs,
+                cliente: opB.cliente,
+                op: opB.op,
+                parcela: numParcelaAtual,
+                valor: valorEventoFinal,
+                situacao: novaSitDesemb,
+                data: getHojeBR(),
+                obs: `Registrado via Tarja do Kanban (${numParcelaAtual}ª Parcela)`,
+              };
+
+              const novaListaEventos = [...eventos, novoEv];
+
+              // Se marcou "Desembolso Efetivado" e ainda sobrou saldo pendente na operação,
+              // gera automaticamente a linha da próxima parcela ("Solicitar Documentação"), igual à aba Desembolsos!
+              if (novaSitDesemb === 'Desembolso Efetivado') {
+                const novoSaldoRestante =
+                  saldoRestante - parseMoeda(valorEventoFinal);
+                if (novoSaldoRestante > 0.01) {
+                  const proxParc = String(
+                    (parseInt(numParcelaAtual, 10) || 1) + 1
+                  );
+                  novaListaEventos.push({
+                    id: `${agoraTs}_auto`,
+                    timestamp: agoraTs + 1000,
+                    cliente: opB.cliente,
+                    op: opB.op,
+                    parcela: proxParc,
+                    valor: formatarMoedaBD(novoSaldoRestante),
+                    situacao: 'Solicitar Documentação',
+                    data: getHojeBR(),
+                    obs: 'Gerado automaticamente pelo sistema (Saldo Pendente para próxima parcela).',
+                  });
+                }
+              }
+
+              setEventos(novaListaEventos);
+              salvarDesembEvSync(novaListaEventos);
+
+              // 6. Sincroniza o Card no Kanban com o evento que o usuário acabou de registrar!
+              const novosCards = sincronizarAposEventoDesembolso({
+                eventoSalvo: novoEv,
+                operacaoBase: opB,
+                cardsAtuais: cardsKanban,
+              });
+              setCardsKanban(novosCards);
+              salvarKanbanSync(novosCards);
             }}
             onInlineEditCabecalho={(card, updates) => {
               const novasContratacoes = [...contratacoes];

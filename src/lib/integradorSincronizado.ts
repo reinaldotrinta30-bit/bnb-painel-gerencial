@@ -925,11 +925,37 @@ export function sincronizarAposSalvarContratacao(params: {
     return true;
   });
 
-  // ITEM 8: Sincronização Completa com Desembolsos!
-  // Se a operação derivada já existe em Desembolsos e teve o VALOR (ou Porte/CPF/Projetista) alterado em Contratações,
-  // atualiza imediatamente o "Valor Contratado" lá na aba de Desembolsos!
-  const novasOperacoesDesemb = [...operacoesDesembAtuais];
-  opsDerivadas.forEach((opDeriv) => {
+  // ITEM 1 e ITEM 8: Sincronização Completa com Desembolsos!
+  // - LCGH e LCGA NUNCA geram número de OP para desembolso.
+  // - Quando não houver número de OP cadastrado pelo usuário, nomeia automaticamente como
+  //   "OP1 (Custeio)", "OP2 (Investimento)", "OP3 (Investimento)" na ordem das contratações do cliente!
+  const formatarTipoOpCurto = (tipoBruto?: string): string => {
+    const t = (tipoBruto || '').toUpperCase().trim();
+    if (t.includes('RENOVA')) return 'Renov. Custeio';
+    if (t.includes('CUSTEIO')) return 'Custeio';
+    if (t.includes('INVEST')) return 'Investimento';
+    if (t.includes('CARTÃO') || t.includes('CARTAO')) return 'Cartão BNB';
+    return tipoBruto || 'Proposta';
+  };
+
+  // Remove eventuais linhas de LCGH/LCGA que tenham entrado por engano na base de desembolsos no passado
+  const idsLimitesCliente = opsMesmoCliente
+    .filter((r) => {
+      const t = (r.tipo || '').toUpperCase().trim();
+      return t === 'LCGH' || t === 'LCGA';
+    })
+    .map((r) => String(r.id));
+
+  const novasOperacoesDesemb = operacoesDesembAtuais.filter(
+    (op) =>
+      !(op.propostaIdOrigem && idsLimitesCliente.includes(String(op.propostaIdOrigem))) &&
+      !op.op.toUpperCase().includes('(LCGH)') &&
+      !op.op.toUpperCase().includes('(LCGA)')
+  );
+
+  opsDerivadas.forEach((opDeriv, idxDeriv) => {
+    const nomeOpPadrao = `OP${idxDeriv + 1} (${formatarTipoOpCurto(opDeriv.tipo)})`;
+
     const idxOpExistente = novasOperacoesDesemb.findIndex(
       (op) =>
         String(op.propostaIdOrigem) === String(opDeriv.id) ||
@@ -939,14 +965,21 @@ export function sincronizarAposSalvarContratacao(params: {
     );
 
     if (idxOpExistente !== -1) {
+      const opAtual = novasOperacoesDesemb[idxOpExistente].op || '';
+      const isOpProvisoria =
+        !opAtual.trim() ||
+        opAtual.toUpperCase().startsWith('PENDENTE-OP') ||
+        /^OP\d+\s*\(/i.test(opAtual.trim());
+
       novasOperacoesDesemb[idxOpExistente] = {
         ...novasOperacoesDesemb[idxOpExistente],
         propostaIdOrigem: opDeriv.id,
         porte: opDeriv.porte,
         cliente: opDeriv.cliente.toUpperCase(),
         cpf: opDeriv.cpf,
-        projetista: opDeriv.projetista.toUpperCase(),
-        valor: opDeriv.valor, // 👈 Atualiza o Valor Contratado imediatamente!
+        projetista: (opDeriv.projetista || '').toUpperCase(),
+        op: isOpProvisoria ? nomeOpPadrao : opAtual,
+        valor: opDeriv.valor,
       };
     } else if (opDeriv.situacao === 'Contratado') {
       novasOperacoesDesemb.push({
@@ -955,8 +988,8 @@ export function sincronizarAposSalvarContratacao(params: {
         porte: opDeriv.porte,
         cliente: opDeriv.cliente.toUpperCase(),
         cpf: opDeriv.cpf,
-        projetista: opDeriv.projetista.toUpperCase(),
-        op: `PENDENTE-OP (${opDeriv.tipo})`,
+        projetista: (opDeriv.projetista || '').toUpperCase(),
+        op: nomeOpPadrao,
         valor: opDeriv.valor,
       });
     }

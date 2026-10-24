@@ -73,6 +73,40 @@ export default function ModuloContratacoes({
   const [programa, setPrograma] = useState('');
   const listaProgramas = useMemo(() => obterListaProgramas(), []);
 
+  // ITEM 5 e 5.1: Lê em tempo real as Metas e o Realizado Efetivo do Banco configurados na Planilha da Carteira
+  const [paramsBancoOficial, setParamsBancoOficial] = useState({
+    pronafRealizadoOficial: 986005.0,
+    pronafMetaPeriodo: 2801400.0,
+    pronafMetaAnual: META_PRONAF,
+    miniRealizadoOficial: 287348.0,
+    miniMetaPeriodo: 2090700.0,
+    miniMetaAnual: META_MINI,
+    cvmRealizadoOficial: 80172.0,
+    cvmMetaPeriodo: 1027341.0,
+    cvmMetaAnual: 1488900.0,
+  });
+
+  useEffect(() => {
+    const carregarParamsCarteira = () => {
+      if (typeof window === 'undefined') return;
+      try {
+        const raw = window.localStorage.getItem('bnb_v2_parametros_oficiais_carteira');
+        if (raw) {
+          setParamsBancoOficial((prev) => ({ ...prev, ...JSON.parse(raw) }));
+        }
+      } catch {
+        // Ignora erro de leitura
+      }
+    };
+    carregarParamsCarteira();
+    window.addEventListener('bnb_parametros_carteira_atualizados', carregarParamsCarteira);
+    window.addEventListener('storage', carregarParamsCarteira);
+    return () => {
+      window.removeEventListener('bnb_parametros_carteira_atualizados', carregarParamsCarteira);
+      window.removeEventListener('storage', carregarParamsCarteira);
+    };
+  }, []);
+
   // Estados de Garantia para exibição didática no Card do Kanban (Oculto para PRONAF A)
   const [tipoGarantiaKanban, setTipoGarantiaKanban] = useState<
     'NENHUMA' | 'AVAL' | 'LCGH' | 'LCGA'
@@ -182,6 +216,7 @@ export default function ModuloContratacoes({
 const matchPorte =
   dashFiltroPorte.length === 0 ||
   dashFiltroPorte.includes(r.porte) ||
+  (dashFiltroPorte.includes('CADA VEZ MELHOR') && r.cadaVezMelhor) ||
   dashFiltroPorte.includes(catPorte) ||
   (catPorte === 'OUTROS' && dashFiltroPorte.includes('PEQUENO'));
       const matchTipo =
@@ -212,7 +247,7 @@ const matchPorte =
 
   const metricasDash = useMemo(() => {
     let volTotal = 0;
-    let volContratado = 0;
+    let volContratadoSistema = 0;
     let volEstoque = 0;
     const mapStatus: Record<string, { v: number; q: number }> = {
       'Com Cliente/Projetista': { v: 0, q: 0 },
@@ -230,60 +265,73 @@ const matchPorte =
         const card = localizarCardDoClienteNoKanban(r, cardsKanban);
         const isArquivado = card?.statusCor === 'roxo';
 
-        // REGRA: Se está Contratado, soma tudo normalmente (mesmo que esteja arquivado, o contrato é vitalício)
         if (isContratado) {
           volTotal += v;
-          volContratado += v;
+          volContratadoSistema += v;
           if (mapStatus[r.situacao]) {
             mapStatus[r.situacao].v += v;
             mapStatus[r.situacao].q += 1;
           }
-        } else {
-          // REGRA 6.2 e 6.3: Se não está contratado (é estoque/tramitação), SÓ CONTA SE NÃO ESTIVER ARQUIVADO!
-          if (!isArquivado) {
-            volTotal += v;
-            volEstoque += v;
-            if (mapStatus[r.situacao]) {
-              mapStatus[r.situacao].v += v;
-              mapStatus[r.situacao].q += 1;
-            }
+        } else if (!isArquivado) {
+          volTotal += v;
+          volEstoque += v;
+          if (mapStatus[r.situacao]) {
+            mapStatus[r.situacao].v += v;
+            mapStatus[r.situacao].q += 1;
           }
         }
       }
     });
 
-    let volContratadoParaMetaGlobal = 0;
-    registros.forEach((r) => {
-      const catPorte = classificarCategoriaPorte(r.porte);
-const matchPorte =
-  dashFiltroPorte.length === 0 ||
-  dashFiltroPorte.includes(r.porte) ||
-  dashFiltroPorte.includes(catPorte) ||
-  (catPorte === 'OUTROS' && dashFiltroPorte.includes('PEQUENO'));
-      const t = (r.tipo || '').toUpperCase();
-      if (t !== 'LCGH' && t !== 'LCGA' && r.situacao === 'Contratado' && matchPorte) {
-        volContratadoParaMetaGlobal += parseMoeda(r.valor);
-      }
-    });
+    // ITEM 5 e 5.1: Cálculo do Realizado Efetivo do Banco e da Meta Oficial da Planilha da Carteira
+    // Muda apenas conforme o filtro de Porte ("📑 Porte"), pois são parâmetros macro oficiais do Banco!
+    const semFiltroPorte = dashFiltroPorte.length === 0;
+    const temPronafGeral =
+      semFiltroPorte ||
+      dashFiltroPorte.includes('PRONAF V') ||
+      dashFiltroPorte.includes('PRONAF A');
+    const temCvmIsolado =
+      !temPronafGeral && dashFiltroPorte.includes('CADA VEZ MELHOR');
+    const temMini = semFiltroPorte || dashFiltroPorte.includes('MINI');
 
+    let volContratadoBancoOficial = 0;
     let metaAplicavel = 0;
-    if (dashFiltroPorte.length === 0) {
-      metaAplicavel = META_PRONAF + META_MINI;
-    } else {
-      if (dashFiltroPorte.includes('PRONAF V') || dashFiltroPorte.includes('PRONAF A')) {
-        metaAplicavel += META_PRONAF;
-      }
-      if (dashFiltroPorte.includes('MINI')) {
-        metaAplicavel += META_MINI;
-      }
+
+    if (temPronafGeral) {
+      // O FNE PRONAF (Consolidado) da Planilha da Carteira já contempla PRONAF V + PRONAF A + CVM
+      volContratadoBancoOficial += Number(paramsBancoOficial.pronafRealizadoOficial) || 0;
+      metaAplicavel += Number(paramsBancoOficial.pronafMetaAnual) || META_PRONAF;
+    } else if (temCvmIsolado) {
+      volContratadoBancoOficial += Number(paramsBancoOficial.cvmRealizadoOficial) || 0;
+      metaAplicavel += Number(paramsBancoOficial.cvmMetaAnual) || 0;
     }
 
-    let faltaContratar = metaAplicavel - volContratadoParaMetaGlobal;
-    if (faltaContratar < 0) faltaContratar = 0;
+    if (temMini) {
+      volContratadoBancoOficial += Number(paramsBancoOficial.miniRealizadoOficial) || 0;
+      metaAplicavel += Number(paramsBancoOficial.miniMetaAnual) || META_MINI;
+    }
 
-    let percMeta =
-      metaAplicavel > 0 ? (volContratadoParaMetaGlobal / metaAplicavel) * 100 : 0;
-    if (percMeta > 100) percMeta = 100;
+    // Gap Oficial do Banco (Meta da Planilha da Carteira - Realizado Oficial do Banco)
+    const faltaContratarBancoOficial = Math.max(
+      0,
+      metaAplicavel - volContratadoBancoOficial
+    );
+
+    // Gap considerando apenas os contratos cadastrados no nosso sistema (respeita os filtros ativos)
+    const faltaContratarSistema = Math.max(
+      0,
+      metaAplicavel - volContratadoSistema
+    );
+
+    const percMetaBancoOficial =
+      metaAplicavel > 0
+        ? Math.min(100, (volContratadoBancoOficial / metaAplicavel) * 100)
+        : 0;
+
+    const percMetaSistema =
+      metaAplicavel > 0
+        ? Math.min(100, (volContratadoSistema / metaAplicavel) * 100)
+        : 0;
 
     let maxVolumeStatus = 0;
     Object.values(mapStatus).forEach((st) => {
@@ -292,15 +340,18 @@ const matchPorte =
 
     return {
       volTotal,
-      volContratado,
+      volContratado: volContratadoBancoOficial,
+      volContratadoSistema,
       volEstoque,
-      faltaContratar,
+      faltaContratar: faltaContratarBancoOficial,
+      faltaContratarSistema,
       metaAplicavel,
-      percMeta,
+      percMeta: percMetaBancoOficial,
+      percMetaSistema,
       mapStatus,
       maxVolumeStatus,
     };
-  }, [dadosFiltradosDash, registros, dashFiltroPorte, cardsKanban]);
+  }, [dadosFiltradosDash, dashFiltroPorte, cardsKanban, paramsBancoOficial]);
 
   // =========================================================================
   // LÓGICA DO FORMULÁRIO CRUD E TABELA DA BASE DE DADOS
@@ -894,6 +945,7 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
                 >
                   <option value="PRONAF V" style={{ color: '#333' }}>PRONAF V</option>
                   <option value="PRONAF A" style={{ color: '#333' }}>PRONAF A</option>
+                  <option value="CADA VEZ MELHOR" style={{ color: '#333' }}>CDV MELHOR</option>
                   <option value="MINI" style={{ color: '#333' }}>MINI</option>
                   <option value="PEQUENO" style={{ color: '#333' }}>PEQUENO</option>
                 </select>
@@ -972,32 +1024,48 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
               </div>
             </div>
 
-            {/* 4 CARDS DE KPI */}
+            {/* 4 CARDS DE KPI (COM REALIZADO E GAP OFICIAIS DO BANCO + INDICADORES OPACOS DO SISTEMA) */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '15px', marginBottom: '20px' }}>
               <div style={{ backgroundColor: '#fff', border: '1px solid var(--border-color)', borderLeft: '5px solid var(--support-gray)', borderRadius: '8px', padding: '20px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--support-gray)', fontWeight: 'bold', textTransform: 'uppercase' }}>
-                  VOLUME TOTAL (PROPOSTAS)
+                  VOLUME TOTAL (NO SISTEMA)
                 </div>
                 <div style={{ marginTop: '5px', color: '#333', fontSize: '24px', fontWeight: 'bold' }}>
                   R$ {formatarMoedaBD(metricasDash.volTotal)}
                 </div>
               </div>
 
-              <div style={{ backgroundColor: '#fff', border: '1px solid var(--border-color)', borderLeft: '5px solid var(--success-color)', borderRadius: '8px', padding: '20px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              {/* ITEM 5.1: Card TOTAL CONTRATADO (Principal = Efetivo Banco | Opaco abaixo da % = Cadastrado no Sistema) */}
+              <div style={{ backgroundColor: '#fff', border: '1px solid var(--border-color)', borderLeft: '5px solid var(--success-color)', borderRadius: '8px', padding: '18px 20px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
                   <div>
                     <div style={{ fontSize: '11px', color: 'var(--support-gray)', fontWeight: 'bold', textTransform: 'uppercase' }}>
-                      TOTAL CONTRATADO
+                      TOTAL CONTRATADO (BANCO)
                     </div>
-                    <div style={{ marginTop: '5px', color: 'var(--success-color)', fontSize: '24px', fontWeight: 'bold' }}>
+                    <div style={{ marginTop: '5px', color: 'var(--success-color)', fontSize: '23px', fontWeight: 'bold' }}>
                       R$ {formatarMoedaBD(metricasDash.volContratado)}
                     </div>
                   </div>
-                  <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--success-color)', background: '#e6f4ea', padding: '3px 8px', borderRadius: '12px' }}>
-                    {metricasDash.percMeta.toFixed(1)}%
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--success-color)', background: '#e6f4ea', padding: '3px 8px', borderRadius: '12px' }}>
+                      {metricasDash.percMeta.toFixed(1)}%
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '10.5px',
+                        fontWeight: 600,
+                        color: '#64748b',
+                        opacity: 0.78,
+                        textAlign: 'right',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title="Total contratado considerando apenas as propostas cadastradas e filtradas no nosso sistema"
+                    >
+                      No Sistema: R$ {formatarMoedaBD(metricasDash.volContratadoSistema)}
+                    </div>
                   </div>
                 </div>
-                <div style={{ width: '100%', height: '6px', background: '#e2e8f0', borderRadius: '4px', marginTop: '15px', overflow: 'hidden' }}>
+                <div style={{ width: '100%', height: '6px', background: '#e2e8f0', borderRadius: '4px', marginTop: '12px', overflow: 'hidden' }}>
                   <div style={{ width: `${metricasDash.percMeta}%`, height: '100%', background: 'var(--success-color)', borderRadius: '4px', transition: 'width 0.8s ease-out' }} />
                 </div>
               </div>
@@ -1011,11 +1079,28 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
                 </div>
               </div>
 
-              <div style={{ backgroundColor: '#fff', border: '1px solid var(--border-color)', borderLeft: '5px solid var(--error-color)', borderRadius: '8px', padding: '20px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
-                <div style={{ fontSize: '11px', color: 'var(--support-gray)', fontWeight: 'bold', textTransform: 'uppercase' }}>
-                  FALTA CONTRATAR (GAP)
+              {/* ITEM 5.1: Card FALTA CONTRATAR (Principal = Meta - Realizado Banco | Opaco no canto direito = Meta - Contratado no Sistema) */}
+              <div style={{ position: 'relative', backgroundColor: '#fff', border: '1px solid var(--border-color)', borderLeft: '5px solid var(--error-color)', borderRadius: '8px', padding: '20px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--support-gray)', fontWeight: 'bold', textTransform: 'uppercase' }}>
+                    FALTA CONTRATAR (GAP)
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '10.5px',
+                      fontWeight: 600,
+                      color: '#64748b',
+                      opacity: 0.75,
+                      textAlign: 'right',
+                      whiteSpace: 'nowrap',
+                      marginTop: '2px',
+                    }}
+                    title="Quanto falta contratar considerando apenas os contratos cadastrados na base do nosso sistema"
+                  >
+                    No Sistema: R$ {formatarMoedaBD(metricasDash.faltaContratarSistema)}
+                  </div>
                 </div>
-                <div style={{ marginTop: '5px', color: 'var(--error-color)', fontSize: '24px', fontWeight: 'bold' }}>
+                <div style={{ marginTop: '5px', color: 'var(--error-color)', fontSize: '23px', fontWeight: 'bold' }}>
                   R$ {formatarMoedaBD(metricasDash.faltaContratar)}
                 </div>
               </div>
