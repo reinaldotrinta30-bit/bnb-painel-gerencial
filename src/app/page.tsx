@@ -7,7 +7,7 @@ import ModuloKanban from '@/components/ModuloKanban';
 import ModuloRelatorioCarteira from '@/components/ModuloRelatorioCarteira';
 import ModuloFerramentas from '@/components/ModuloFerramentas';
 import ModalInspecaoKanban from '@/components/ModalInspecaoKanban';
-import { parseMoeda, getHojeBR } from '@/lib/utils';
+import { parseMoeda, getHojeBR, isEnquadradoCadaVezMelhor } from '@/lib/utils';
 import {
   RegistroContratacao,
   OperacaoBaseDesembolso,
@@ -86,6 +86,24 @@ export default function PainelGerencialPage() {
     });
     return () => {
       ativo = false;
+    };
+  }, []);
+
+  // ITEM 4: Impede que selecionar um texto dentro de um <input> ou <textarea> e arrastar o mouse
+  // mova/recorte o texto para outra caixa de texto nas abas de Contratações e Desembolsos!
+  useEffect(() => {
+    const bloquearArrasteDeTextoEmInputs = (e: DragEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')
+      ) {
+        e.preventDefault();
+      }
+    };
+    document.addEventListener('dragstart', bloquearArrasteDeTextoEmInputs);
+    return () => {
+      document.removeEventListener('dragstart', bloquearArrasteDeTextoEmInputs);
     };
   }, []);
 
@@ -570,39 +588,51 @@ export default function PainelGerencialPage() {
           </button>
         </nav>
 
-        {/* Controles de Blindagem Anti-Conflito */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        {/* ITEM 6: Botão Único de Sincronização Completa (Carteira + Kanban + Nuvem Firebase) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button
-            onClick={importarCopiaFrescaProducao}
-            style={{
-              background: 'rgba(255,255,255,0.14)',
-              border: '1px solid rgba(255,255,255,0.35)',
-              color: '#fff',
-              padding: '6px 10px',
-              fontSize: '11px',
-              borderRadius: '4px',
-            }}
-            title="Lê os dados atuais do Firebase antigo sem alterar nada lá"
-          >
-            📥 Puxar Cópia do Firebase Atual
-          </button>
+            onClick={async () => {
+              setCarregandoNuvem(true);
+              setModoIsoladoLocal(false);
+              setModoEstritoLocal(false);
 
-          <button
-            onClick={alternarModoIsolamento}
-            style={{
-              background: modoIsoladoLocal ? '#137333' : '#e65100',
-              border: '1px solid rgba(255,255,255,0.4)',
-              color: '#fff',
-              padding: '6px 10px',
-              fontSize: '11px',
-              borderRadius: '12px',
+              const { novosCards } = gerarCardsKanbanDaBaseExistente({
+                contratacoes,
+                cardsAtuais: cardsKanban,
+              });
+              setCardsKanban(novosCards);
+              salvarKanbanSync(novosCards);
+
+              const ok = await publicarEstadoAtualNaNuvemV2({
+                contratacoes,
+                desembOp: operacoesBase,
+                desembEv: eventos,
+                kanban: novosCards,
+              });
+              setCarregandoNuvem(false);
+
+              if (ok) {
+                alert('☁️ Sincronização completa! Carteira, Kanban e Nuvem Firebase estão 100% atualizados.');
+              }
             }}
+            style={{
+              width: 'auto',
+              background: '#15803d',
+              border: '1px solid rgba(255,255,255,0.45)',
+              color: '#ffffff',
+              padding: '6px 14px',
+              fontSize: '11.5px',
+              fontWeight: 'bold',
+              borderRadius: '16px',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              boxShadow: '0 2px 5px rgba(0,0,0,0.15)',
+            }}
+            title="Sincroniza os clientes da carteira com o Kanban e salva imediatamente na Nuvem Firebase"
           >
-            {carregandoNuvem
-              ? '⏳ Carregando...'
-              : modoIsoladoLocal
-              ? '🛡️ Isolado (100% Offline Seguro)'
-              : '☁️ Sandbox Nuvem V2'}
+            {carregandoNuvem ? '⏳ Sincronizando...' : '☁️ Sincronizar Nuvem'}
           </button>
         </div>
       </header>
@@ -804,6 +834,17 @@ export default function PainelGerencialPage() {
                         ? updates.avalistaCpf
                         : reg.avalistaCpf,
                     valor: opEditada ? opEditada.valor : reg.valor,
+                    programa:
+  opEditada && opEditada.programa !== undefined
+    ? opEditada.programa.toUpperCase()
+    : reg.programa,
+cadaVezMelhor:
+  (updates.porte || reg.porte).includes('PRONAF') &&
+  isEnquadradoCadaVezMelhor(
+    opEditada && opEditada.programa !== undefined
+      ? opEditada.programa
+      : reg.programa
+  ),
                     lcgValor:
                       reg.lcgValor && lcgEmbutidaEditada
                         ? lcgEmbutidaEditada.valor

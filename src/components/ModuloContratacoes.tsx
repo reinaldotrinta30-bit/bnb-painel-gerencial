@@ -17,6 +17,8 @@ import {
   formatarDataExcel,
   obterListaProgramas,
   isEnquadradoCadaVezMelhor,
+  classificarCategoriaPorte,
+  htmlKanbanParaTextoLimpo,
 } from '@/lib/utils';
 
 interface ModuloContratacoesProps {
@@ -176,8 +178,12 @@ export default function ModuloContratacoes({
     return registros.filter((r) => {
       const matchCliente =
         !busca || (r.cliente || '').includes(busca) || (r.cpf || '').includes(busca);
-      const matchPorte =
-        dashFiltroPorte.length === 0 || dashFiltroPorte.includes(r.porte);
+      const catPorte = classificarCategoriaPorte(r.porte);
+const matchPorte =
+  dashFiltroPorte.length === 0 ||
+  dashFiltroPorte.includes(r.porte) ||
+  dashFiltroPorte.includes(catPorte) ||
+  (catPorte === 'OUTROS' && dashFiltroPorte.includes('PEQUENO'));
       const matchTipo =
         dashFiltroTipo.length === 0 || dashFiltroTipo.includes(r.tipo);
       const matchSit =
@@ -248,8 +254,12 @@ export default function ModuloContratacoes({
 
     let volContratadoParaMetaGlobal = 0;
     registros.forEach((r) => {
-      const matchPorte =
-        dashFiltroPorte.length === 0 || dashFiltroPorte.includes(r.porte);
+      const catPorte = classificarCategoriaPorte(r.porte);
+const matchPorte =
+  dashFiltroPorte.length === 0 ||
+  dashFiltroPorte.includes(r.porte) ||
+  dashFiltroPorte.includes(catPorte) ||
+  (catPorte === 'OUTROS' && dashFiltroPorte.includes('PEQUENO'));
       const t = (r.tipo || '').toUpperCase();
       if (t !== 'LCGH' && t !== 'LCGA' && r.situacao === 'Contratado' && matchPorte) {
         volContratadoParaMetaGlobal += parseMoeda(r.valor);
@@ -389,12 +399,12 @@ export default function ModuloContratacoes({
     setValor(reg.valor || '');
     setTipo(reg.tipo || '');
     setSituacao(reg.situacao || '');
-    setSituacaoDetalhada(reg.situacaoDetalhada || '');
-    setProjetista(reg.projetista || '');
-    setResponsavel(reg.responsavel || '');
-    setTelefone(reg.telefone || '');
-    setDataSit(reg.data || '');
-    setObs(reg.obs || '');
+    setSituacaoDetalhada(htmlKanbanParaTextoLimpo(reg.situacaoDetalhada || ''));
+setProjetista(reg.projetista || '');
+setResponsavel(reg.responsavel || '');
+setTelefone(reg.telefone || '');
+setDataSit(reg.data || '');
+setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
     setPrograma(
       reg.programa || (reg.cadaVezMelhor ? 'PRONAF MULHER (406)' : '')
     );
@@ -460,7 +470,12 @@ export default function ModuloContratacoes({
       if (fProj && !(r.projetista || '').toUpperCase().includes(fProj)) return false;
       if (fResp && !(r.responsavel || '').toUpperCase().includes(fResp)) return false;
 
-      if (tbFiltroPorte.length > 0 && !tbFiltroPorte.includes(r.porte)) return false;
+      if (
+  tbFiltroPorte.length > 0 &&
+  !tbFiltroPorte.includes(r.porte) &&
+  !tbFiltroPorte.includes(classificarCategoriaPorte(r.porte))
+)
+  return false;
       if (tbFiltroTipo.length > 0 && !tbFiltroTipo.includes(r.tipo)) return false;
       if (tbFiltroSituacao.length > 0 && !tbFiltroSituacao.includes(r.situacao))
         return false;

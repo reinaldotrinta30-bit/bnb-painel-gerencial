@@ -229,3 +229,42 @@ export function mascaraMoedaInput(v: string): string {
   num = (parseInt(num, 10) / 100).toFixed(2);
   return num.replace(".", ",").replace(/(\d)(?=(\d{3})+(?!\d))/g, "$1.");
 }
+
+// ============================================================================
+// ITEM 3: CONVERSOR DE HTML DO KANBAN PARA TEXTO LIMPO NAS TABELAS/ TEXTAREAS
+// ============================================================================
+export function htmlKanbanParaTextoLimpo(textoOuHtml?: string): string {
+  if (!textoOuHtml) return '';
+  if (!textoOuHtml.includes('<') && !textoOuHtml.includes('&nbsp;')) {
+    return textoOuHtml;
+  }
+  return textoOuHtml
+    .replace(/<\/div>\s*<div>/gi, '\n')
+    .replace(/<div>/gi, '')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '- ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// ============================================================================
+// ITEM 6.1 E ITEM 7: CLASSIFICADOR UNIVERSAL DE PORTE (SEM PERDER REGISTROS)
+// ============================================================================
+export function classificarCategoriaPorte(
+  porteBruto?: string
+): 'PRONAF V' | 'PRONAF A' | 'MINI' | 'OUTROS' {
+  const p = (porteBruto || '').toUpperCase().trim();
+  if (p === 'PRONAF A' || p.startsWith('PRONAF A ')) return 'PRONAF A';
+  if (p.includes('PRONAF') || p.includes('CVM') || p.includes('CADA VEZ MELHOR')) {
+    return 'PRONAF V';
+  }
+  if (p.includes('MINI')) return 'MINI';
+  return 'OUTROS';
+}

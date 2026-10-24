@@ -6,13 +6,14 @@ import {
   EtapaKanban,
   StatusCorKanban,
 } from '@/types/painel';
-import { getHojeISO, getHojeBR } from '@/lib/utils';
+import { getHojeISO, getHojeBR, parseMoeda, htmlKanbanParaTextoLimpo } from '@/lib/utils';
 
 export interface ItemOperacaoClienteKanban {
   id?: string;
   tipo: string;
   valor: string;
   situacao?: string;
+  programa?: string;
   detalheExtra?: string;
 }
 
@@ -30,6 +31,7 @@ export function montarHtmlCardSincronizado(params: {
   situacaoDetalhada?: string;
   pendenciasObs?: string;
   espacoAnalise?: string;
+  programa?: string;
   // Dados de Garantia (ignorados automaticamente se PRONAF A)
   tipoGarantia?: 'NENHUMA' | 'AVAL' | 'LCGH' | 'LCGA';
   avalistaNome?: string;
@@ -37,6 +39,7 @@ export function montarHtmlCardSincronizado(params: {
   lcgTipo?: 'LCGH' | 'LCGA';
   lcgValor?: string;
   lcgSituacao?: string;
+  lcgPropostaId?: string;
   // ITEM 2: Lista de todas as operações do mesmo cliente (ex: LCGH + Investimento + Renov. Custeio)
   operacoesAgrupadas?: ItemOperacaoClienteKanban[];
   opNum?: string;
@@ -49,28 +52,22 @@ export function montarHtmlCardSincronizado(params: {
     projetista,
     tipo,
     valor,
-    situacaoMacro,
     situacaoDetalhada,
     pendenciasObs,
     espacoAnalise,
     tipoGarantia,
     avalistaNome,
     avalistaCpf,
-    lcgTipo,
     lcgValor,
-    lcgSituacao,
+    lcgPropostaId,
     operacoesAgrupadas,
     opNum,
     parcela,
+    programa,
   } = params;
 
   const isPronafA = (porte || '').toUpperCase().trim() === 'PRONAF A';
-
-  const formatarLabelTipo = (t: string) => {
-    const tu = (t || '').toUpperCase().trim();
-    if (tu.includes('RENOVA')) return 'RENOV. CUSTEIO';
-    return tu || 'PROPOSTA';
-  };
+  const tipoUpper = (tipo || 'PROPOSTA').toUpperCase().trim();
 
   // Preparador de spans para a Sacada Genial do Duplo Clique:
   const spanEdit = (field: string, val?: string, opId = '') =>
@@ -89,119 +86,129 @@ export function montarHtmlCardSincronizado(params: {
     linhaAvalPuro = `AVAL: ${avalistaNome || ''} - ${avalistaCpf || ''}\n`;
   }
 
-  // 2. Montagem das Linhas de Operações (Suporta 1 ou Múltiplas Operações como LCGH + Investimento + Custeio)
+  // 2. Linhas de Operações (Item 1: Inclui o Programa discretamente para exibição quando expandido)
   let linhasOperacoesHtml = '';
   let linhasOperacoesPuro = '';
 
-  if (operacoesAgrupadas && operacoesAgrupadas.length > 0) {
-    // Ordena para que LCGH / LCGA apareçam primeiro no cabeçalho, mostrando apenas TIPO: R$ VALOR
-    const ordenadas = [...operacoesAgrupadas].sort((a, b) => {
-      const aLim = a.tipo.toUpperCase().includes('LCG') ? 0 : 1;
-      const bLim = b.tipo.toUpperCase().includes('LCG') ? 0 : 1;
-      return aLim - bLim;
-    });
+  const spanProg = (prog?: string, opId = '') => {
+    const pLimpo = (prog || '').trim();
+    if (!pLimpo) return '';
+    return ` <span class="card-op-programa" data-field="programa" ${
+      opId ? `data-opid="${opId}"` : ''
+    }>• ${pLimpo}</span>`;
+  };
 
-    ordenadas.forEach((opItem) => {
-      const label = formatarLabelTipo(opItem.tipo);
-      const isLim = label === 'LCGH' || label === 'LCGA';
+  if (operacoesAgrupadas && operacoesAgrupadas.length > 0) {
+    operacoesAgrupadas.forEach((opItem) => {
+      const tUp = (opItem.tipo || 'PROPOSTA').toUpperCase().trim();
+      const isLim = tUp === 'LCGH' || tUp === 'LCGA';
+      const label = tUp.includes('RENOVAÇÃO') ? 'RENOV. CUSTEIO' : tUp;
       const corEstilo = isLim ? ' style="color:#8B1530;"' : '';
       linhasOperacoesHtml += `<div${corEstilo}><b contenteditable="false">${label}:</b> R$ ${spanEdit(
         'valor',
         opItem.valor || '0,00',
         opItem.id
-      )}</div>`;
+      )}${spanProg(opItem.programa, opItem.id)}</div>`;
+      linhasOperacoesPuro += `${label}: R$ ${opItem.valor || '0,00'}${
+        opItem.programa ? ` (${opItem.programa})` : ''
+      }\n`;
     });
   } else {
-    const tipoUpper = (tipo || '').toUpperCase().trim();
-    const isSomenteLimite = tipoUpper === 'LCGH' || tipoUpper === 'LCGA';
-
-    if (isSomenteLimite) {
+    const isOpPrincipalLimite = tipoUpper === 'LCGH' || tipoUpper === 'LCGA';
+    if (isOpPrincipalLimite) {
       linhasOperacoesHtml = `<div style="color:#8B1530;"><b contenteditable="false">${tipoUpper}:</b> R$ ${spanEdit(
         'valor',
         valor || '0,00',
-        opNum || '' // Fallback id
-      )}</div>`;
+        opNum || ''
+      )}${spanProg(programa, opNum || '')}</div>`;
+      linhasOperacoesPuro = `${tipoUpper}: R$ ${valor || '0,00'}\n`;
     } else {
-      if (
-        !isPronafA &&
-        (tipoGarantia === 'LCGH' || tipoGarantia === 'LCGA' || lcgTipo) &&
-        lcgValor
-      ) {
-        const labelLcg = lcgTipo || tipoGarantia || 'LCGH';
-        linhasOperacoesHtml += `<div style="color:#8B1530;"><b contenteditable="false">${labelLcg}:</b> R$ ${spanEdit(
-          'valor',
-          lcgValor,
-          'lcg_op'
-        )}</div>`;
+      if (!isPronafA && (tipoGarantia === 'LCGH' || tipoGarantia === 'LCGA')) {
+        const labelLcg = lcgPropostaId ? `${tipoGarantia}` : `${tipoGarantia}`;
+        if (lcgValor) {
+          linhasOperacoesHtml += `<div style="color:#8B1530;"><b contenteditable="false">${labelLcg}:</b> R$ ${spanEdit(
+            'valor',
+            lcgValor,
+            'lcg_op'
+          )}</div>`;
+          linhasOperacoesPuro += `${labelLcg}: R$ ${lcgValor}\n`;
+        }
       }
-      const labelDerivada = formatarLabelTipo(tipo);
+      const labelDerivada = tipoUpper.includes('RENOVAÇÃO')
+        ? 'RENOV. CUSTEIO'
+        : tipoUpper;
       linhasOperacoesHtml += `<div><b contenteditable="false">${labelDerivada}:</b> R$ ${spanEdit(
         'valor',
         valor || '0,00',
         opNum || ''
-      )}</div>`;
-      linhasOperacoesPuro += `${labelDerivada}: R$ ${valor || '0,00'}\n`;
+      )}${spanProg(programa, opNum || '')}</div>`;
+      linhasOperacoesPuro += `${labelDerivada}: R$ ${valor || '0,00'}${
+        programa ? ` (${programa})` : ''
+      }\n`;
     }
   }
 
-  // 3. Formatação inteligente que PRESERVA cores, negritos, grifos e emojis (Item 6)
-  // e elimina o bug de multiplicação de traços "- " vazios (Item 6.3)!
-  const formatarBlocoRicoOuTexto = (conteudoBruto?: string, padraoVazio = '-'): string => {
+  // ITEM 5: Respeita 100% o texto do usuário! Se ele apagou o "-", não recoloca automaticamente!
+  const formatarBlocoRicoOuTexto = (conteudoBruto?: string, padraoVazio = ''): string => {
     if (!conteudoBruto || !conteudoBruto.trim()) {
-      return `<div>${padraoVazio}</div>`;
+      return padraoVazio ? `<div>${padraoVazio}</div>` : '<div><br></div>';
     }
     const limpo = conteudoBruto.trim();
 
-    // Se já contém tags HTML de formatação (ex: <b>, <span style=...>, <font>, <div>),
-    // preserva o HTML intacto limpando apenas excessos de linhas "- " vazias consecutivas!
     if (/<(div|span|b|strong|i|em|u|s|strike|font|br|ul|li)\b/i.test(limpo)) {
       return limpo
         .replace(/(<div>\s*-\s*<\/div>\s*){2,}/gi, '<div>-</div>')
         .replace(/(<div>\s*(?:<br\s*\/?>)?\s*<\/div>\s*){2,}/gi, '<div><br></div>');
     }
 
-    // Se for texto puro, converte quebras de linha sem duplicar traços soltos
     const linhas = limpo.split('\n');
     const resultado: string[] = [];
-    let ultimoFoiTracoVazio = false;
+    let ultimoFoiVazio = false;
 
     linhas.forEach((l) => {
       const t = l.trim();
-      if (!t || t === '-') {
-        if (!ultimoFoiTracoVazio) {
-          resultado.push('<div>-</div>');
-          ultimoFoiTracoVazio = true;
+      if (!t) {
+        if (!ultimoFoiVazio) {
+          resultado.push('<div><br></div>');
+          ultimoFoiVazio = true;
         }
       } else {
-        ultimoFoiTracoVazio = false;
-        resultado.push(`<div>${t.startsWith('-') ? t : `- ${t}`}</div>`);
+        ultimoFoiVazio = false;
+        // Mantém exatamente como o usuário escreveu (com ou sem "-")!
+        resultado.push(`<div>${t}</div>`);
       }
     });
 
-    return resultado.length > 0 ? resultado.join('') : `<div>${padraoVazio}</div>`;
+    return resultado.length > 0 ? resultado.join('') : '<div><br></div>';
   };
 
-  // ITEM 10: Se não houver situação detalhada escrita pelo usuário, inicia apenas com "-" (sem injetar o nome da tarja no texto!)
-  const textoSitLivre =
-    situacaoDetalhada && situacaoDetalhada.trim() !== ''
-      ? situacaoDetalhada.trim()
-      : '-';
+  // ITEM 10:
+// Se o campo nunca foi definido, inicia com "-".
+// Se o usuário apagar o traço e salvar, permanece vazio.
+const textoSitLivre =
+  situacaoDetalhada == null
+    ? '-'
+    : situacaoDetalhada.trim();
 
-  const textoPendencias =
-    pendenciasObs && pendenciasObs.trim() !== '' ? pendenciasObs.trim() : '-';
+const textoPendencias =
+  pendenciasObs == null
+    ? '-'
+    : pendenciasObs.trim();
 
-  const textoAnalise =
-    espacoAnalise && espacoAnalise.trim() !== '' ? espacoAnalise.trim() : '-';
+const textoAnalise =
+  espacoAnalise == null
+    ? '-'
+    : espacoAnalise.trim();
 
-  const linhasSitHtml = formatarBlocoRicoOuTexto(textoSitLivre, '-');
-  const linhasPendHtml = formatarBlocoRicoOuTexto(textoPendencias, '-');
-  const linhasAnaliseHtml = formatarBlocoRicoOuTexto(textoAnalise, '-');
+const linhasSitHtml = formatarBlocoRicoOuTexto(textoSitLivre, '');
+const linhasPendHtml = formatarBlocoRicoOuTexto(textoPendencias, '');
+const linhasAnaliseHtml = formatarBlocoRicoOuTexto(textoAnalise, '');
 
-  const linhaOpDesemb = opNum
-    ? `<div><b contenteditable="false">OPERAÇÃO:</b> ${opNum}${
-        parcela ? ` (${parcela}ª PARCELA)` : ''
-      }</div>`
-    : '';
+const linhaOpDesemb = opNum
+  ? `<div><b contenteditable="false">OPERAÇÃO:</b> ${opNum}${
+      parcela ? ` (${parcela}ª PARCELA)` : ''
+    }</div>`
+  : '';
 
   // ITEM 4 e ITEM 5: Cabeçalho selecionável e editável com duplo clique
   const html = `<div contenteditable="false" class="card-bloco-cliente" title="Dê duplo clique aqui para editar Nome, CPF, Porte, Projetista, Aval ou Valores"><div><b contenteditable="false">${spanEdit(
@@ -738,13 +745,14 @@ export function sincronizarAposSalvarContratacao(params: {
 
   const cardExistente = idxCard !== -1 ? cardsAtuais[idxCard] : undefined;
 
-  // Monta a lista de operações agrupadas (Item 2: ex. LCGH + Investimento + Renov. Custeio)
+  // Monta a lista de operações agrupadas (Item 1 e 2: inclui o programa de cada operação!)
   const operacoesAgrupadas: ItemOperacaoClienteKanban[] = opsMesmoCliente.map(
     (op) => ({
       id: op.id,
       tipo: op.tipo || 'Proposta',
       valor: op.valor || '0,00',
       situacao: op.situacao,
+      programa: op.programa,
       detalheExtra:
         op.tipo === 'LCGH' || op.tipo === 'LCGA'
           ? op.lcgSituacao || op.situacaoDetalhada || op.situacao
@@ -762,6 +770,7 @@ export function sincronizarAposSalvarContratacao(params: {
     operacoesAgrupadas.unshift({
       tipo: opRepresentante.tipoGarantiaKanban,
       valor: opRepresentante.lcgValor || '0,00',
+      programa: opRepresentante.programa,
       detalheExtra: opRepresentante.lcgSituacao,
     });
   }
@@ -1128,15 +1137,15 @@ export function propagarEdicaoKanbanParaBases(params: {
   const novoValor = cardEditado.valorVinculado || regAtual.valor;
   const novaSitDetalhada =
     cardEditado.situacaoDetalhadaVinculada !== undefined
-      ? cardEditado.situacaoDetalhadaVinculada
+      ? htmlKanbanParaTextoLimpo(cardEditado.situacaoDetalhadaVinculada)
       : regAtual.situacaoDetalhada;
   const novaObs =
     cardEditado.obsVinculada !== undefined
-      ? cardEditado.obsVinculada
+      ? htmlKanbanParaTextoLimpo(cardEditado.obsVinculada)
       : regAtual.obs;
   const novaAnalise =
     cardEditado.espacoAnaliseVinculado !== undefined
-      ? cardEditado.espacoAnaliseVinculado
+      ? htmlKanbanParaTextoLimpo(cardEditado.espacoAnaliseVinculado)
       : regAtual.espacoAnalise;
 
   const regAtualizado: RegistroContratacao = {

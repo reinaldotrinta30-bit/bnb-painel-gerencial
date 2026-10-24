@@ -21,6 +21,7 @@ import {
   aplicarMascaraCPF,
   aplicarMascaraMoedaInput,
   aplicarMascaraDataBR,
+  classificarCategoriaPorte,
 } from '@/lib/utils';
 import {
   mapearEtapaKanbanParaSituacaoContratacao,
@@ -64,7 +65,7 @@ interface ModuloKanbanProps {
       projetista: string;
       avalistaNome?: string;
       avalistaCpf?: string;
-      operacoesEditadas: Array<{ opId?: string; tipo: string; valor: string }>;
+      operacoesEditadas: Array<{ opId?: string; tipo: string; valor: string; programa?: string }>;
     }
   ) => void;
   onCriarClientePeloKanban?: (
@@ -159,6 +160,16 @@ export default function ModuloKanban({
   const [termoBusca, setTermoBusca] = useState('');
   const [filtroCor, setFiltroCor] = useState<'TODOS' | StatusCorKanban>('TODOS');
   const [filtroEtapa, setFiltroEtapa] = useState<'TODOS' | 'ARQUIVADOS' | EtapaKanban>('TODOS');
+
+  // ITEM 6.1: Filtro de Múltipla Seleção por Porte no Kanban (Inicia com todos selecionados)
+  const TODOS_PORTES_KANBAN = ['PRONAF V', 'PRONAF A', 'MINI', 'OUTROS'];
+  const [filtroPortesKanban, setFiltroPortesKanban] = useState<string[]>([
+    'PRONAF V',
+    'PRONAF A',
+    'MINI',
+    'OUTROS',
+  ]);
+  const [menuFiltroPorteAberto, setMenuFiltroPorteAberto] = useState(false);
 
   // Estados do Modal de Configuração e Filtros do PDF (Itens 5, 6 e 7)
   const [modalPdfAberto, setModalPdfAberto] = useState(false);
@@ -423,6 +434,7 @@ const aplicarHighlight = useCallback((cor: string) => {
     function fecharMenus() {
       setMenuFiltroCorAberto(false);
       setMenuCorCardAbertoId(null);
+      setMenuFiltroPorteAberto(false);
     }
     window.addEventListener('click', fecharMenus);
     return () => window.removeEventListener('click', fecharMenus);
@@ -969,8 +981,8 @@ const aplicarHighlight = useCallback((cor: string) => {
   const [heAvalNome, setHeAvalNome] = useState('');
   const [heAvalCpf, setHeAvalCpf] = useState('');
   const [heOperacoes, setHeOperacoes] = useState<
-    Array<{ opId?: string; tipo: string; valor: string }>
-  >([]);
+  Array<{ opId?: string; tipo: string; valor: string; programa?: string }>
+>([]);
 
   const abrirEdicaoInlineCabecalho = (card: CardKanban) => {
     if (card.etapa === 'NOTAS') return;
@@ -1063,6 +1075,22 @@ const aplicarHighlight = useCallback((cor: string) => {
       });
     }
 
+    const opsClienteNaBase = obterContratacoesDoCard(card);
+    const opsComPrograma = opsExtraidas.map((opEx) => {
+      const regMatch =
+        opsClienteNaBase.find((r) => opEx.opId && String(r.id) === String(opEx.opId)) ||
+        opsClienteNaBase.find((r) => {
+          const tReg = (r.tipo || '').toUpperCase().trim();
+          const labelReg = tReg.includes('RENOVA') ? 'RENOV. CUSTEIO' : tReg;
+          return labelReg === opEx.tipo.toUpperCase();
+        });
+      return {
+        ...opEx,
+        opId: opEx.opId || (regMatch ? String(regMatch.id) : undefined),
+        programa: regMatch?.programa || '',
+      };
+    });
+
     setHeCliente(cli.toUpperCase());
     setHeCpf(cpf);
     setHePorte(porte === '-' ? 'PRONAF V' : porte);
@@ -1070,9 +1098,9 @@ const aplicarHighlight = useCallback((cor: string) => {
     setHeTemAval(temAval);
     setHeAvalNome(avalNome);
     setHeAvalCpf(avalCpf);
-    setHeOperacoes(opsExtraidas);
+    setHeOperacoes(opsComPrograma);
     setCardHeaderEditId(card.id);
-  };
+    };
 
   const salvarEdicaoInlineCabecalho = (card: CardKanban) => {
     if (onInlineEditCabecalho) {
@@ -1523,7 +1551,7 @@ const aplicarHighlight = useCallback((cor: string) => {
 
   const temBuscaTextoAtiva = termoBusca.trim() !== '';
 
-  // ITEM 4.1, 4.2 e 4.3: Regras de visibilidade dos cards Arquivados ('roxo')
+  // ITEM 4.1, 4.2, 4.3 e 6.1: Regras de visibilidade dos cards (Arquivados + Porte + Cor + Busca)
   const cardPassaNoFiltro = (card: CardKanban): boolean => {
     const isArquivado = card.statusCor === 'roxo';
 
@@ -1531,15 +1559,23 @@ const aplicarHighlight = useCallback((cor: string) => {
     if (filtroEtapa === 'ARQUIVADOS') {
       if (!isArquivado) return false;
     } else {
-      // Se NÃO está na guia Arquivados:
-      // Os arquivados ficam ocultos em "👁️ VER TODAS" e nas colunas normais,
-      // EXCETO se o usuário digitou algo na busca (Item 4.2) ou filtrou especificamente pela cor roxa!
       if (isArquivado && !temBuscaTextoAtiva && filtroCor !== 'roxo') {
         return false;
       }
       if (filtroEtapa !== 'TODOS' && card.etapa !== filtroEtapa) {
         return false;
       }
+    }
+
+    // ITEM 6.1: Filtra os cards de clientes pelos Portes selecionados (Notas livres permanecem visíveis)
+    if (card.etapa !== 'NOTAS' && filtroPortesKanban.length < 4) {
+      let porteDoCard = card.porteVinculado || '';
+      if (!porteDoCard) {
+        const mPorte = (card.textoPuro || card.texto || '').match(/PORTE:\s*([^\n<]+)/i);
+        if (mPorte && mPorte[1]) porteDoCard = mPorte[1].trim();
+      }
+      const catPorte = classificarCategoriaPorte(porteDoCard);
+      if (!filtroPortesKanban.includes(catPorte)) return false;
     }
 
     if (filtroCor !== 'TODOS' && card.statusCor !== filtroCor) return false;
@@ -1552,7 +1588,10 @@ const aplicarHighlight = useCallback((cor: string) => {
   };
 
   const modoFiltroCruzadoAtivo =
-    temBuscaTextoAtiva || filtroCor !== 'TODOS' || filtroEtapa === 'ARQUIVADOS';
+    temBuscaTextoAtiva ||
+    filtroCor !== 'TODOS' ||
+    filtroEtapa === 'ARQUIVADOS' ||
+    filtroPortesKanban.length < 4;
 
   // ITEM 5: Conta quantas colunas possuem resultados visíveis no momento.
   // Se apenas 1 coluna tiver resultados (ex: numa busca por nome ou ao selecionar 1 guia),
@@ -1624,43 +1663,139 @@ const aplicarHighlight = useCallback((cor: string) => {
             </div>
           </div>
 
-          {onSincronizarBaseCompleta && (
-            <>
-              <div className="toolbar-divisor" />
-              <button
-                onClick={onSincronizarBaseCompleta}
+          <div className="toolbar-divisor" />
+          <button
+            onClick={() => setModalPdfAberto(true)}
+            style={{
+              width: 'auto',
+              background: '#fef2f2',
+              border: '1px solid #fecaca',
+              color: '#8B1530',
+              fontWeight: 'bold',
+              fontSize: '11px',
+              padding: '4px 10px',
+              borderRadius: '4px',
+            }}
+            title="Gera um PDF Executivo separado por Etapa, Porte e Prioridades (Ocultando o Espaço para Análise)"
+          >
+            🖨️ Exportar PDF
+          </button>
+
+          {/* ITEM 6.1: Filtro de Múltipla Seleção por Porte ao lado de Exportar PDF */}
+          <div
+            style={{ position: 'relative', display: 'inline-block', marginLeft: '4px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setMenuFiltroPorteAberto((p) => !p)}
+              style={{
+                width: 'auto',
+                background:
+                  filtroPortesKanban.length < 4 ? '#8B1530' : '#f8fafc',
+                color: filtroPortesKanban.length < 4 ? '#ffffff' : '#334155',
+                border: `1px solid ${
+                  filtroPortesKanban.length < 4 ? '#8B1530' : '#cbd5e1'
+                }`,
+                fontWeight: 'bold',
+                fontSize: '11px',
+                padding: '4px 10px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+              }}
+              title="Filtrar cards do Kanban por Porte do Cliente"
+            >
+              🏷️ Portes{' '}
+              {filtroPortesKanban.length === 4
+                ? '(Todos)'
+                : `(${filtroPortesKanban.length})`}{' '}
+              ▾
+            </button>
+
+            {menuFiltroPorteAberto && (
+              <div
                 style={{
-                  background: '#e8f0fe',
-                  border: '1px solid #a8c7fa',
-                  color: '#1967d2',
-                  fontWeight: 'bold',
-                  fontSize: '11px',
-                  padding: '4px 10px',
-                  borderRadius: '4px',
+                  position: 'absolute',
+                  top: '115%',
+                  left: 0,
+                  background: '#ffffff',
+                  border: '1px solid #cbd5e1',
+                  boxShadow: '0 6px 16px rgba(0,0,0,0.16)',
+                  borderRadius: '8px',
+                  padding: '8px 10px',
+                  zIndex: 1000,
+                  width: '205px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
                 }}
-                title="Agrupa e sincroniza os clientes e garantias da aba Contratações para o Kanban"
               >
-                🔄 Sincronizar
-              </button>
-              <button
-                onClick={() => setModalPdfAberto(true)}
-                style={{
-                  background: '#fef2f2',
-                  border: '1px solid #fecaca',
-                  color: '#8B1530',
-                  fontWeight: 'bold',
-                  fontSize: '11px',
-                  padding: '4px 10px',
-                  borderRadius: '4px',
-                  marginLeft: '4px',
-                }}
-                title="Gera um PDF Executivo separado por Etapa, Porte e Prioridades (Ocultando o Espaço para Análise)"
-              >
-                🖨️ Exportar PDF
-              </button>
-            </>
-          )}
-        </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    borderBottom: '1px solid #e2e8f0',
+                    paddingBottom: '4px',
+                    fontSize: '10.5px',
+                    fontWeight: 'bold',
+                    color: '#64748b',
+                  }}
+                >
+                  <span>FILTRAR POR PORTE</span>
+                  <span
+                    onClick={() =>
+                      setFiltroPortesKanban(
+                        filtroPortesKanban.length === 4
+                          ? []
+                          : [...TODOS_PORTES_KANBAN]
+                      )
+                    }
+                    style={{ color: '#8B1530', cursor: 'pointer' }}
+                  >
+                    {filtroPortesKanban.length === 4 ? 'Desmarcar' : 'Marcar Todos'}
+                  </span>
+                </div>
+
+                {[
+                  { id: 'PRONAF V', label: 'PRONAF (V / Mulher / B)' },
+                  { id: 'PRONAF A', label: 'PRONAF A' },
+                  { id: 'MINI', label: 'MINI Produtor' },
+                  { id: 'OUTROS', label: 'Outros / Sem Porte' },
+                ].map((item) => (
+                  <label
+                    key={item.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontSize: '11.5px',
+                      fontWeight: 600,
+                      color: '#1e293b',
+                      cursor: 'pointer',
+                      margin: 0,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={filtroPortesKanban.includes(item.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setFiltroPortesKanban([...filtroPortesKanban, item.id]);
+                        } else {
+                          setFiltroPortesKanban(
+                            filtroPortesKanban.filter((p) => p !== item.id)
+                          );
+                        }
+                      }}
+                      style={{ width: '13px', height: '13px', margin: 0 }}
+                    />
+                    {item.label}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          </div>
 
         {/* Busca Global, Filtro de Cor e Botões Desfazer/Refazer */}
         <div style={{ display: 'flex', flex: 1, minWidth: '250px', maxWidth: '420px', margin: '0 10px', alignItems: 'center', gap: '8px', position: 'relative' }}>
@@ -2969,10 +3104,12 @@ const aplicarHighlight = useCallback((cor: string) => {
 
                               <b>PROJETISTA:</b>
                               <input
-                                type="text"
+                                type="search"
+                                list="dl_projetistas_kanban"
                                 value={heProjetista}
                                 onChange={(e) => setHeProjetista(e.target.value)}
-                                style={{ flex: 1, minWidth: '90px', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
+                                placeholder="Selecione ou digite..."
+                                style={{ flex: 1, minWidth: '110px', padding: '2px 6px', fontSize: '11.5px', height: '24px' }}
                               />
                             </div>
 
@@ -2998,7 +3135,7 @@ const aplicarHighlight = useCallback((cor: string) => {
                             )}
 
                             {heOperacoes.map((opItem, idxOp) => (
-                              <div key={idxOp} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <div key={idxOp} style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                                 <b style={{ color: opItem.tipo.includes('LCG') ? '#8B1530' : '#1e293b' }}>
                                   {opItem.tipo}: R$
                                 </b>
@@ -3013,8 +3150,28 @@ const aplicarHighlight = useCallback((cor: string) => {
                                     };
                                     setHeOperacoes(novas);
                                   }}
-                                  style={{ width: '130px', padding: '2px 6px', fontSize: '11.5px', fontWeight: 'bold', height: '24px' }}
+                                  style={{ width: '115px', padding: '2px 6px', fontSize: '11.5px', fontWeight: 'bold', height: '24px' }}
                                 />
+                                {!opItem.tipo.includes('LCG') && (
+                                  <>
+                                    <b style={{ fontSize: '10.5px', color: '#475569' }}>PROG.:</b>
+                                    <input
+                                      type="search"
+                                      list="dl_programas_kanban"
+                                      value={opItem.programa || ''}
+                                      onChange={(e) => {
+                                        const novas = [...heOperacoes];
+                                        novas[idxOp] = {
+                                          ...novas[idxOp],
+                                          programa: e.target.value,
+                                        };
+                                        setHeOperacoes(novas);
+                                      }}
+                                      placeholder="Ex: PRONAF MULHER (406)"
+                                      style={{ flex: 1, minWidth: '145px', padding: '2px 6px', fontSize: '11px', height: '24px' }}
+                                    />
+                                  </>
+                                )}
                               </div>
                             ))}
                           </div>

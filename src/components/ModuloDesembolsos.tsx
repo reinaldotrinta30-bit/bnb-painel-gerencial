@@ -17,6 +17,7 @@ import {
   getHojeBR,
   formatarMoedaExcel,
   formatarDataExcel,
+  classificarCategoriaPorte,
 } from '@/lib/utils';
 
 interface ModuloDesembolsosProps {
@@ -256,12 +257,20 @@ export default function ModuloDesembolsos({
         !buscaTop ||
         (op.cliente || '').toUpperCase().includes(buscaTop) ||
         (op.cpf || '').includes(buscaTop);
-      const matchPorteTop =
-        dashPorteTop.length === 0 || dashPorteTop.includes(op.porte);
+      const catPorteOp = classificarCategoriaPorte(op.porte);
+   const matchPorteTop =
+     dashPorteTop.length === 0 ||
+     dashPorteTop.includes(op.porte) ||
+     dashPorteTop.includes(catPorteOp);
 
-      if (!matchClienteTop || !matchPorteTop) return;
+   if (!matchClienteTop || !matchPorteTop) return;
 
-      if (fTbPortes.length > 0 && !fTbPortes.includes(op.porte)) return;
+   if (
+     fTbPortes.length > 0 &&
+     !fTbPortes.includes(op.porte) &&
+     !fTbPortes.includes(catPorteOp)
+   )
+     return;
       if (
         fTbProjs.length > 0 &&
         !fTbProjs.includes((op.projetista || '').toUpperCase())
@@ -501,7 +510,12 @@ export default function ModuloDesembolsos({
       if (fOpCpf && !(r.cpf || '').includes(fOpCpf)) return false;
       if (fo && !(r.op || '').toUpperCase().includes(fo)) return false;
       if (fp && !(r.projetista || '').toUpperCase().includes(fp)) return false;
-      if (fOpPortes.length > 0 && !fOpPortes.includes(r.porte)) return false;
+      if (
+  fOpPortes.length > 0 &&
+  !fOpPortes.includes(r.porte) &&
+  !fOpPortes.includes(classificarCategoriaPorte(r.porte))
+)
+  return false;
       return true;
     });
 
@@ -1127,6 +1141,7 @@ export default function ModuloDesembolsos({
                     <option value="PRONAF V" style={{ color: '#333' }}>PRONAF V</option>
                     <option value="PRONAF A" style={{ color: '#333' }}>PRONAF A</option>
                     <option value="MINI" style={{ color: '#333' }}>MINI</option>
+                    <option value="OUTROS" style={{ color: '#333' }}>OUTROS / S/ PORTE</option>
                   </select>
                   <span style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', fontSize: '10px', color: 'var(--support-gray)', pointerEvents: 'none' }}>▼</span>
                 </div>
@@ -1224,6 +1239,7 @@ export default function ModuloDesembolsos({
                             <option value="PRONAF V" style={{ color: '#333' }}>PRONAF V</option>
                             <option value="PRONAF A" style={{ color: '#333' }}>PRONAF A</option>
                             <option value="MINI" style={{ color: '#333' }}>MINI</option>
+                            <option value="OUTROS" style={{ color: '#333' }}>OUTROS / S/ PORTE</option>
                           </select>
                           <span style={{ position: 'absolute', right: '6px', top: '50%', transform: 'translateY(-50%)', fontSize: '9px', color: 'var(--support-gray)', pointerEvents: 'none' }}>▼</span>
                         </div>
