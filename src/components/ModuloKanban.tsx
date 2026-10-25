@@ -22,7 +22,6 @@ import {
   aplicarMascaraMoedaInput,
   aplicarMascaraDataBR,
   classificarCategoriaPorte,
-  htmlKanbanParaTextoLimpo,
 } from '@/lib/utils';
 import {
   mapearEtapaKanbanParaSituacaoContratacao,
@@ -31,6 +30,8 @@ import {
   exportarKanbanParaPDFExecutivo,
   OpcoesFiltroExportacaoPDF,
 } from '@/lib/integradorSincronizado';
+
+import AbaParecerTecnicoCard from '@/components/AbaParecerTecnicoCard';
 
 interface ModuloKanbanProps {
   cards: CardKanban[];
@@ -709,175 +710,9 @@ const aplicarHighlight = useCallback((cor: string) => {
     useState(false);
 
    
-   // =========================================================================
-  // ITEM 2: ABAS ESTILO PLANILHA EXCEL NO RODAPÉ DO CARD MAXIMIZADO
-  // =========================================================================
-  const [abaInternaCard, setAbaInternaCard] = useState<
+   const [abaInternaCard, setAbaInternaCard] = useState<
     'notas' | 'contratacoes' | 'desembolsos' | 'parecer'
   >('notas');
-
-  // ITEM 4: Estados e Motor de Regras do Gerador de Pareceres Técnicos BNB
-  const [modeloParecer, setModeloParecer] = useState<
-    'APROVACAO_S522' | 'DEVOLUCAO_PENDENCIAS' | 'CONTRATACAO' | 'DESEMBOLSO'
-  >('APROVACAO_S522');
-  const [textoParecerEditavel, setTextoParecerEditavel] = useState('');
-
-  const gerarParecerTecnicoDoCard = useCallback(
-    (
-      card: CardKanban,
-      modelo: 'APROVACAO_S522' | 'DEVOLUCAO_PENDENCIAS' | 'CONTRATACAO' | 'DESEMBOLSO'
-    ) => {
-      const opsCli = obterContratacoesDoCard(card);
-      const { ops: opsDesemb, evs: evsDesemb } = obterDesembolsosDoCard(card);
-      const extraidos = extrairCamposLivresDoHtmlKanban(
-        card.texto,
-        card.textoPuro
-      );
-
-      const nomeCli = (
-        card.clienteVinculado ||
-        opsCli[0]?.cliente ||
-        'CLIENTE NÃO IDENTIFICADO'
-      ).toUpperCase();
-      const cpfCli = card.cpfVinculado || opsCli[0]?.cpf || 'Não informado';
-      const porteCli = (
-        card.porteVinculado ||
-        opsCli[0]?.porte ||
-        'PRONAF V'
-      ).toUpperCase();
-      const projCli =
-        Array.from(
-          new Set(opsCli.map((o) => (o.projetista || '').toUpperCase()).filter(Boolean))
-        ).join(' / ') || 'Não informado';
-
-      const opsDerivadas = opsCli.filter((o) => {
-        const t = (o.tipo || '').toUpperCase().trim();
-        return t !== 'LCGH' && t !== 'LCGA';
-      });
-      const opsLimites = opsCli.filter((o) => {
-        const t = (o.tipo || '').toUpperCase().trim();
-        return t === 'LCGH' || t === 'LCGA';
-      });
-
-      const linhasOpsTexto =
-        opsDerivadas.length > 0
-          ? opsDerivadas
-              .map(
-                (o, i) =>
-                  `  • OP${i + 1} - ${o.tipo.toUpperCase()}: R$ ${o.valor}${
-                    o.programa ? ` | Programa: ${o.programa}` : ''
-                  } (Status: ${o.situacao})`
-              )
-              .join('\n')
-          : `  • ${(card.tipoOpVinculado || 'Operação Rural').toUpperCase()}: R$ ${
-              card.valorVinculado || '0,00'
-            }`;
-
-      // Regra Automática de Garantia
-      let blocoGarantia = '';
-      if (porteCli === 'PRONAF A') {
-        blocoGarantia =
-          '• GARANTIA: Operação enquadrada no PRONAF Grupo A, dispensada de exigência de garantias reais ou fidejussórias adicionais conforme normativo vigente.';
-      } else if (opsLimites.length > 0) {
-        blocoGarantia = opsLimites
-          .map(
-            (l) =>
-              `• GARANTIA REAL (${l.tipo.toUpperCase()}): Amparada por processo de limite no valor de R$ ${
-                l.valor
-              } (${l.lcgSituacao || l.situacaoDetalhada || l.situacao}).`
-          )
-          .join('\n');
-      } else {
-        const regComAval = opsCli.find((o) => o.avalistaNome || o.avalistaCpf);
-        if (regComAval) {
-          blocoGarantia = `• GARANTIA FIDEJUSSÓRIA (AVAL): Prestada por ${
-            regComAval.avalistaNome || 'Avalista indicado'
-          }${regComAval.avalistaCpf ? `, CPF nº ${regComAval.avalistaCpf}` : ''}.`;
-        } else {
-          blocoGarantia =
-            '• GARANTIA: Conforme minuta e proposta técnica vinculada ao processo.';
-        }
-      }
-
-      const sitTexto = htmlKanbanParaTextoLimpo(
-        extraidos.situacaoDetalhada || card.situacaoDetalhadaVinculada || '-'
-      );
-      const pendTexto = htmlKanbanParaTextoLimpo(
-        extraidos.pendenciasObs || card.obsVinculada || '-'
-      );
-      const analiseTexto = htmlKanbanParaTextoLimpo(
-        extraidos.espacoAnalise || card.espacoAnaliseVinculado || '-'
-      );
-
-      const titulosModelo: Record<typeof modelo, string> = {
-        APROVACAO_S522:
-          'PARECER DE CONFORMIDADE E ENCAMINHAMENTO À CENTRAL DE CRÉDITO (PCE / S522)',
-        DEVOLUCAO_PENDENCIAS:
-          'DESPACHO TÉCNICO DE PENDÊNCIAS E SOLICITAÇÃO DE REGULARIZAÇÃO',
-        CONTRATACAO:
-          'PARECER DE CONFORMIDADE PARA EMISSÃO E FORMALIZAÇÃO DE CONTRATO',
-        DESEMBOLSO:
-          'PARECER DE CONFORMIDADE PARA LIBERAÇÃO DE DESEMBOLSO RURAL',
-      };
-
-      let conclusaoPadrao = '';
-      if (modelo === 'APROVACAO_S522') {
-        conclusaoPadrao =
-          'CONCLUSÃO / ENCAMINHAMENTO:\nApós verificação prévia da documentação cadastral, capacidade produtiva e garantias vinculadas na Agência, encaminha-se a proposta para análise técnica e deliberação pela Central de Crédito (S522).';
-      } else if (modelo === 'DEVOLUCAO_PENDENCIAS') {
-        conclusaoPadrao =
-          'CONCLUSÃO / PROVIDÊNCIAS:\nSolicita-se ao projetista/proponente o saneamento integral das pendências listadas no item 3 deste despacho para prosseguimento da análise e contratação.';
-      } else if (modelo === 'CONTRATACAO') {
-        conclusaoPadrao =
-          'CONCLUSÃO / FORMALIZAÇÃO:\nVerificada a conformidade da aprovação e das condicionantes prévias, o processo encontra-se apto para emissão do instrumento de crédito, coleta de assinaturas e registro de garantias.';
-      } else {
-        const resumoDesemb =
-          evsDesemb.length > 0
-            ? evsDesemb
-                .map(
-                  (e) =>
-                    `  • OP ${e.op} (${e.parcela}ª Parcela): R$ ${e.valor} — ${e.situacao} (${e.data})`
-                )
-                .join('\n')
-            : opsDesemb
-                .map((o) => `  • OP ${o.op}: Valor Contratado R$ ${o.valor}`)
-                .join('\n');
-        conclusaoPadrao = `DADOS DE LIBERAÇÃO / DESEMBOLSO:\n${
-          resumoDesemb || '  • Aguardando detalhamento da parcela.'
-        }\n\nCONCLUSÃO / LIBERAÇÃO:\nVerificada a regularidade da aplicação/comprovantes da etapa, opina-se favoravelmente ao processamento do desembolso conforme valores discriminados.`;
-      }
-
-      const corpoParecer =
-        `BANCO DO NORDESTE DO BRASIL S.A. - BNB\n` +
-        `${titulosModelo[modelo]}\n` +
-        `Data de Emissão: ${getHojeBR()}\n` +
-        `====================================================================\n\n` +
-        `1. IDENTIFICAÇÃO DO PROPONENTE E OPERAÇÕES:\n` +
-        `• Cliente: ${nomeCli} | CPF: ${cpfCli}\n` +
-        `• Porte / Enquadramento: ${porteCli} | Assistência Técnica: ${projCli}\n` +
-        `• Operações Vinculadas:\n${linhasOpsTexto}\n` +
-        `${blocoGarantia}\n\n` +
-        `2. SITUAÇÃO ATUAL E APONTAMENTOS DE ANÁLISE / CONFORMIDADE:\n` +
-        `${sitTexto !== '-' && sitTexto !== '' ? sitTexto : '• Em tramitação regular.'}\n` +
-        `${
-          analiseTexto !== '-' && analiseTexto !== ''
-            ? `\n[CONFORMIDADE / CÁLCULOS E VERIFICAÇÕES S400/GED]:\n${analiseTexto}\n`
-            : ''
-        }\n` +
-        `3. PENDÊNCIAS / CONDICIONANTES OBSERVADAS:\n` +
-        `${
-          pendTexto !== '-' && pendTexto !== ''
-            ? pendTexto
-            : '• Sem pendências impeditivas registradas no momento.'
-        }\n\n` +
-        `4. ${conclusaoPadrao}`;
-
-      setModeloParecer(modelo);
-      setTextoParecerEditavel(corpoParecer);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [contratacoes, operacoesBase, eventos]
-  );
 
   // Estados do Editor de Contratação na Página 2 do Card
   const [editContratCardId, setEditContratCardId] = useState<string | null>(null);
@@ -3956,111 +3791,17 @@ const opNumero =
                                       )}
                                     </div>
                                   </div>
+
                                 )}
-                                
-                                {/* ITEM 4: CONTEÚDO DA PÁGINA 4: GERADOR DE PARECER TÉCNICO BNB */}
+
+                                {/* ITEM 4: CONTEÚDO DA PÁGINA 4: GERADOR MODULAR DE PARECERES TÉCNICOS */}
                                 {abaInternaCard === 'parecer' && (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                    <div
-                                      style={{
-                                        background: '#fff',
-                                        border: '1px solid #cbd5e1',
-                                        borderRadius: '8px',
-                                        padding: '12px 16px',
-                                        display: 'flex',
-                                        justifyContent: 'space-between',
-                                        alignItems: 'center',
-                                        flexWrap: 'wrap',
-                                        gap: '10px',
-                                      }}
-                                    >
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                        <strong style={{ color: '#8B1530', fontSize: '12.5px' }}>
-                                          📄 MODELO DE PARECER / DESPACHO:
-                                        </strong>
-                                        <select
-                                          value={modeloParecer}
-                                          onChange={(e) => {
-                                            const novoMod = e.target.value as
-                                              | 'APROVACAO_S522'
-                                              | 'DEVOLUCAO_PENDENCIAS'
-                                              | 'CONTRATACAO'
-                                              | 'DESEMBOLSO';
-                                            gerarParecerTecnicoDoCard(card, novoMod);
-                                          }}
-                                          style={{ width: 'auto', height: '32px', fontSize: '12px', fontWeight: 'bold', padding: '0 10px' }}
-                                        >
-                                          <option value="APROVACAO_S522">
-                                            1. Encaminhamento / Aprovação à Central (PCE / S522)
-                                          </option>
-                                          <option value="DEVOLUCAO_PENDENCIAS">
-                                            2. Despacho de Pendências / Solicitação de Regularização
-                                          </option>
-                                          <option value="CONTRATACAO">
-                                            3. Conformidade para Emissão / Assinatura de Contrato
-                                          </option>
-                                          <option value="DESEMBOLSO">
-                                            4. Conformidade para Liberação de Desembolso
-                                          </option>
-                                        </select>
-                                      </div>
+                                  <AbaParecerTecnicoCard
+                                    card={card}
+                                    operacoesCliente={opsContratCliente}
+                                  />        
 
-                                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                        <button
-                                          type="button"
-                                          onClick={() => gerarParecerTecnicoDoCard(card, modeloParecer)}
-                                          style={{ width: 'auto', padding: '6px 12px', fontSize: '11.5px', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                                        >
-                                          🔄 Atualizar com Dados do Card
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            navigator.clipboard.writeText(textoParecerEditavel);
-                                            alert('📋 Parecer Técnico copiado para a área de transferência! Pronto para colar no S400 / GED / Despacho.');
-                                          }}
-                                          style={{ width: 'auto', padding: '6px 14px', fontSize: '11.5px', background: '#8B1530', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                                        >
-                                          📋 Copiar Parecer (S400 / GED)
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            const jan = window.open('', '_blank');
-                                            if (!jan) return;
-                                            jan.document.write(
-                                              `<html><head><title>Parecer Técnico - ${card.clienteVinculado || 'Cliente'}</title><style>body{font-family:Arial,sans-serif;padding:30px;line-height:1.6;color:#111;}pre{white-space:pre-wrap;font-family:Arial,sans-serif;font-size:13px;}</style></head><body><pre>${textoParecerEditavel}</pre><script>window.print();</script></body></html>`
-                                            );
-                                            jan.document.close();
-                                          }}
-                                          style={{ width: 'auto', padding: '6px 14px', fontSize: '11.5px', background: '#15803d', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                                        >
-                                          🖨️ Imprimir / PDF
-                                        </button>
-                                      </div>
-                                    </div>
-
-                                    <textarea
-                                      value={textoParecerEditavel}
-                                      onChange={(e) => setTextoParecerEditavel(e.target.value)}
-                                      rows={18}
-                                      style={{
-                                        width: '100%',
-                                        padding: '14px',
-                                        fontSize: '12.5px',
-                                        lineHeight: 1.55,
-                                        fontFamily: 'monospace',
-                                        border: '1px solid #cbd5e1',
-                                        borderRadius: '8px',
-                                        background: '#ffffff',
-                                        color: '#0f172a',
-                                      }}
-                                    />
-                                  </div>
                                 )}
-
-
-
                               </div>
                             );
                           })()}
@@ -4160,10 +3901,7 @@ const opNumero =
 
                               <button
                                 type="button"
-                                onClick={() => {
-                                  gerarParecerTecnicoDoCard(card, modeloParecer);
-                                  setAbaInternaCard('parecer');
-                                }}
+                                onClick={() => setAbaInternaCard('parecer')}
                                 style={{
                                   width: 'auto',
                                   height: '34px',
