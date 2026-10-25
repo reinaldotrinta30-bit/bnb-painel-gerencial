@@ -931,14 +931,14 @@ export function sincronizarAposSalvarContratacao(params: {
   //   "OP1 (Custeio)", "OP2 (Investimento)", "OP3 (Investimento)" na ordem das contratações do cliente!
   const formatarTipoOpCurto = (tipoBruto?: string): string => {
     const t = (tipoBruto || '').toUpperCase().trim();
-    if (t.includes('RENOVA')) return 'Renov. Custeio';
-    if (t.includes('CUSTEIO')) return 'Custeio';
-    if (t.includes('INVEST')) return 'Investimento';
-    if (t.includes('CARTÃO') || t.includes('CARTAO')) return 'Cartão BNB';
-    return tipoBruto || 'Proposta';
+    if (t.includes('RENOVA')) return 'RENOV. CUSTEIO';
+    if (t.includes('CUSTEIO')) return 'CUSTEIO';
+    if (t.includes('INVEST')) return 'INVESTIMENTO';
+    if (t.includes('CARTÃO') || t.includes('CARTAO')) return 'CARTÃO BNB';
+    return (tipoBruto || 'PROPOSTA').toUpperCase().trim();
   };
 
-  // Remove eventuais linhas de LCGH/LCGA que tenham entrado por engano na base de desembolsos no passado
+  // Remove eventuais linhas de LCGH/LCGA da base de desembolsos
   const idsLimitesCliente = opsMesmoCliente
     .filter((r) => {
       const t = (r.tipo || '').toUpperCase().trim();
@@ -946,33 +946,61 @@ export function sincronizarAposSalvarContratacao(params: {
     })
     .map((r) => String(r.id));
 
-  const novasOperacoesDesemb = operacoesDesembAtuais.filter(
+  const baseSemLimites = operacoesDesembAtuais.filter(
     (op) =>
       !(op.propostaIdOrigem && idsLimitesCliente.includes(String(op.propostaIdOrigem))) &&
       !op.op.toUpperCase().includes('(LCGH)') &&
       !op.op.toUpperCase().includes('(LCGA)')
   );
 
+  // Índices já vinculados nesta rodada (evita que 2 operações de mesmo tipo colidam!)
+  const indicesJaUsados = new Set<number>();
+
   opsDerivadas.forEach((opDeriv, idxDeriv) => {
     const nomeOpPadrao = `OP${idxDeriv + 1} (${formatarTipoOpCurto(opDeriv.tipo)})`;
+    const idEsperado = `op_${opDeriv.id}`;
+    const nomeCliDeriv = (opDeriv.cliente || '').toUpperCase().trim();
+    const cpfDerivLimpo = (opDeriv.cpf || '').replace(/\D/g, '');
 
-    const idxOpExistente = novasOperacoesDesemb.findIndex(
-      (op) =>
-        String(op.propostaIdOrigem) === String(opDeriv.id) ||
-        (opsDerivadas.length === 1 &&
-          op.cliente.toUpperCase().trim() ===
-            opDeriv.cliente.toUpperCase().trim())
+    // 1º: Procura por propostaIdOrigem exato ou id === "op_" + opDeriv.id
+    let idxOpExistente = baseSemLimites.findIndex(
+      (op, idx) =>
+        !indicesJaUsados.has(idx) &&
+        (String(op.propostaIdOrigem) === String(opDeriv.id) ||
+          String(op.id) === idEsperado)
     );
 
+    // 2º: Se não tinha vínculo de ID (ex: veio de planilha/edição manual), procura pelo mesmo Cliente + mesmo nome de OP ou mesmo Valor!
+    if (idxOpExistente === -1) {
+      idxOpExistente = baseSemLimites.findIndex((op, idx) => {
+        if (indicesJaUsados.has(idx)) return false;
+        const mesmoCli =
+          (cpfDerivLimpo.length === 11 &&
+            (op.cpf || '').replace(/\D/g, '') === cpfDerivLimpo) ||
+          (op.cliente || '').toUpperCase().trim() === nomeCliDeriv;
+        if (!mesmoCli) return false;
+
+        const mesmoNomeOp =
+          (op.op || '').toUpperCase().trim() === nomeOpPadrao.toUpperCase().trim();
+        const mesmoValor =
+          Math.abs(parseMoeda(op.valor) - parseMoeda(opDeriv.valor)) < 0.01;
+        const unicoDoCliente = opsDerivadas.length === 1;
+
+        return mesmoNomeOp || mesmoValor || unicoDoCliente;
+      });
+    }
+
     if (idxOpExistente !== -1) {
-      const opAtual = novasOperacoesDesemb[idxOpExistente].op || '';
+      indicesJaUsados.add(idxOpExistente);
+      const opAtual = baseSemLimites[idxOpExistente].op || '';
       const isOpProvisoria =
         !opAtual.trim() ||
         opAtual.toUpperCase().startsWith('PENDENTE-OP') ||
         /^OP\d+\s*\(/i.test(opAtual.trim());
 
-      novasOperacoesDesemb[idxOpExistente] = {
-        ...novasOperacoesDesemb[idxOpExistente],
+      baseSemLimites[idxOpExistente] = {
+        ...baseSemLimites[idxOpExistente],
+        id: baseSemLimites[idxOpExistente].id || idEsperado,
         propostaIdOrigem: opDeriv.id,
         porte: opDeriv.porte,
         cliente: opDeriv.cliente.toUpperCase(),
@@ -982,8 +1010,8 @@ export function sincronizarAposSalvarContratacao(params: {
         valor: opDeriv.valor,
       };
     } else if (opDeriv.situacao === 'Contratado') {
-      novasOperacoesDesemb.push({
-        id: `op_${opDeriv.id}`,
+      baseSemLimites.push({
+        id: idEsperado,
         propostaIdOrigem: opDeriv.id,
         porte: opDeriv.porte,
         cliente: opDeriv.cliente.toUpperCase(),
@@ -992,7 +1020,32 @@ export function sincronizarAposSalvarContratacao(params: {
         op: nomeOpPadrao,
         valor: opDeriv.valor,
       });
+      indicesJaUsados.add(baseSemLimites.length - 1);
     }
+  });
+
+  // Deduplicador automático final: elimina qualquer linha duplicada de mesmo ID ou mesmo (Cliente + OP + Valor)
+  const vistosPorId = new Set<string>();
+  const vistosPorChaveOp = new Set<string>();
+  const novasOperacoesDesemb: OperacaoBaseDesembolso[] = [];
+
+  baseSemLimites.forEach((op) => {
+    const idStr = String(op.id);
+    const chaveCliOp = `${(op.cliente || '').toUpperCase().trim()}|${(
+      op.op || ''
+    )
+      .toUpperCase()
+      .trim()}|${parseMoeda(op.valor).toFixed(2)}`;
+
+    if (vistosPorId.has(idStr) || vistosPorChaveOp.has(chaveCliOp)) {
+      return; // Ignora a cópia duplicada!
+    }
+    vistosPorId.add(idStr);
+    vistosPorChaveOp.add(chaveCliOp);
+    novasOperacoesDesemb.push({
+      ...op,
+      op: /^OP\d+\s*\(/i.test(op.op || '') ? op.op.toUpperCase() : op.op,
+    });
   });
 
   return {

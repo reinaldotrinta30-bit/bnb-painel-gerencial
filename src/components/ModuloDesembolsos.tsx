@@ -280,7 +280,12 @@ export default function ModuloDesembolsos({
       if (buscaTbOp && !(op.op || '').toUpperCase().includes(buscaTbOp)) return;
 
       const evsDaOp = eventos
-        .filter((e) => e.cliente === op.cliente && e.op === op.op)
+        .filter(
+          (e) =>
+            (e.cliente || '').toUpperCase().trim() ===
+              (op.cliente || '').toUpperCase().trim() &&
+            (e.op || '').toUpperCase().trim() === (op.op || '').toUpperCase().trim()
+        )
         .sort((a, b) => a.timestamp - b.timestamp);
 
       let totalDesembOp = 0;
@@ -459,7 +464,12 @@ export default function ModuloDesembolsos({
       return;
     }
 
+    const opExistente = opId
+      ? operacoesBase.find((r) => String(r.id) === String(opId))
+      : undefined;
+
     const novoReg: OperacaoBaseDesembolso = {
+      ...(opExistente || {}),
       id: opId ? opId : Date.now().toString(),
       porte: opPorte,
       cliente: opCliente.toUpperCase(),
@@ -1354,8 +1364,8 @@ export default function ModuloDesembolsos({
                     </tr>
                   </thead>
                   <tbody>
-                    {consolidado.linhas.map((reg) => (
-                      <tr key={reg.idOp}>
+                    {consolidado.linhas.map((reg, idx) => (
+                      <tr key={`${reg.idOp}_${idx}`}>
                         <td style={{ textAlign: 'left' }}>{reg.cliente}</td>
                         <td style={{ fontWeight: 'bold' }}>{reg.porte}</td>
                         <td style={{ fontWeight: 'bold' }}>{reg.op}</td>
@@ -1573,8 +1583,8 @@ export default function ModuloDesembolsos({
                     </tr>
                   </thead>
                   <tbody>
-                    {operacoesBaseFiltradas.map((reg) => (
-                      <tr key={reg.id}>
+                    {operacoesBaseFiltradas.map((reg, idx) => (
+                      <tr key={`${reg.id}_${idx}`}>
                         <td>
                           <button
                             onClick={() => editarOpDesemb(reg.id)}
@@ -1809,8 +1819,8 @@ export default function ModuloDesembolsos({
                     </tr>
                   </thead>
                   <tbody>
-                    {eventosFiltrados.map((reg) => (
-                      <tr key={reg.id}>
+                    {eventosFiltrados.map((reg, idx) => (
+                      <tr key={`${reg.id}_${idx}`}>
                         <td>
                           <button
                             type="button"

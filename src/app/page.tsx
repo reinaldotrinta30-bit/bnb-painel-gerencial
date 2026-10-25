@@ -77,8 +77,32 @@ export default function PainelGerencialPage() {
     let ativo = true;
     carregarTudoDaNuvem().then((dados) => {
       if (!ativo) return;
+
+      // Auto-higienização: remove duplicatas de ID ou de (Cliente + OP + Valor) em Desembolsos
+      const vistosId = new Set<string>();
+      const vistosChave = new Set<string>();
+      const desembOpLimpo = (dados.desembOp || []).filter((op) => {
+        const idStr = String(op.id);
+        const chave = `${(op.cliente || '').toUpperCase().trim()}|${(
+          op.op || ''
+        )
+          .toUpperCase()
+          .trim()}|${parseMoeda(op.valor).toFixed(2)}`;
+        if (vistosId.has(idStr) || vistosChave.has(chave)) return false;
+        vistosId.add(idStr);
+        vistosChave.add(chave);
+        return true;
+      }).map((op) => ({
+        ...op,
+        op: /^OP\d+\s*\(/i.test(op.op || '') ? op.op.toUpperCase() : op.op,
+      }));
+
+      if (desembOpLimpo.length !== (dados.desembOp || []).length) {
+        salvarDesembOpSync(desembOpLimpo);
+      }
+
       setContratacoes(dados.contratacoes);
-      setOperacoesBase(dados.desembOp);
+      setOperacoesBase(desembOpLimpo);
       setEventos(dados.desembEv);
       setCardsKanban(dados.kanban);
       setModoIsoladoLocal(dados.modoLocal);
@@ -1086,6 +1110,8 @@ export default function PainelGerencialPage() {
               });
 
               if (indicesCliente.length > 0) {
+                const opsEditadasUsadas = new Set<number>();
+
                 indicesCliente.forEach((idx) => {
                   const reg = novasContratacoes[idx];
                   const tipoRegUpper = (reg.tipo || '').toUpperCase().trim();
@@ -1093,13 +1119,28 @@ export default function PainelGerencialPage() {
                     ? 'RENOV. CUSTEIO'
                     : tipoRegUpper;
 
-                  const opEditada =
-                    updates.operacoesEditadas.find(
-                      (op) => op.opId && String(op.opId) === String(reg.id)
-                    ) ||
-                    updates.operacoesEditadas.find(
-                      (op) => op.tipo.toUpperCase() === labelComp
+                  // 1º tenta pelo ID exato da proposta; 2º tenta pela ordem das operações de mesmo tipo ainda não consumidas!
+                  let idxOpEdit = updates.operacoesEditadas.findIndex(
+                    (op, i) =>
+                      !opsEditadasUsadas.has(i) &&
+                      op.opId &&
+                      String(op.opId) === String(reg.id)
+                  );
+                  if (idxOpEdit === -1) {
+                    idxOpEdit = updates.operacoesEditadas.findIndex(
+                      (op, i) =>
+                        !opsEditadasUsadas.has(i) &&
+                        op.tipo.toUpperCase() === labelComp
                     );
+                  }
+                  if (idxOpEdit !== -1) {
+                    opsEditadasUsadas.add(idxOpEdit);
+                  }
+
+                  const opEditada =
+                    idxOpEdit !== -1
+                      ? updates.operacoesEditadas[idxOpEdit]
+                      : undefined;
 
                   const lcgEmbutidaEditada = updates.operacoesEditadas.find(
                     (op) => op.tipo === 'LCGH' || op.tipo === 'LCGA'
@@ -1121,16 +1162,16 @@ export default function PainelGerencialPage() {
                         : reg.avalistaCpf,
                     valor: opEditada ? opEditada.valor : reg.valor,
                     programa:
-  opEditada && opEditada.programa !== undefined
-    ? opEditada.programa.toUpperCase()
-    : reg.programa,
-cadaVezMelhor:
-  (updates.porte || reg.porte).includes('PRONAF') &&
-  isEnquadradoCadaVezMelhor(
-    opEditada && opEditada.programa !== undefined
-      ? opEditada.programa
-      : reg.programa
-  ),
+                      opEditada && opEditada.programa !== undefined
+                        ? opEditada.programa.toUpperCase()
+                        : reg.programa,
+                    cadaVezMelhor:
+                      (updates.porte || reg.porte).includes('PRONAF') &&
+                      isEnquadradoCadaVezMelhor(
+                        opEditada && opEditada.programa !== undefined
+                          ? opEditada.programa
+                          : reg.programa
+                      ),
                     lcgValor:
                       reg.lcgValor && lcgEmbutidaEditada
                         ? lcgEmbutidaEditada.valor

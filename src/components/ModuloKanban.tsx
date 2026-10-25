@@ -3591,9 +3591,9 @@ const opNumero =
                                         </span>
                                       ) : (
                                         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                                          {opsDesembCliente.map((opB) => (
+                                          {opsDesembCliente.map((opB, idxOpB) => (
                                             <div
-                                              key={opB.id}
+                                              key={`${opB.id}_${idxOpB}`}
                                               style={{
                                                 background: '#f8fafc',
                                                 border: '1px solid #cbd5e1',
@@ -3756,8 +3756,8 @@ const opNumero =
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {evsDesembCliente.map((ev) => (
-                                              <tr key={ev.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                                            {evsDesembCliente.map((ev, idxEv) => (
+                                              <tr key={`${ev.id}_${idxEv}`} style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                 <td style={{ padding: '8px', fontWeight: 'bold' }}>{ev.op}</td>
                                                 <td style={{ padding: '8px' }}>{ev.parcela}ª</td>
                                                 <td style={{ padding: '8px', fontWeight: 'bold' }}>R$ {ev.valor}</td>
