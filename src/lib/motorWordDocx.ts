@@ -65,7 +65,7 @@ export async function carregarBufferDoMolde(params: {
         return await resp.arrayBuffer();
       }
     } catch {
-      // Fallback para o Base64 embutido
+      // Continua para o fallback em Base64
     }
   }
 
@@ -217,7 +217,7 @@ function converterParagrafoWordParaHtml(pNode: Element): string {
   return `<p style="margin: 5px 0; text-align: ${align}; line-height: 1.42;">${htmlInterno}</p>`;
 }
 
-// Converte o word/document.xml renderizado pelo Docxtemplater em PDF A4 limpo
+// Gera o PDF A4 100% limpo (SEM cabeçalho, SEM rodapé, SEM paginação e SEM data/hora)
 export async function gerarDocumentoPdfPeloMolde(params: {
   chaveMolde: string;
   caminhoPublicDocx?: string;
@@ -245,7 +245,7 @@ export async function gerarDocumentoPdfPeloMolde(params: {
     } else if (node.nodeName === 'w:tbl') {
       const rows = Array.from((node as Element).getElementsByTagName('w:tr'));
       let htmlTabela =
-        '<table style="width:100%; border-collapse:collapse; margin:8px 0; font-size:9.5pt;">';
+        '<table class="tabela-interna-doc" style="width:100%; border-collapse:collapse; margin:8px 0; font-size:9.5pt;">';
       rows.forEach((tr, rowIdx) => {
         htmlTabela += '<tr>';
         const cells = Array.from(tr.getElementsByTagName('w:tc'));
@@ -262,10 +262,10 @@ export async function gerarDocumentoPdfPeloMolde(params: {
     }
   });
 
-  const tituloPdf = params.nomeArquivoSaida.replace(/\.docx$/i, '.pdf');
+  const nomeSugeridoPdf = params.nomeArquivoSaida.replace(/\.docx$/i, '.pdf');
   const janelaPdf = window.open('', '_blank', 'width=960,height=840');
   if (!janelaPdf) {
-    alert('⚠️ Permita pop-ups no navegador para abrir a visualização/gravação em PDF.');
+    alert('⚠️ Permita pop-ups no navegador para abrir a gravação em PDF.');
     return;
   }
 
@@ -273,37 +273,79 @@ export async function gerarDocumentoPdfPeloMolde(params: {
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <title>${tituloPdf}</title>
+  <title>&nbsp;</title>
   <style>
+    /* Zera a margem @page e esvazia todas as caixas de margem para eliminar
+       qualquer data/hora, título, URL ou paginação injetada pelo navegador */
     @page {
       size: A4 portrait;
-      margin: 15mm 16mm 15mm 16mm;
+      margin: 0mm !important;
+      @top-left { content: "" !important; }
+      @top-center { content: "" !important; }
+      @top-right { content: "" !important; }
+      @bottom-left { content: "" !important; }
+      @bottom-center { content: "" !important; }
+      @bottom-right { content: "" !important; }
     }
-    body {
+
+    html, body {
       font-family: "Calibri", "Segoe UI", Arial, sans-serif;
       font-size: 10.5pt;
       color: #000000;
-      margin: 0;
-      padding: 20px;
+      margin: 0 !important;
+      padding: 0 !important;
       background: #ffffff;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
+
+    /* Tabela mestra invisível que garante margem superior (15mm) e inferior (15mm)
+       em TODAS as páginas do PDF sem ativar o cabeçalho/rodapé do navegador */
+    table.folha-a4-limpa {
+      width: 100%;
+      border-collapse: collapse;
+      border: none;
+    }
+    table.folha-a4-limpa > thead {
+      display: table-header-group;
+    }
+    table.folha-a4-limpa > tfoot {
+      display: table-footer-group;
+    }
+    table.folha-a4-limpa > thead > tr > td,
+    table.folha-a4-limpa > tfoot > tr > td {
+      border: none !important;
+      padding: 0 !important;
+    }
+    .espacador-margem-vertical {
+      height: 15mm;
+      width: 100%;
+    }
+    td.celula-conteudo-a4 {
+      border: none !important;
+      padding: 0 16mm !important;
+      vertical-align: top;
+    }
+
     @media print {
-      body { padding: 0; }
-      .barra-topo-pdf { display: none !important; }
+      .barra-topo-pdf {
+        display: none !important;
+      }
     }
+
     .barra-topo-pdf {
       position: sticky;
       top: 0;
       background: #1e293b;
       color: #fff;
       padding: 10px 18px;
-      margin: -20px -20px 20px -20px;
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-family: sans-serif;
       font-size: 13px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      z-index: 9999;
     }
     .barra-topo-pdf button {
       background: #dc2626;
@@ -319,13 +361,38 @@ export async function gerarDocumentoPdfPeloMolde(params: {
 </head>
 <body>
   <div class="barra-topo-pdf">
-    <span>📄 <strong>${tituloPdf}</strong> — Escolha "Salvar como PDF" na janela de impressão</span>
+    <span>📄 <strong>${nomeSugeridoPdf}</strong> — Documento limpo (sem cabeçalho, rodapé, data/hora ou paginação)</span>
     <button onclick="window.print()">🖨️ Salvar como PDF / Imprimir</button>
   </div>
-  <div>${htmlCorpo}</div>
+
+  <table class="folha-a4-limpa">
+    <thead>
+      <tr>
+        <td><div class="espacador-margem-vertical"></div></td>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="celula-conteudo-a4">
+          ${htmlCorpo}
+        </td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td><div class="espacador-margem-vertical"></div></td>
+      </tr>
+    </tfoot>
+  </table>
+
   <script>
     window.onload = function() {
-      setTimeout(function() { window.print(); }, 250);
+      try {
+        history.replaceState(null, '', '/');
+      } catch (e) {}
+      setTimeout(function() {
+        window.print();
+      }, 250);
     };
   </script>
 </body>

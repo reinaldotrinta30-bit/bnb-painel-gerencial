@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { RegistroContratacao } from '@/types/painel';
 import {
   aplicarMascaraCPF,
@@ -32,6 +33,7 @@ import {
   MOLDE_ALTERACAO_PROPOSTA_BASE64,
 } from '@/components/documentos/moldesBase64Originais';
 import LabelComInfo from '@/components/documentos/LabelComInfo';
+import { DadosIniciaisClienteDoc } from '@/components/documentos/ModalConsolidadaRural';
 
 export type TipoDeclaracaoGeral =
   | 'REGULARIDADE_AMBIENTAL'
@@ -54,6 +56,7 @@ interface ModalDeclaracoesAmbientaisProps {
   tipo: TipoDeclaracaoGeral | null;
   onFechar: () => void;
   contratacoes?: RegistroContratacao[];
+  clienteInicial?: DadosIniciaisClienteDoc | null;
 }
 
 interface ImovelMultiploItem {
@@ -132,6 +135,7 @@ export default function ModalDeclaracoesAmbientais({
   tipo,
   onFechar,
   contratacoes = [],
+  clienteInicial = null,
 }: ModalDeclaracoesAmbientaisProps) {
   const meta = useMemo(() => {
     switch (tipo) {
@@ -305,9 +309,34 @@ export default function ModalDeclaracoesAmbientais({
       setTemMoldeCustom(possuiMoldeCustomizadoSalvo(meta.chave));
       setDataExtenso(obterDataExtensoHoje());
       setDataAbreviada(obterDataAbreviadaHoje());
-      setListaProjetistas(obterListaProjetistas());
+      const projs = obterListaProjetistas();
+      setListaProjetistas(projs);
+
+      if (clienteInicial) {
+        const nIni = (clienteInicial.nome || '').trim();
+        const cIni = clienteInicial.cpf || '';
+        setNome(nIni);
+        setCpf(cIni);
+        setClienteBusca(nIni ? `${nIni} (${cIni || 'S/ CPF'})` : '');
+
+        if (clienteInicial.projetista) {
+          const limpo = clienteInicial.projetista.toUpperCase().trim();
+          const enc = projs.find(
+            (p) =>
+              p.nomeCurto.toUpperCase() === limpo ||
+              (p.nomeCompleto && p.nomeCompleto.toUpperCase() === limpo)
+          );
+          if (enc) {
+            setProjNome(enc.nomeCompleto || enc.nomeCurto);
+            setProjRegistro(enc.registro || '');
+            setProjCpf(enc.cpf || '');
+          } else {
+            setProjNome(clienteInicial.projetista);
+          }
+        }
+      }
     }
-  }, [aberto, tipo, meta.chave]);
+  }, [aberto, tipo, meta.chave, clienteInicial]);
 
   const clientesUnicosCarteira = useMemo(() => {
     const mapa = new Map<string, RegistroContratacao>();
@@ -349,7 +378,7 @@ export default function ModalDeclaracoesAmbientais({
     }
   };
 
-  if (!aberto || !tipo) return null;
+  if (!aberto || !tipo || typeof document === 'undefined') return null;
 
   const precisaRgTitular = tipo === 'REG_AMB_GARANTIDOR';
   const precisaEnderecoTitular = [
@@ -501,13 +530,14 @@ export default function ModalDeclaracoesAmbientais({
     }
   };
 
-  return (
+  return createPortal(
     <div
+      onMouseDown={(e) => e.stopPropagation()}
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(15, 23, 42, 0.65)',
-        zIndex: 999999,
+        background: 'rgba(15, 23, 42, 0.72)',
+        zIndex: 20000000,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -665,7 +695,7 @@ export default function ModalDeclaracoesAmbientais({
               }}
             >
               <strong style={{ fontSize: '12px', color: '#15803d' }}>
-                ⚡ Puxar Cliente da Carteira:
+                ⚡ Cliente Selecionado / Trocar Cliente:
               </strong>
               <input
                 type="search"
@@ -1203,6 +1233,7 @@ export default function ModalDeclaracoesAmbientais({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

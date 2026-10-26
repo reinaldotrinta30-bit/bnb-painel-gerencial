@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { RegistroContratacao } from '@/types/painel';
 import { aplicarMascaraCPF, aplicarMascaraMoedaInput } from '@/lib/utils';
 import {
@@ -17,11 +18,20 @@ import {
 } from '@/components/documentos/moldesBase64Originais';
 import LabelComInfo from '@/components/documentos/LabelComInfo';
 
+export interface DadosIniciaisClienteDoc {
+  nome?: string;
+  cpf?: string;
+  porte?: string;
+  projetista?: string;
+  valor?: string;
+}
+
 interface ModalConsolidadaRuralProps {
   aberto: boolean;
   modalidade: 'PF' | 'PRONAF';
   onFechar: () => void;
   contratacoes?: RegistroContratacao[];
+  clienteInicial?: DadosIniciaisClienteDoc | null;
 }
 
 interface ImovelIntegranteItem {
@@ -94,6 +104,7 @@ export default function ModalConsolidadaRural({
   modalidade,
   onFechar,
   contratacoes = [],
+  clienteInicial = null,
 }: ModalConsolidadaRuralProps) {
   const chaveMolde = modalidade === 'PRONAF' ? 'CONSOLIDADA_PRONAF' : 'CONSOLIDADA_PF';
   const caminhoPublicDocx =
@@ -140,8 +151,15 @@ export default function ModalConsolidadaRural({
     if (aberto) {
       setTemMoldeCustom(possuiMoldeCustomizadoSalvo(chaveMolde));
       setDataExtenso(obterDataExtensoHoje());
+      if (clienteInicial) {
+        const nIni = (clienteInicial.nome || '').toUpperCase().trim();
+        const cIni = clienteInicial.cpf || '';
+        setNome(nIni);
+        setCpf(cIni);
+        setClienteBusca(nIni ? `${nIni} (${cIni || 'S/ CPF'})` : '');
+      }
     }
-  }, [aberto, chaveMolde]);
+  }, [aberto, chaveMolde, clienteInicial]);
 
   const clientesUnicosCarteira = useMemo(() => {
     const mapa = new Map<string, RegistroContratacao>();
@@ -165,7 +183,7 @@ export default function ModalConsolidadaRural({
     }
   };
 
-  if (!aberto) return null;
+  if (!aberto || typeof document === 'undefined') return null;
 
   const handleUploadNovoMolde = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -328,13 +346,14 @@ export default function ModalConsolidadaRural({
     }
   };
 
-  return (
+  return createPortal(
     <div
+      onMouseDown={(e) => e.stopPropagation()}
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(15, 23, 42, 0.65)',
-        zIndex: 999999,
+        background: 'rgba(15, 23, 42, 0.72)',
+        zIndex: 20000000,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -496,7 +515,7 @@ export default function ModalConsolidadaRural({
               }}
             >
               <strong style={{ fontSize: '12px', color: '#92400e' }}>
-                ⚡ Preencher com Cliente da Carteira:
+                ⚡ Cliente Selecionado / Trocar Cliente:
               </strong>
               <input
                 type="search"
@@ -1078,6 +1097,7 @@ export default function ModalConsolidadaRural({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

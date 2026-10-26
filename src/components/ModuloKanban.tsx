@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback, useMemo, } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import AbaGeradorDocumentosCard from '@/components/documentos/AbaGeradorDocumentosCard';
 import {
   CardKanban,
   EtapaKanban,
@@ -711,7 +712,7 @@ const aplicarHighlight = useCallback((cor: string) => {
 
    
    const [abaInternaCard, setAbaInternaCard] = useState<
-    'notas' | 'contratacoes' | 'desembolsos' | 'parecer'
+    'notas' | 'contratacoes' | 'desembolsos' | 'parecer' | 'documentos'
   >('notas');
 
   // Estados do Editor de Contratação na Página 2 do Card
@@ -3802,9 +3803,21 @@ const opNumero =
                                   />        
 
                                 )}
+                                
+                                {/* ITEM 5: CONTEÚDO DA PÁGINA 5: GERADOR DE DOCUMENTOS E DECLARAÇÕES DO CLIENTE */}
+                                {abaInternaCard === 'documentos' && (
+                                  <AbaGeradorDocumentosCard
+                                    card={card}
+                                    operacoesCliente={opsContratCliente}
+                                    todasContratacoes={contratacoes}
+                                  />
+                                )}
+
                               </div>
                             );
                           })()}
+
+                          
 
                         {/* ITEM 2: BARRA DE ABAS ESTILO PLANILHA EXCEL NO CENTRO DO RODAPÉ INFERIOR (Apenas com Card Maximizado) */}
                         {isFullscreen && card.etapa !== 'NOTAS' && (() => {
@@ -3917,7 +3930,40 @@ const opNumero =
                                   boxShadow: abaInternaCard === 'parecer' ? '0 -2px 6px rgba(0,0,0,0.06)' : 'none',
                                 }}
                               >
-                                📄 4. Parecer Técnico
+                                📄 4. Parecer G.
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setAbaInternaCard('documentos')}
+                                style={{
+                                  width: 'auto',
+                                  height: '34px',
+                                  padding: '0 18px',
+                                  borderRadius: '8px 8px 0 0',
+                                  border: '1px solid #cbd5e1',
+                                  borderBottom:
+                                    abaInternaCard === 'documentos'
+                                      ? '3px solid #d97706'
+                                      : 'none',
+                                  background:
+                                    abaInternaCard === 'documentos'
+                                      ? '#ffffff'
+                                      : '#f1f5f9',
+                                  color:
+                                    abaInternaCard === 'documentos'
+                                      ? '#b45309'
+                                      : '#475569',
+                                  fontWeight: 'bold',
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  boxShadow:
+                                    abaInternaCard === 'documentos'
+                                      ? '0 -2px 6px rgba(0,0,0,0.06)'
+                                      : 'none',
+                                }}
+                              >
+                                🗂️ 5. Gerar Documentos
                               </button>
 
                   

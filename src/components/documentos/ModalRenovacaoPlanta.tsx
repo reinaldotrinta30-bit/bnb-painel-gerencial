@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { RegistroContratacao } from '@/types/painel';
 import { aplicarMascaraCPF, aplicarMascaraMoedaInput } from '@/lib/utils';
 import {
@@ -16,12 +17,14 @@ import {
   MOLDE_SOLICITACAO_PLANTA_BASE64,
 } from '@/components/documentos/moldesBase64Originais';
 import LabelComInfo from '@/components/documentos/LabelComInfo';
+import { DadosIniciaisClienteDoc } from '@/components/documentos/ModalConsolidadaRural';
 
 interface ModalRenovacaoPlantaProps {
   aberto: boolean;
   modalidade: 'PROTOCOLO' | 'SOLICITACAO' | null;
   onFechar: () => void;
   contratacoes?: RegistroContratacao[];
+  clienteInicial?: DadosIniciaisClienteDoc | null;
 }
 
 interface ImovelPlantaItem {
@@ -75,6 +78,7 @@ export default function ModalRenovacaoPlanta({
   modalidade,
   onFechar,
   contratacoes = [],
+  clienteInicial = null,
 }: ModalRenovacaoPlantaProps) {
   const isProtocolo = modalidade === 'PROTOCOLO';
   const chaveMolde = isProtocolo ? 'PLANTA_PROTOCOLO' : 'PLANTA_SOLICITACAO';
@@ -126,8 +130,20 @@ export default function ModalRenovacaoPlanta({
       setTemMoldeCustom(possuiMoldeCustomizadoSalvo(chaveMolde));
       setDatadoCET(obterDataAbreviadaHoje());
       setDataExtenso(obterDataExtensoHoje());
+
+      if (clienteInicial) {
+        const nIni = (clienteInicial.nome || '').toUpperCase().trim();
+        const cIni = clienteInicial.cpf || '';
+        setNome(nIni);
+        setCpf(cIni);
+        setClienteBusca(nIni ? `${nIni} (${cIni || 'S/ CPF'})` : '');
+        if (clienteInicial.valor) {
+          setValordapropostaoriginal(clienteInicial.valor);
+          setNovovalorfinanciado(clienteInicial.valor);
+        }
+      }
     }
-  }, [aberto, modalidade, chaveMolde]);
+  }, [aberto, modalidade, chaveMolde, clienteInicial]);
 
   const clientesUnicosCarteira = useMemo(() => {
     const mapa = new Map<string, RegistroContratacao>();
@@ -155,7 +171,7 @@ export default function ModalRenovacaoPlanta({
     }
   };
 
-  if (!aberto || !modalidade) return null;
+  if (!aberto || !modalidade || typeof document === 'undefined') return null;
 
   const handleUploadNovoMolde = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -249,13 +265,14 @@ export default function ModalRenovacaoPlanta({
     }
   };
 
-  return (
+  return createPortal(
     <div
+      onMouseDown={(e) => e.stopPropagation()}
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(15, 23, 42, 0.65)',
-        zIndex: 999999,
+        background: 'rgba(15, 23, 42, 0.72)',
+        zIndex: 20000000,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -409,7 +426,7 @@ export default function ModalRenovacaoPlanta({
               }}
             >
               <strong style={{ fontSize: '12px', color: '#92400e' }}>
-                ⚡ Puxar Cliente da Carteira:
+                ⚡ Cliente Selecionado / Trocar Cliente:
               </strong>
               <input
                 type="search"
@@ -905,6 +922,7 @@ export default function ModalRenovacaoPlanta({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
