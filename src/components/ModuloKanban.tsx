@@ -2989,7 +2989,7 @@ const opNumero =
                                         }}
                                         title="Opções de Cópia e Encaminhamento ao Microsoft Teams"
                                       >
-                                        <span>💬 Teams</span>
+                                        <span>💬</span>
                                         <span style={{ fontSize: '9px' }}>▾</span>
                                       </button>
 
