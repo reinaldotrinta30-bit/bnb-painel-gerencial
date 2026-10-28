@@ -21,6 +21,9 @@ import ModalDeclaracoesAmbientais, {
   TipoDeclaracaoGeral,
 } from '@/components/documentos/ModalDeclaracoesAmbientais';
 import ModalRenovacaoPlanta from '@/components/documentos/ModalRenovacaoPlanta';
+import ModalConformidadePronafA, {
+  STORAGE_KEY_CONFORMIDADE_PRONAF_A,
+} from '@/components/ferramentas/ModalConformidadePronafA';
 
 interface ModuloFerramentasProps {
   contratacoes: RegistroContratacao[];
@@ -66,6 +69,9 @@ export default function ModuloFerramentas({
   const [projCpf, setProjCpf] = useState('');
   const [projFone, setProjFone] = useState('');
   const [editandoProjIdx, setEditandoProjIdx] = useState<number | null>(null);
+
+  const [modalConformidadePronafAberto, setModalConformidadePronafAberto] =
+    useState(false);
 
   // Estados dos Modais do Gerador de Documentos Word (.DOCX)
   const [modalConsolidada, setModalConsolidada] = useState<'PF' | 'PRONAF' | null>(null);
@@ -477,6 +483,50 @@ export default function ModuloFerramentas({
           </div>
         </div>
 
+        {/* BLOCO DE DESTAQUE: CONFORMIDADE CADASTRAL & FILA DE PRIORIDADES - PRONAF A */}
+        <div
+          className="person-card"
+          style={{
+            borderLeftColor: '#15803d',
+            background: 'linear-gradient(90deg, #f0fdf4 0%, #ffffff 100%)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '14px',
+            marginBottom: 0,
+            padding: '16px 20px',
+          }}
+        >
+          <div>
+            <strong style={{ color: '#15803d', fontSize: '15px', display: 'block' }}>
+              🎯 CONFORMIDADE CADASTRAL & PRIORIZAÇÃO AUTOMÁTICA — PRONAF A
+            </strong>
+            <span style={{ fontSize: '12px', color: '#475569' }}>
+              Planilha de conferência de 14 colunas (Titular, Cônjuge, Procurador, Restrições CI Leves/Graves e C/C) com classificação automática nos 4 Grupos de Prioridade e envio em 1 clique para a etapa de Cadastros do Kanban.
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setModalConformidadePronafAberto(true)}
+            style={{
+              width: 'auto',
+              background: '#15803d',
+              color: '#ffffff',
+              padding: '10px 20px',
+              fontSize: '12.5px',
+              fontWeight: 800,
+              borderRadius: '8px',
+              border: 'none',
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(21, 128, 61, 0.25)',
+            }}
+          >
+            🏆 Abrir Conformidade & Fila PRONAF A
+          </button>
+        </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '20px' }}>
           {/* COLUNA 1: GESTÃO DE PROGRAMAS DE CRÉDITO */}
           <div className="person-card" style={{ background: '#fff', marginBottom: 0 }}>
@@ -636,6 +686,21 @@ export default function ModuloFerramentas({
               </button>
             </div>
 
+            <ModalConformidadePronafA
+        aberto={modalConformidadePronafAberto}
+        onFechar={() => setModalConformidadePronafAberto(false)}
+        contratacoes={contratacoes}
+        cardsKanban={cardsKanban}
+        onCadastrarPropostaNoPainel={(novaContratacao, novoCardKanban) => {
+          onRestaurarBackupCompleto({
+            contratacoes: [novaContratacao, ...contratacoes],
+            operacoesBase,
+            eventos,
+            cardsKanban: [novoCardKanban, ...cardsKanban],
+          });
+        }}
+      />
+
             <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
               <table className="conf-table" style={{ marginTop: 0 }}>
                 <thead>
@@ -721,5 +786,7 @@ export default function ModuloFerramentas({
         contratacoes={contratacoes}
       />
     </div>
+      
+    
   );
 }

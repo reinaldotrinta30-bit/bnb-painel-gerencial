@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { RegistroContratacao } from '@/types/painel';
 import { aplicarMascaraCPF, aplicarMascaraMoedaInput } from '@/lib/utils';
+import ModalComparadorMoldeDocx from '@/components/documentos/ModalComparadorMoldeDocx';
 import {
   gerarDocumentoWordPeloMolde,
   gerarDocumentoPdfPeloMolde,
@@ -113,6 +114,10 @@ export default function ModalRenovacaoPlanta({
   const [novovalorfinanciado, setNovovalorfinanciado] = useState('');
   const [safra, setSafra] = useState('2026/2027');
   const [tipoAtividade, setTipoAtividade] = useState('BOVINOCULTURA DE CORTE');
+
+  const [comparadorAberto, setComparadorAberto] = useState(false);
+  const [arquivoComparacao, setArquivoComparacao] = useState<File | null>(null);
+  const inputCompararMoldeRef = useRef<HTMLInputElement>(null);
 
   const [imoveis, setImoveis] = useState<ImovelPlantaItem[]>([
     {
@@ -319,6 +324,38 @@ export default function ModalRenovacaoPlanta({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+
+            <input
+              ref={inputCompararMoldeRef}
+              type="file"
+              accept=".docx,.txt"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null;
+                setArquivoComparacao(file);
+                setComparadorAberto(true);
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => inputCompararMoldeRef.current?.click()}
+              style={{
+                width: 'auto',
+                padding: '6px 10px',
+                fontSize: '11px',
+                fontWeight: 800,
+                background: '#fef3c7',
+                color: '#92400e',
+                border: '1px solid #fde68a',
+                borderRadius: '6px',
+                cursor: 'pointer',
+              }}
+              title="Importar modelo mais recente do Banco e comparar lado a lado todas as diferenças com o modelo atual"
+            >
+              📤 Comparar Modelo
+            </button>    
+                
             <input
               ref={inputUploadMoldeRef}
               type="file"
@@ -922,6 +959,19 @@ export default function ModalRenovacaoPlanta({
           </button>
         </div>
       </div>
+
+    <ModalComparadorMoldeDocx
+          aberto={comparadorAberto}
+          onFechar={() => setComparadorAberto(false)}
+          tituloDocumento={chaveMolde}
+          chaveMolde={chaveMolde}
+          caminhoPublicDocx={caminhoPublicDocx}
+          base64Fallback={base64Fallback}
+          arquivoNovoInicial={arquivoComparacao}
+          onMoldeAtualizadoComSucesso={() => setTemMoldeCustom(true)}
+        />        
+
+
     </div>,
     document.body
   );

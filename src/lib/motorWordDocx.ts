@@ -5,6 +5,17 @@ import { saveAs } from 'file-saver';
 
 const PREFIXO_STORAGE_MOLDE = 'bnb_v2_molde_docx_custom_';
 
+export interface BlocoDocxEditavel {
+  id: string;
+  tipo: 'p' | 'tbl';
+  texto: string;
+  negrito?: boolean;
+  alinhamento?: 'left' | 'center' | 'right' | 'both';
+  linhasTabela?: string[][];
+  xmlOriginal?: string;
+  foiEditado?: boolean;
+}
+
 export function base64ParaArrayBuffer(base64: string): ArrayBuffer {
   const limpo = base64.replace(/\s+/g, '');
   const binaryString = window.atob(limpo);
@@ -31,6 +42,14 @@ export async function salvarMoldeCustomizadoNoSistema(
   arquivoDocx: File
 ): Promise<void> {
   const buffer = await arquivoDocx.arrayBuffer();
+  const b64 = arrayBufferParaBase64(buffer);
+  window.localStorage.setItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`, b64);
+}
+
+export function salvarBufferMoldeCustomizadoNoSistema(
+  chaveMolde: string,
+  buffer: ArrayBuffer
+): void {
   const b64 = arrayBufferParaBase64(buffer);
   window.localStorage.setItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`, b64);
 }
@@ -89,6 +108,185 @@ export async function baixarMoldeOriginalParaEdicao(params: {
     type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
   saveAs(blob, params.nomeArquivoDownload);
+}
+
+// Extrai todos os parágrafos e tabelas de um ArrayBuffer .DOCX para o Comparador Lado a Lado
+export function extrairBlocosEditaveisDoDocx(
+  buffer: ArrayBuffer
+): BlocoDocxEditavel[] {
+  const zip = new PizZip(buffer);
+  const xmlTexto = zip.file('word/document.xml')?.asText();
+  if (!xmlTexto) {
+    throw new Error('Arquivo .docx inválido (word/document.xml não encontrado).');
+  }
+
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(xmlTexto, 'application/xml');
+  const serializer = new XMLSerializer();
+  const body = xmlDoc.getElementsByTagName('w:body')[0];
+  if (!body) return [];
+
+  const blocos: BlocoDocxEditavel[] = [];
+  let contador = 0;
+
+  Array.from(body.childNodes).forEach((node) => {
+    if (node.nodeName === 'w:p') {
+      const el = node as Element;
+      const tNodes = Array.from(el.getElementsByTagName('w:t'));
+      const texto = tNodes.map((t) => t.textContent || '').join('');
+
+      // Ignora parágrafos totalmente vazios que são apenas quebras de espaçamento
+      if (!texto.trim()) return;
+
+      const bNodes = el.getElementsByTagName('w:b');
+      const negrito = bNodes.length > 0 && texto.trim().length < 130;
+
+      let alinhamento: 'left' | 'center' | 'right' | 'both' = 'both';
+      const pPr = el.getElementsByTagName('w:pPr')[0];
+      if (pPr) {
+        const jc = pPr.getElementsByTagName('w:jc')[0];
+        const val = jc?.getAttribute('w:val');
+        if (val === 'center') alinhamento = 'center';
+        else if (val === 'right' || val === 'end') alinhamento = 'right';
+        else if (val === 'left' || val === 'start') alinhamento = 'left';
+      }
+
+      blocos.push({
+        id: `blk_${++contador}_${Date.now()}`,
+        tipo: 'p',
+        texto,
+        negrito,
+        alinhamento,
+        xmlOriginal: serializer.serializeToString(el),
+        foiEditado: false,
+      });
+    } else if (node.nodeName === 'w:tbl') {
+      const el = node as Element;
+      const trs = Array.from(el.getElementsByTagName('w:tr'));
+      const linhasTabela: string[][] = [];
+
+      trs.forEach((tr) => {
+        const tcs = Array.from(tr.getElementsByTagName('w:tc'));
+        const linha: string[] = tcs.map((tc) => {
+          const ps = Array.from(tc.getElementsByTagName('w:p'));
+          return ps
+            .map((p) =>
+              Array.from(p.getElementsByTagName('w:t'))
+                .map((t) => t.textContent || '')
+                .join('')
+            )
+            .join('\n')
+            .trim();
+        });
+        if (linha.length > 0) linhasTabela.push(linha);
+      });
+
+      const textoPlanoTabela = linhasTabela
+        .map((l) => l.join(' | '))
+        .join('\n');
+
+      blocos.push({
+        id: `tbl_${++contador}_${Date.now()}`,
+        tipo: 'tbl',
+        texto: textoPlanoTabela,
+        linhasTabela,
+        xmlOriginal: serializer.serializeToString(el),
+        foiEditado: false,
+      });
+    }
+  });
+
+  return blocos;
+}
+
+function escaparTextoXml(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// Reconstrói um ArrayBuffer .DOCX 100% válido a partir da lista de blocos editados/mesclados
+export function reconstruirBufferDocxComBlocosEditados(
+  bufferMoldeBase: ArrayBuffer,
+  blocosFinais: BlocoDocxEditavel[]
+): ArrayBuffer {
+  const zip = new PizZip(bufferMoldeBase);
+  const xmlOriginalDoc = zip.file('word/document.xml')?.asText();
+  if (!xmlOriginalDoc) {
+    throw new Error('Não foi possível ler word/document.xml do molde base.');
+  }
+
+  const idxAbreBody = xmlOriginalDoc.indexOf('<w:body>');
+  const idxFechaBody = xmlOriginalDoc.lastIndexOf('</w:body>');
+  if (idxAbreBody === -1 || idxFechaBody === -1) {
+    throw new Error('Estrutura <w:body> não encontrada no documento Word.');
+  }
+
+  const cabecalhoXml = xmlOriginalDoc.slice(0, idxAbreBody + '<w:body>'.length);
+  const mioloAntigo = xmlOriginalDoc.slice(
+    idxAbreBody + '<w:body>'.length,
+    idxFechaBody
+  );
+  const idxSectPr = mioloAntigo.lastIndexOf('<w:sectPr');
+  const sectPrXml = idxSectPr !== -1 ? mioloAntigo.slice(idxSectPr) : '';
+  const rodapeXml = xmlOriginalDoc.slice(idxFechaBody);
+
+  const blocosXmlString = blocosFinais
+    .map((bloco) => {
+      // Se o bloco não foi editado e já possui o XML original do Word, preserva 100% intacto!
+      if (!bloco.foiEditado && bloco.xmlOriginal) {
+        return bloco.xmlOriginal;
+      }
+
+      if (bloco.tipo === 'p') {
+        let pPrXml = `<w:pPr><w:jc w:val="${bloco.alinhamento || 'both'}"/></w:pPr>`;
+        let rPrXml = bloco.negrito ? '<w:rPr><w:b/></w:rPr>' : '';
+
+        if (bloco.xmlOriginal) {
+          const matchPPr = bloco.xmlOriginal.match(/<w:pPr[\s\S]*?<\/w:pPr>/);
+          if (matchPPr) pPrXml = matchPPr[0];
+          const matchRPr = bloco.xmlOriginal.match(/<w:rPr[\s\S]*?<\/w:rPr>/);
+          if (matchRPr) rPrXml = matchRPr[0];
+        }
+
+        const linhas = (bloco.texto || '').split('\n');
+        const runsInternos = linhas
+          .map(
+            (l, i) =>
+              `${i > 0 ? '<w:br/>' : ''}<w:t xml:space="preserve">${escaparTextoXml(l)}</w:t>`
+          )
+          .join('');
+
+        return `<w:p>${pPrXml}<w:r>${rPrXml}${runsInternos}</w:r></w:p>`;
+      }
+
+      // Se for uma tabela editada ou nova
+      const linhas = bloco.linhasTabela || [];
+      const trsXml = linhas
+        .map((linha, rIdx) => {
+          const tcsXml = linha
+            .map((celula) => {
+              const negritoCab = rIdx === 0 ? '<w:rPr><w:b/></w:rPr>' : '';
+              return `<w:tc><w:tcPr><w:tcW w:w="2500" w:type="dxa"/></w:tcPr><w:p><w:r>${negritoCab}<w:t xml:space="preserve">${escaparTextoXml(
+                celula
+              )}</w:t></w:r></w:p></w:tc>`;
+            })
+            .join('');
+          return `<w:tr>${tcsXml}</w:tr>`;
+        })
+        .join('');
+
+      return `<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="334155"/><w:left w:val="single" w:sz="4" w:space="0" w:color="334155"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="334155"/><w:right w:val="single" w:sz="4" w:space="0" w:color="334155"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="334155"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="334155"/></w:tblBorders></w:tblPr>${trsXml}</w:tbl>`;
+    })
+    .join('');
+
+  const novoXmlCompleto = `${cabecalhoXml}${blocosXmlString}${sectPrXml}${rodapeXml}`;
+  zip.file('word/document.xml', novoXmlCompleto);
+
+  return zip.generate({ type: 'arraybuffer' });
 }
 
 // Renderiza o molde Word em memória e retorna o PizZip resultante
@@ -275,8 +473,6 @@ export async function gerarDocumentoPdfPeloMolde(params: {
   <meta charset="UTF-8" />
   <title>&nbsp;</title>
   <style>
-    /* Zera a margem @page e esvazia todas as caixas de margem para eliminar
-       qualquer data/hora, título, URL ou paginação injetada pelo navegador */
     @page {
       size: A4 portrait;
       margin: 0mm !important;
@@ -299,8 +495,6 @@ export async function gerarDocumentoPdfPeloMolde(params: {
       print-color-adjust: exact;
     }
 
-    /* Tabela mestra invisível que garante margem superior (15mm) e inferior (15mm)
-       em TODAS as páginas do PDF sem ativar o cabeçalho/rodapé do navegador */
     table.folha-a4-limpa {
       width: 100%;
       border-collapse: collapse;

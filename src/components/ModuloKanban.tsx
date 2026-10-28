@@ -971,6 +971,8 @@ const aplicarHighlight = useCallback((cor: string) => {
   const [fcData, setFcData] = useState('');
   const [fcObs, setFcObs] = useState('');
   const [fcSitDetalhada, setFcSitDetalhada] = useState('');
+  const [fcProjetista, setFcProjetista] = useState('');
+  const [fcPrograma, setFcPrograma] = useState('');
 
   // Estados do Editor de Desembolso na Página 3 do Card
   const [editEventoCardId, setEditEventoCardId] = useState<string | null>(null);
@@ -1036,6 +1038,9 @@ const aplicarHighlight = useCallback((cor: string) => {
   };
 
   const iniciarEdicaoContratacaoNoCard = (reg?: RegistroContratacao, card?: CardKanban) => {
+    const listaCli = card ? obterContratacoesDoCard(card) : [];
+    const projPadrao = listaCli[0]?.projetista || '';
+
     if (reg) {
       setEditContratCardId(String(reg.id));
       setFcPorte(reg.porte || 'PRONAF V');
@@ -1045,6 +1050,8 @@ const aplicarHighlight = useCallback((cor: string) => {
       setFcData(reg.data || getHojeBR());
       setFcObs(reg.obs || '');
       setFcSitDetalhada(reg.situacaoDetalhada || '');
+      setFcProjetista(reg.projetista || projPadrao);
+      setFcPrograma(reg.programa || '');
     } else {
       setEditContratCardId(null);
       setFcPorte(card?.porteVinculado || 'PRONAF V');
@@ -1054,6 +1061,8 @@ const aplicarHighlight = useCallback((cor: string) => {
       setFcData(getHojeBR());
       setFcObs('');
       setFcSitDetalhada('');
+      setFcProjetista(projPadrao);
+      setFcPrograma('');
     }
   };
 
@@ -1070,7 +1079,8 @@ const aplicarHighlight = useCallback((cor: string) => {
       'CLIENTE'
     ).toUpperCase();
     const clienteCpf = card.cpfVinculado || refBase?.cpf || '';
-    const clienteProj = refBase?.projetista || '';
+    const projFinal = fcProjetista.toUpperCase().trim() || refBase?.projetista || '';
+    const progFinal = fcPrograma.toUpperCase().trim();
 
     let novas = [...contratacoes];
     let regSalvo: RegistroContratacao;
@@ -1087,6 +1097,10 @@ const aplicarHighlight = useCallback((cor: string) => {
           data: fcData || getHojeBR(),
           obs: fcObs,
           situacaoDetalhada: fcSitDetalhada,
+          projetista: projFinal,
+          programa: progFinal,
+          cadaVezMelhor:
+            fcPorte.includes('PRONAF') && isEnquadradoCadaVezMelhor(progFinal),
         };
         novas[idx] = regSalvo;
       } else {
@@ -1098,7 +1112,10 @@ const aplicarHighlight = useCallback((cor: string) => {
         cliente: clienteNome,
         cpf: clienteCpf,
         porte: fcPorte,
-        projetista: clienteProj,
+        projetista: projFinal,
+        programa: progFinal,
+        cadaVezMelhor:
+          fcPorte.includes('PRONAF') && isEnquadradoCadaVezMelhor(progFinal),
         responsavel: refBase?.responsavel || '',
         telefone: refBase?.telefone || '',
         tipo: fcTipo,
@@ -4006,6 +4023,28 @@ const opNumero =
                                             value={fcData}
                                             onChange={(e) => setFcData(e.target.value)}
                                             placeholder="DD/MM/AAAA"
+                                            style={{ height: '32px', fontSize: '12px' }}
+                                          />
+                                        </div>
+                                        <div>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Projetista</label>
+                                          <input
+                                            type="search"
+                                            list="dl_projetistas_kanban"
+                                            value={fcProjetista}
+                                            onChange={(e) => setFcProjetista(e.target.value)}
+                                            placeholder="Ex: DEIMID / PEDRO"
+                                            style={{ height: '32px', fontSize: '12px' }}
+                                          />
+                                        </div>
+                                        <div style={{ gridColumn: 'span 2' }}>
+                                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#8B1530' }}>📑 Programa de Crédito</label>
+                                          <input
+                                            type="search"
+                                            list="dl_programas_kanban"
+                                            value={fcPrograma}
+                                            onChange={(e) => setFcPrograma(e.target.value)}
+                                            placeholder="Selecione ou digite o Programa..."
                                             style={{ height: '32px', fontSize: '12px' }}
                                           />
                                         </div>
