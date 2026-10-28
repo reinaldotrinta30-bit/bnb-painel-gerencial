@@ -57,7 +57,7 @@ export default function AbaGeradorDocumentosCard({
       nome: (opAtiva?.cliente || card.clienteVinculado || '').toUpperCase().trim(),
       cpf: opAtiva?.cpf || card.cpfVinculado || '',
       porte: (opAtiva?.porte || card.porteVinculado || 'PRONAF V').toUpperCase().trim(),
-      projetista: opAtiva?.projetista || card.projetistaVinculado || '',
+      projetista: opAtiva?.projetista || '',
       valor: opAtiva?.valor || card.valorVinculado || '',
     };
   }, [opAtiva, card]);

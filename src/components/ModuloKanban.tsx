@@ -269,50 +269,297 @@ const aplicarHighlight = useCallback((cor: string) => {
   document.execCommand('hiliteColor', false, cor);
 }, []);
 
-  // ITEM 10: Gerador de mensagem estilizada para WhatsApp / Área de Transferência
+  // Estado para abrir/fechar o menu dropdown do Teams no Card expandido
+  const [menuTeamsCardId, setMenuTeamsCardId] = useState<string | null>(null);
+
+  // Formata o nome da operação para exibição limpa ("Investimento", "LCGH", "Renov. Custeio", etc.)
+  const formatarNomeTipoOperacao = (tipoBruto: string): string => {
+    const up = (tipoBruto || '').toUpperCase().trim();
+    if (up === 'LCGH' || up === 'LCGA') return up;
+    if (up.includes('RENOV')) return 'Renov. Custeio';
+    if (up.includes('INVESTIMENTO')) return 'Investimento';
+    if (up.includes('CUSTEIO')) return 'Custeio';
+    if (up.includes('CARTÃO') || up.includes('CARTAO')) return 'Cartão BNB';
+    return tipoBruto.charAt(0).toUpperCase() + tipoBruto.slice(1).toLowerCase();
+  };
+
+  // Extrai todas as operações do cliente vinculadas ao Card e aplica a numeração (1, 2...)
+  // SOMENTE quando houver mais de uma operação do mesmo tipo!
+  const obterOperacoesFormatadasDoCard = (
+    card: CardKanban
+  ): Array<{ label: string; isLimite: boolean; valor: string }> => {
+    const opsBrutas: Array<{ tipoNorm: string; valor: string }> = [];
+
+    const cpfLimpo = (card.cpfVinculado || '').replace(/\D/g, '');
+    const nomeUpper = (card.clienteVinculado || '').toUpperCase().trim();
+    const idsGrupo = card.idsPropostasAgrupadas || [];
+
+    const opsBase = contratacoes.filter((r) => {
+      const matchId =
+        String(r.id) === String(card.propostaIdVinculada) ||
+        String(r.id) === String(card.lcgPropostaIdVinculada) ||
+        idsGrupo.includes(String(r.id));
+      const matchCpf =
+        cpfLimpo.length === 11 && (r.cpf || '').replace(/\D/g, '') === cpfLimpo;
+      const matchNome =
+        nomeUpper.length > 3 &&
+        (r.cliente || '').toUpperCase().trim() === nomeUpper;
+      return matchId || matchCpf || matchNome;
+    });
+
+    if (opsBase.length > 0) {
+      opsBase.forEach((op) => {
+        opsBrutas.push({
+          tipoNorm: formatarNomeTipoOperacao(op.tipo || 'Investimento'),
+          valor: op.valor || '0,00',
+        });
+      });
+    } else {
+      const puro = card.textoPuro || extrairTextoPuro(card.texto);
+      const linhas = puro.split('\n').map((l) => l.trim()).filter(Boolean);
+      for (const l of linhas) {
+        const up = l.toUpperCase();
+        if (up.includes('SITUAÇÃO:') || up.includes('PENDÊNCIAS')) break;
+        if (
+          up.startsWith('LCGH:') ||
+          up.startsWith('LCGA:') ||
+          up.startsWith('INVESTIMENTO:') ||
+          up.startsWith('CUSTEIO:') ||
+          up.startsWith('RENOV. CUSTEIO:') ||
+          up.startsWith('RENOVAÇÃO') ||
+          up.startsWith('CARTÃO BNB:') ||
+          up.startsWith('PROPOSTA:')
+        ) {
+          const partes = l.split(':');
+          const tBruto = partes[0].trim();
+          const valLimpo = partes
+            .slice(1)
+            .join(':')
+            .replace(/R\$\s*/i, '')
+            .split('(')[0]
+            .trim();
+          opsBrutas.push({
+            tipoNorm: formatarNomeTipoOperacao(tBruto),
+            valor: valLimpo || '0,00',
+          });
+        }
+      }
+      if (opsBrutas.length === 0 && card.valorVinculado) {
+        opsBrutas.push({
+          tipoNorm: formatarNomeTipoOperacao(card.tipoOpVinculado || 'Investimento'),
+          valor: card.valorVinculado,
+        });
+      }
+    }
+
+    opsBrutas.sort((a, b) => {
+      const aLim = a.tipoNorm === 'LCGH' || a.tipoNorm === 'LCGA' ? 0 : 1;
+      const bLim = b.tipoNorm === 'LCGH' || b.tipoNorm === 'LCGA' ? 0 : 1;
+      return aLim - bLim;
+    });
+
+    const contagemPorTipo: Record<string, number> = {};
+    opsBrutas.forEach((op) => {
+      contagemPorTipo[op.tipoNorm] = (contagemPorTipo[op.tipoNorm] || 0) + 1;
+    });
+
+    const indiceAtualPorTipo: Record<string, number> = {};
+
+    return opsBrutas.map((op) => {
+      const totalDesteTipo = contagemPorTipo[op.tipoNorm] || 1;
+      indiceAtualPorTipo[op.tipoNorm] = (indiceAtualPorTipo[op.tipoNorm] || 0) + 1;
+      const sufixoNumero =
+        totalDesteTipo > 1 ? ` ${indiceAtualPorTipo[op.tipoNorm]}` : '';
+      const isLimite = op.tipoNorm === 'LCGH' || op.tipoNorm === 'LCGA';
+
+      return {
+        label: `${op.tipoNorm}${sufixoNumero}`,
+        isLimite,
+        valor: op.valor,
+      };
+    });
+  };
+
+  // ITEM 2: Novo Gerador de Mensagem Limpa para WhatsApp
   const gerarMensagemCobrancaWhatsApp = (card: CardKanban): string => {
     const puro = card.textoPuro || extrairTextoPuro(card.texto);
     const extraidos = extrairCamposLivresDoTextoKanban(puro);
-    const clienteNome = card.clienteVinculado || 'Cliente';
+    const clienteNome = (card.clienteVinculado || 'CLIENTE').toUpperCase().trim();
     const cpfTxt = card.cpfVinculado ? ` (CPF: ${card.cpfVinculado})` : '';
-    const tipoTxt = card.tipoOpVinculado || 'Proposta Rural';
-    const valorTxt = card.valorVinculado ? ` - R$ ${card.valorVinculado}` : '';
 
-    const sitTxt =
+    const opsFormatadas = obterOperacoesFormatadasDoCard(card);
+    const linhasOperacoes = opsFormatadas
+      .map((op) =>
+        op.isLimite
+          ? `- ${op.label}: R$ ${op.valor}`
+          : `- *${op.label}:* R$ ${op.valor}`
+      )
+      .join('\n');
+
+    const sitTxt = (
       extraidos.situacaoDetalhada ||
       card.situacaoDetalhadaVinculada ||
-      `- ${card.situacaoVinculada || 'Em análise'}`;
-    const pendTxt =
+      `- ${card.situacaoVinculada || 'Em análise'}`
+    ).trim();
+
+    const pendTxt = (
       extraidos.pendenciasObs ||
       card.obsVinculada ||
-      'Verificar andamento.';
+      'Verificar andamento.'
+    ).trim();
 
     return (
-      `🏦 *ACOMPANHAMENTO DE PROPOSTA - BNB*\n\n` +
+      `*ACOMPANHAMENTO DE PROPOSTA*\n\n` +
       `👤 *Cliente:* ${clienteNome}${cpfTxt}\n` +
-      `🚜 *Operação:* ${tipoTxt}${valorTxt}\n\n` +
-      `📊 *SITUAÇÃO ATUAL:*\n${sitTxt}\n\n` +
-      `📝 *PENDÊNCIAS / OBSERVAÇÕES:*\n${pendTxt}`
+      (linhasOperacoes ? `${linhasOperacoes}\n\n` : `\n`) +
+      `📌 *SITUAÇÃO ATUAL:*\n${sitTxt}\n\n` +
+      `📌 *PENDÊNCIAS / OBSERVAÇÕES:*\n${pendTxt}`
     );
   };
 
   const copiarMensagemCobranca = (card: CardKanban) => {
     const msg = gerarMensagemCobrancaWhatsApp(card);
     navigator.clipboard.writeText(msg);
-    alert('📋 Mensagem de situação/pendências copiada para a área de transferência!');
+    alert('📋 Resumo para WhatsApp copiado para a área de transferência!');
   };
 
   const enviarWhatsAppCobranca = (card: CardKanban) => {
     const msg = gerarMensagemCobrancaWhatsApp(card);
     const puro = card.textoPuro || extrairTextoPuro(card.texto);
     const matchProj = puro.match(/PROJETISTA:\s*([^\n]+)/i);
-    const nomeProj = matchProj && matchProj[1] ? matchProj[1].trim() : '';
+    const projDaBase = contratacoes.find(
+      (r) => String(r.id) === String(card.propostaIdVinculada)
+    )?.projetista;
+
+    const nomeProj =
+      (matchProj && matchProj[1] ? matchProj[1].trim() : '') ||
+      projDaBase ||
+      '';
     const fone = buscarTelefoneProjetista(nomeProj);
 
     const url = fone
       ? `https://wa.me/55${fone}?text=${encodeURIComponent(msg)}`
       : `https://wa.me/?text=${encodeURIComponent(msg)}`;
     window.open(url, '_blank');
+  };
+
+  // ITEM 3: Gerador de Mensagem Estilizada para o Microsoft Teams (HTML Rico com Negritos e Pendências Numeradas em Vermelho + Texto Puro)
+  const gerarMensagemFormatadaTeams = (
+    card: CardKanban
+  ): { html: string; texto: string } => {
+    const puro = card.textoPuro || extrairTextoPuro(card.texto);
+    const extraidos = extrairCamposLivresDoTextoKanban(puro);
+    const clienteNome = (card.clienteVinculado || 'CLIENTE').toUpperCase().trim();
+    const cpfTxt = card.cpfVinculado ? ` (CPF: ${card.cpfVinculado})` : '';
+
+    const opsFormatadas = obterOperacoesFormatadasDoCard(card);
+
+    const sitBruta = (
+      extraidos.situacaoDetalhada ||
+      card.situacaoDetalhadaVinculada ||
+      `- ${card.situacaoVinculada || 'Em análise'}`
+    ).trim();
+
+    const linhasSit = sitBruta
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => (l.startsWith('-') ? l : `- ${l}`));
+
+    const pendBruta = (
+      extraidos.pendenciasObs ||
+      card.obsVinculada ||
+      'Verificar andamento.'
+    ).trim();
+
+    // Numera automaticamente cada linha de pendência (1., 2., 3...) e aplica cor vermelha no HTML do Teams
+    const linhasPend = pendBruta
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((linha, idx) => {
+        const limpa = linha
+          .replace(/^[-•*▪▸►]\s*/, '')
+          .replace(/^\d+[\.\)\-]\s*/, '')
+          .trim();
+        return `${idx + 1}. ${limpa}`;
+      });
+
+    const texto =
+      `🏦 ACOMPANHAMENTO DE PROPOSTA - BNB 🏦\n\n` +
+      `Cliente: ${clienteNome}${cpfTxt}\n` +
+      opsFormatadas.map((op) => `${op.label}: R$ ${op.valor}`).join('\n') +
+      `\n\n📌 SITUAÇÃO ATUAL:\n${linhasSit.join('\n')}\n\n` +
+      `📌 PENDÊNCIAS:\n${linhasPend.join('\n')}`;
+
+    const html = `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 13.5px; color: #1e293b; line-height: 1.5;">
+        <div>🏦 <strong>ACOMPANHAMENTO DE PROPOSTA - BNB</strong> 🏦</div>
+        <br/>
+        <div><strong>Cliente:</strong> ${clienteNome}${cpfTxt}</div>
+        ${opsFormatadas
+          .map((op) => `<div><strong>${op.label}:</strong> R$ ${op.valor}</div>`)
+          .join('')}
+        <br/>
+        <div>📌 <strong>SITUAÇÃO ATUAL:</strong></div>
+        ${linhasSit.map((s) => `<div>${s}</div>`).join('')}
+        <br/>
+        <div>📌 <strong>PENDÊNCIAS:</strong></div>
+        ${linhasPend
+  .map(
+    (p) =>
+      `<div style="color: #d93025;"><span style="color: #d93025;">${p}</span></div>`
+  )
+  .join('')}
+      </div>
+    `.trim();
+
+    return { html, texto };
+  };
+
+  const copiarMensagemParaTeams = async (card: CardKanban) => {
+    const { html, texto } = gerarMensagemFormatadaTeams(card);
+    try {
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        const item = new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([texto], { type: 'text/plain' }),
+        });
+        await navigator.clipboard.write([item]);
+      } else {
+        await navigator.clipboard.writeText(texto);
+      }
+      setMenuTeamsCardId(null);
+      alert(
+        '📋 Mensagem formatada para o Teams (com negritos e pendências em vermelho) copiada com sucesso!'
+      );
+    } catch {
+      await navigator.clipboard.writeText(texto);
+      setMenuTeamsCardId(null);
+      alert('📋 Mensagem copiada para a área de transferência!');
+    }
+  };
+
+  const encaminharDiretoAoTeams = async (card: CardKanban) => {
+    const { html, texto } = gerarMensagemFormatadaTeams(card);
+    try {
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        const item = new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([texto], { type: 'text/plain' }),
+        });
+        await navigator.clipboard.write([item]);
+      } else {
+        await navigator.clipboard.writeText(texto);
+      }
+    } catch {
+      // prossegue para abrir o Teams
+    }
+    setMenuTeamsCardId(null);
+    const urlTeams = `https://teams.microsoft.com/l/chat/0/0?message=${encodeURIComponent(
+      texto
+    )}`;
+    window.open(urlTeams, '_blank');
   };
 
   const carouselRef = useRef<HTMLDivElement>(null);
@@ -1288,61 +1535,231 @@ const opNumero =
     salvarComHistorico(novaLista, false);
   };
 
-  // ITEM 1: Interceptador Inteligente de Colagem (Smart Paste)
-  // Impede que fontes gigantes, cores de fundo ou tabelas quebradas do Word/PDF/Web baguncem o card,
-  // preservando maiúsculas/minúsculas, quebras de linha e convertendo marcadores externos em "- ".
+  // Estado do Menu de Contexto (Botão Direito) nos campos de texto do Card
+  const [menuColarContexto, setMenuColarContexto] = useState<{
+    visivel: boolean;
+    x: number;
+    y: number;
+    rangeSalvo: Range | null;
+    editorEl: HTMLElement | null;
+    cardId: string;
+  }>({
+    visivel: false,
+    x: 0,
+    y: 0,
+    rangeSalvo: null,
+    editorEl: null,
+    cardId: '',
+  });
+
+  useEffect(() => {
+    if (!menuColarContexto.visivel) return;
+    const fecharMenu = () =>
+      setMenuColarContexto((prev) => ({ ...prev, visivel: false }));
+    window.addEventListener('click', fecharMenu);
+    return () => window.removeEventListener('click', fecharMenu);
+  }, [menuColarContexto.visivel]);
+
+  // Função utilitária que formata o conteúdo colado em um dos 3 modos:
+  // 'SEM_FORMATACAO' | 'MESCLAR_FORMATACAO' | 'ORIGINAL'
+  const processarConteudoParaColagem = (
+    htmlCopiado: string,
+    textoPuro: string,
+    modo: 'SEM_FORMATACAO' | 'MESCLAR_FORMATACAO' | 'ORIGINAL'
+  ): { tipo: 'HTML' | 'TEXT'; conteudo: string } => {
+    if (modo === 'SEM_FORMATACAO' || !htmlCopiado.trim()) {
+      const textoLimpo = (textoPuro || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/\n{3,}/g, '\n\n');
+      return { tipo: 'TEXT', conteudo: textoLimpo };
+    }
+
+    const temp = document.createElement('div');
+    temp.innerHTML = htmlCopiado;
+
+    // Remove tags invisíveis/lixo do Word/Office/Web
+    temp
+      .querySelectorAll(
+        'style, script, meta, link, title, xml, o\\:p, .card-bloco-cliente, .card-titulo-situacao, .card-titulo-pendencias, .card-titulo-analise'
+      )
+      .forEach((el) => el.remove());
+
+    if (modo === 'ORIGINAL') {
+      // Mantém cores, negritos, tópicos e espaçamentos originais, limpando apenas tamanhos gigantes e famílias de fonte quebradas
+      temp.querySelectorAll('*').forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        if (htmlEl.style) {
+          htmlEl.style.fontFamily = 'inherit';
+          htmlEl.style.fontSize = 'inherit';
+          htmlEl.style.lineHeight = '1.45';
+        }
+        htmlEl.removeAttribute('class');
+        htmlEl.removeAttribute('id');
+      });
+      return { tipo: 'HTML', conteudo: temp.innerHTML };
+    }
+
+    // MODO 'MESCLAR_FORMATACAO' (Padrão ao dar Ctrl+V):
+    // Mantém negritos (<b>/<strong>), itálicos, sublinhados, listas/tópicos (<ul>/<ol>/<li>) e quebras de parágrafo,
+    // convertendo parágrafos de lista do Word (MsoListParagraph) em tópicos limpos e padronizando na fonte do Card!
+    temp.querySelectorAll('p, div').forEach((bloco) => {
+      const htmlBloco = bloco as HTMLElement;
+      const cls = (htmlBloco.getAttribute('class') || '').toLowerCase();
+      const txt = (htmlBloco.innerText || htmlBloco.textContent || '').trim();
+      if (cls.includes('msolistparagraph') && !txt.startsWith('-') && !txt.startsWith('•')) {
+        htmlBloco.innerHTML = `- ${htmlBloco.innerHTML}`;
+      }
+    });
+
+    temp.querySelectorAll('*').forEach((el) => {
+      const htmlEl = el as HTMLElement;
+      const fw = htmlEl.style?.fontWeight;
+      const fs = htmlEl.style?.fontStyle;
+      const td = htmlEl.style?.textDecoration;
+      const bg = htmlEl.style?.backgroundColor;
+      const color = htmlEl.style?.color;
+
+      const eraNegrito =
+        fw === 'bold' ||
+        Number(fw) >= 600 ||
+        htmlEl.tagName === 'B' ||
+        htmlEl.tagName === 'STRONG';
+      const eraItalico = fs === 'italic' || htmlEl.tagName === 'I' || htmlEl.tagName === 'EM';
+      const eraSublinhado =
+        (td && td.includes('underline')) || htmlEl.tagName === 'U';
+
+      htmlEl.removeAttribute('class');
+      htmlEl.removeAttribute('id');
+      htmlEl.removeAttribute('style');
+
+      if (eraNegrito) htmlEl.style.fontWeight = 'bold';
+      if (eraItalico) htmlEl.style.fontStyle = 'italic';
+      if (eraSublinhado) htmlEl.style.textDecoration = 'underline';
+      if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)' && bg !== '#ffffff' && bg !== 'rgb(255, 255, 255)') {
+        htmlEl.style.backgroundColor = bg;
+      }
+      if (
+        color &&
+        (color.includes('128, 0, 0') ||
+          color.includes('217, 48, 37') ||
+          color.includes('220, 38, 38') ||
+          color === '#800000' ||
+          color === '#d93025' ||
+          color === 'red')
+      ) {
+        htmlEl.style.color = '#d93025';
+      }
+      if (htmlEl.tagName === 'P' || htmlEl.tagName === 'DIV') {
+        htmlEl.style.margin = '2px 0';
+      }
+      if (htmlEl.tagName === 'UL' || htmlEl.tagName === 'OL') {
+        htmlEl.style.margin = '4px 0 4px 18px';
+        htmlEl.style.paddingLeft = '6px';
+      }
+    });
+
+    return { tipo: 'HTML', conteudo: temp.innerHTML };
+  };
+
+  // No Ctrl+V padrão, usa o modo MESCLAR_FORMATACAO (preserva negritos, listas, tópicos e espaçamentos sem desfigurar o card)
   const handleSmartPasteCard = (e: React.ClipboardEvent<HTMLDivElement>) => {
     e.preventDefault();
     const htmlCopiado = e.clipboardData.getData('text/html');
     const textoPuro = e.clipboardData.getData('text/plain');
 
-    // Se o texto foi copiado de dentro do próprio sistema Kanban (contém nossas tags simples sem lixo do Word/Office),
-    // permite manter negritos (<b>) e grifos (<span style="background-color:...">) limpando o resto!
-    if (
-      htmlCopiado &&
-      !htmlCopiado.includes('mso-') &&
-      !htmlCopiado.includes('<table') &&
-      (htmlCopiado.includes('bloco-editavel') ||
-        htmlCopiado.includes('#fff3cd') ||
-        htmlCopiado.includes('#f8d7da'))
-    ) {
-      const temp = document.createElement('div');
-      temp.innerHTML = htmlCopiado;
-      // Remove eventuais blocos de cabeçalho fixo para não duplicar cabeçalho dentro do texto livre
-      temp
-        .querySelectorAll(
-          '.card-bloco-cliente, .card-titulo-situacao, .card-titulo-pendencias, .card-titulo-analise'
-        )
-        .forEach((el) => el.remove());
+    const resultado = processarConteudoParaColagem(
+      htmlCopiado,
+      textoPuro,
+      'MESCLAR_FORMATACAO'
+    );
 
-      // Remove atributos de fonte/tamanho externos mantendo apenas negrito, itálico, sublinhado e marca-texto
-      temp.querySelectorAll('*').forEach((el) => {
-        const htmlEl = el as HTMLElement;
-        const bg = htmlEl.style?.backgroundColor;
-        const color = htmlEl.style?.color;
-        htmlEl.removeAttribute('class');
-        htmlEl.removeAttribute('id');
-        htmlEl.removeAttribute('style');
-        if (bg) htmlEl.style.backgroundColor = bg;
-        if (color === 'rgb(128, 0, 0)' || color === '#800000') {
-          htmlEl.style.color = '#800000';
-        }
-      });
+    if (resultado.tipo === 'HTML') {
+      document.execCommand('insertHTML', false, resultado.conteudo);
+    } else {
+      document.execCommand('insertText', false, resultado.conteudo);
+    }
+  };
 
-      document.execCommand('insertHTML', false, temp.innerHTML);
-      return;
+  // Abre o menu customizado ao clicar com o Botão Direito dentro do editor do Card
+  const handleContextMenuEditorCard = (
+    e: React.MouseEvent<HTMLDivElement>,
+    cardId: string
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    let rangeAtual: Range | null = null;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      rangeAtual = sel.getRangeAt(0).cloneRange();
     }
 
-    // Se veio de fora (Word, PDF, Excel, S400, WhatsApp, Web):
-    // Insere como texto limpo na fonte oficial do card, convertendo marcadores (•, *, ▪) em "- "
-    const textoHigienizado = (textoPuro || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .split('\n')
-      .map((linha) => linha.replace(/^[\s]*[•*▪▸►]\s*/, '- '))
-      .join('\n');
+    setMenuColarContexto({
+      visivel: true,
+      x: e.clientX,
+      y: e.clientY,
+      rangeSalvo: rangeAtual,
+      editorEl: e.currentTarget,
+      cardId,
+    });
+  };
 
-    document.execCommand('insertText', false, textoHigienizado);
+  // Executa a colagem escolhida no menu do Botão Direito
+  const executarColagemPeloMenuContexto = async (
+    modo: 'SEM_FORMATACAO' | 'MESCLAR_FORMATACAO' | 'ORIGINAL'
+  ) => {
+    const { rangeSalvo, editorEl, cardId } = menuColarContexto;
+    setMenuColarContexto((prev) => ({ ...prev, visivel: false }));
+
+    if (!editorEl) return;
+    editorEl.focus();
+
+    if (rangeSalvo) {
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(rangeSalvo);
+      }
+    }
+
+    try {
+      let htmlCopiado = '';
+      let textoPuro = '';
+
+      if (navigator.clipboard && navigator.clipboard.read) {
+        try {
+          const items = await navigator.clipboard.read();
+          for (const item of items) {
+            if (item.types.includes('text/html')) {
+              const blobHtml = await item.getType('text/html');
+              htmlCopiado = await blobHtml.text();
+            }
+            if (item.types.includes('text/plain')) {
+              const blobTxt = await item.getType('text/plain');
+              textoPuro = await blobTxt.text();
+            }
+          }
+        } catch {
+          textoPuro = await navigator.clipboard.readText();
+        }
+      } else if (navigator.clipboard && navigator.clipboard.readText) {
+        textoPuro = await navigator.clipboard.readText();
+      }
+
+      const resultado = processarConteudoParaColagem(htmlCopiado, textoPuro, modo);
+      if (resultado.tipo === 'HTML') {
+        document.execCommand('insertHTML', false, resultado.conteudo);
+      } else {
+        document.execCommand('insertText', false, resultado.conteudo);
+      }
+
+      salvarTextoCardBlur(cardId, editorEl.innerHTML, editorEl.innerText);
+    } catch {
+      alert(
+        '⚠️ Para usar o menu de colagem com o mouse, permita o acesso à área de transferência no navegador ou utilize Ctrl+V.'
+      );
+    }
   };
 
   const salvarTextoCardBlur = (
@@ -2495,9 +2912,16 @@ const opNumero =
                                     </button>
                                   )}
 
-                                {/* ITEM 10: Botões de Copiar Mensagem e Enviar no WhatsApp (Aparecem apenas quando o Card está EXPANDIDO) */}
+                                {/* ITEM 10: Botões de Copiar Mensagem, Enviar no WhatsApp e Menu Microsoft Teams (Aparecem apenas quando o Card está EXPANDIDO) */}
                                 {isFullscreen && card.etapa !== 'NOTAS' && (
-                                  <>
+                                  <div
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      position: 'relative',
+                                    }}
+                                  >
                                     <button
                                       onMouseDown={(e) => e.stopPropagation()}
                                       onClick={(e) => {
@@ -2511,8 +2935,9 @@ const opNumero =
                                         borderRadius: '4px',
                                         padding: '2px 7px',
                                         fontSize: '12px',
+                                        width: 'auto',
                                       }}
-                                      title="Copiar Resumo Formatado (Situação + Pendências)"
+                                      title="Copiar Resumo Formatado para WhatsApp"
                                     >
                                       📋
                                     </button>
@@ -2530,12 +2955,111 @@ const opNumero =
                                         borderRadius: '4px',
                                         padding: '2px 7px',
                                         fontSize: '12px',
+                                        width: 'auto',
                                       }}
-                                      title="Enviar Cobrança de Pendências via WhatsApp para o Projetista"
+                                      title="Enviar Acompanhamento via WhatsApp para o Projetista"
                                     >
                                       📲
                                     </button>
-                                  </>
+
+                                    {/* NOVO BOTÃO COM CAIXINHA DE SELEÇÃO DO MICROSOFT TEAMS */}
+                                    <div style={{ position: 'relative' }}>
+                                      <button
+                                        type="button"
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMenuTeamsCardId((prev) =>
+                                            prev === card.id ? null : card.id
+                                          );
+                                        }}
+                                        style={{
+                                          background: '#eef2ff',
+                                          color: '#4338ca',
+                                          border: '1px solid #c7d2fe',
+                                          borderRadius: '4px',
+                                          padding: '2px 8px',
+                                          fontSize: '11px',
+                                          fontWeight: 800,
+                                          width: 'auto',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                          cursor: 'pointer',
+                                        }}
+                                        title="Opções de Cópia e Encaminhamento ao Microsoft Teams"
+                                      >
+                                        <span>💬 Teams</span>
+                                        <span style={{ fontSize: '9px' }}>▾</span>
+                                      </button>
+
+                                      {menuTeamsCardId === card.id && (
+                                        <div
+                                          onMouseDown={(e) => e.stopPropagation()}
+                                          onClick={(e) => e.stopPropagation()}
+                                          style={{
+                                            position: 'absolute',
+                                            top: 'calc(100% + 4px)',
+                                            left: 0,
+                                            background: '#ffffff',
+                                            border: '1px solid #cbd5e1',
+                                            borderRadius: '8px',
+                                            boxShadow: '0 8px 22px rgba(15, 23, 42, 0.22)',
+                                            padding: '5px',
+                                            zIndex: 999999,
+                                            minWidth: '175px',
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            gap: '3px',
+                                          }}
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => copiarMensagemParaTeams(card)}
+                                            style={{
+                                              width: '100%',
+                                              textAlign: 'left',
+                                              background: 'transparent',
+                                              color: '#1e293b',
+                                              border: 'none',
+                                              padding: '6px 10px',
+                                              fontSize: '11.5px',
+                                              fontWeight: 700,
+                                              borderRadius: '5px',
+                                              cursor: 'pointer',
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: '6px',
+                                            }}
+                                          >
+                                            <span>📋</span> Copiar (Formato Teams)
+                                          </button>
+
+                                          <button
+                                            type="button"
+                                            onClick={() => encaminharDiretoAoTeams(card)}
+                                            style={{
+                                              width: '100%',
+                                              textAlign: 'left',
+                                              background: '#eef2ff',
+                                              color: '#4338ca',
+                                              border: 'none',
+                                              padding: '6px 10px',
+                                              fontSize: '11.5px',
+                                              fontWeight: 800,
+                                              borderRadius: '5px',
+                                              cursor: 'pointer',
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: '6px',
+                                            }}
+                                          >
+                                            <span>↪</span> Ao Teams
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
                                 )}
 
                                 {/* ITEM 2.1 e ITEM 7: Quando EXPANDIDO, exibe a Tarja de Contratação e (se Contratado/Desembolso) a Tarja de Desembolso ao lado direito! */}
@@ -3318,6 +3842,7 @@ const opNumero =
                           }
                           suppressContentEditableWarning
                           onPaste={handleSmartPasteCard}
+                          onContextMenu={(e) => handleContextMenuEditorCard(e, card.id)}
                           onMouseDown={() => setDragHabilitadoId(null)}
                           onDoubleClick={(e) => {
                             const target = e.target as HTMLElement;
@@ -4843,6 +5368,107 @@ const opNumero =
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* MENU DE CONTEXTO (BOTÃO DIREITO) PARA OPÇÕES DE COLAGEM NO CARD */}
+      {menuColarContexto.visivel && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            top: menuColarContexto.y,
+            left: menuColarContexto.x,
+            background: '#ffffff',
+            border: '1px solid #cbd5e1',
+            borderRadius: '8px',
+            boxShadow: '0 10px 25px rgba(15, 23, 42, 0.22)',
+            padding: '6px',
+            zIndex: 99999999,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2px',
+            minWidth: '235px',
+          }}
+        >
+          <div
+            style={{
+              fontSize: '10px',
+              fontWeight: 800,
+              color: '#64748b',
+              padding: '4px 8px',
+              borderBottom: '1px solid #f1f5f9',
+              marginBottom: '2px',
+            }}
+          >
+            📋 OPÇÕES DE COLAGEM NO CARD
+          </div>
+
+          <button
+            type="button"
+            onClick={() => executarColagemPeloMenuContexto('MESCLAR_FORMATACAO')}
+            style={{
+              width: '100%',
+              textAlign: 'left',
+              background: 'transparent',
+              color: '#1e293b',
+              border: 'none',
+              padding: '7px 10px',
+              fontSize: '12px',
+              fontWeight: 700,
+              borderRadius: '5px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <span>✨</span> Mesclar Formatação (Tópicos + Negrito)
+          </button>
+
+          <button
+            type="button"
+            onClick={() => executarColagemPeloMenuContexto('ORIGINAL')}
+            style={{
+              width: '100%',
+              textAlign: 'left',
+              background: 'transparent',
+              color: '#1e293b',
+              border: 'none',
+              padding: '7px 10px',
+              fontSize: '12px',
+              fontWeight: 600,
+              borderRadius: '5px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <span>🎨</span> Manter Formatação Original
+          </button>
+
+          <button
+            type="button"
+            onClick={() => executarColagemPeloMenuContexto('SEM_FORMATACAO')}
+            style={{
+              width: '100%',
+              textAlign: 'left',
+              background: 'transparent',
+              color: '#475569',
+              border: 'none',
+              padding: '7px 10px',
+              fontSize: '12px',
+              fontWeight: 600,
+              borderRadius: '5px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <span>📄</span> Colar Somente Texto (Sem Formatação)
+          </button>
         </div>
       )}
 
