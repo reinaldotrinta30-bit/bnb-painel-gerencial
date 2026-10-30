@@ -385,3 +385,65 @@ export async function publicarEstadoAtualNaNuvemV2(dados: {
     return false;
   }
 }
+
+// ============================================================================
+// SINCRONIZAÇÃO DE MOLDES WORD (.DOCX) CUSTOMIZADOS DIRETO NO FIREBASE V2
+// (Substitui os antigos route.ts para funcionar 100% na Vercel e no GitHub Pages)
+// ============================================================================
+export async function salvarMoldeWordNaNuvem(
+  chaveMolde: string,
+  base64Docx: string
+): Promise<void> {
+  if (typeof window !== 'undefined') {
+    safeSetLocal(`bnb_v2_molde_docx_custom_${chaveMolde}`, base64Docx);
+  }
+  if (isModoEstritoLocal()) return;
+  try {
+    await set(
+      ref(dbNuvem, `${PATH_SANDBOX_V2}/moldes_word/${chaveMolde}`),
+      base64Docx
+    );
+  } catch (e) {
+    console.error(`Erro ao salvar molde ${chaveMolde} no Firebase V2:`, e);
+  }
+}
+
+export async function removerMoldeWordDaNuvem(chaveMolde: string): Promise<void> {
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(`bnb_v2_molde_docx_custom_${chaveMolde}`);
+  }
+  if (isModoEstritoLocal()) return;
+  try {
+    await set(
+      ref(dbNuvem, `${PATH_SANDBOX_V2}/moldes_word/${chaveMolde}`),
+      null
+    );
+  } catch (e) {
+    console.error(`Erro ao remover molde ${chaveMolde} do Firebase V2:`, e);
+  }
+}
+
+export async function carregarMoldeWordDaNuvem(
+  chaveMolde: string
+): Promise<string | null> {
+  if (!isModoEstritoLocal()) {
+    try {
+      const snap = await get(
+        ref(dbNuvem, `${PATH_SANDBOX_V2}/moldes_word/${chaveMolde}`)
+      );
+      if (snap.exists() && typeof snap.val() === 'string') {
+        const b64 = snap.val() as string;
+        if (typeof window !== 'undefined') {
+          safeSetLocal(`bnb_v2_molde_docx_custom_${chaveMolde}`, b64);
+        }
+        return b64;
+      }
+    } catch {
+      // Fallback para o cache local
+    }
+  }
+  if (typeof window !== 'undefined') {
+    return window.localStorage.getItem(`bnb_v2_molde_docx_custom_${chaveMolde}`);
+  }
+  return null;
+}

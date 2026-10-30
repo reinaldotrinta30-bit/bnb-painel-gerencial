@@ -2,6 +2,11 @@
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
 import { saveAs } from 'file-saver';
+import {
+  salvarMoldeWordNaNuvem,
+  removerMoldeWordDaNuvem,
+  carregarMoldeWordDaNuvem,
+} from '@/lib/firebaseSync';
 
 const PREFIXO_STORAGE_MOLDE = 'bnb_v2_molde_docx_custom_';
 
@@ -17,7 +22,7 @@ export interface BlocoDocxEditavel {
 }
 
 export function base64ParaArrayBuffer(base64: string): ArrayBuffer {
-  const limpo = base64.replace(/\s+/g, '');
+  const limpo = base64.replace(/^["']|["']$/g, '').replace(/\s+/g, '');
   const binaryString = window.atob(limpo);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
@@ -37,63 +42,49 @@ export function arrayBufferParaBase64(buffer: ArrayBuffer): string {
   return window.btoa(binary);
 }
 
+// Resolve automaticamente o caminho da pasta public tanto na Vercel (/) quanto no GitHub Pages (/bnb-painel-gerencial/)
+function resolverUrlPublicaMolde(caminhoPublicDocx: string): string {
+  if (typeof window === 'undefined') return caminhoPublicDocx;
+  const pathAtual = window.location.pathname || '';
+  if (
+    pathAtual.startsWith('/bnb-painel-gerencial') &&
+    !caminhoPublicDocx.startsWith('/bnb-painel-gerencial')
+  ) {
+    return `/bnb-painel-gerencial${
+      caminhoPublicDocx.startsWith('/') ? '' : '/'
+    }${caminhoPublicDocx}`;
+  }
+  return caminhoPublicDocx;
+}
+
 export async function salvarMoldeCustomizadoNoSistema(
   chaveMolde: string,
-  arquivoDocx: File,
-  caminhoPublicDocx?: string
+  arquivoDocx: File
 ): Promise<void> {
   const buffer = await arquivoDocx.arrayBuffer();
   const b64 = arrayBufferParaBase64(buffer);
-  window.localStorage.setItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`, b64);
-
-  // Grava também fisicamente na pasta public/moldes-word/ do projeto!
-  if (caminhoPublicDocx) {
-    try {
-      await fetch('/api/moldes-word', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ caminhoPublicDocx, base64: b64 }),
-      });
-    } catch {
-      // Se estiver em ambiente estático sem servidor Node local, mantém no localStorage
-    }
-  }
+  await salvarMoldeWordNaNuvem(chaveMolde, b64);
 }
 
 export async function salvarBufferMoldeCustomizadoNoSistema(
   chaveMolde: string,
-  buffer: ArrayBuffer,
-  caminhoPublicDocx?: string
+  buffer: ArrayBuffer
 ): Promise<void> {
   const b64 = arrayBufferParaBase64(buffer);
-  window.localStorage.setItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`, b64);
-
-  if (caminhoPublicDocx) {
-    try {
-      await fetch('/api/moldes-word', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ caminhoPublicDocx, base64: b64 }),
-      });
-    } catch {
-      // Fallback silencioso
-    }
-  }
+  await salvarMoldeWordNaNuvem(chaveMolde, b64);
 }
 
-
-
 export function removerMoldeCustomizadoDoSistema(chaveMolde: string): void {
-  window.localStorage.removeItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`);
+  removerMoldeWordDaNuvem(chaveMolde).catch(() => {});
 }
 
 export function possuiMoldeCustomizadoSalvo(chaveMolde: string): boolean {
   if (typeof window === 'undefined') return false;
-  return Boolean(window.localStorage.getItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`));
+  return Boolean(
+    window.localStorage.getItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`)
+  );
 }
 
-// AGORA: Prioriza SEMPRE o arquivo atualizado na pasta public/moldes-word/ (com cache-busting)
-// para que qualquer alteração feita na pasta do projeto ou via botão "📤 Atualizar Molde" reflita imediatamente!
 export async function carregarBufferDoMolde(params: {
   chaveMolde: string;
   caminhoPublicDocx?: string;
@@ -101,28 +92,28 @@ export async function carregarBufferDoMolde(params: {
 }): Promise<ArrayBuffer> {
   const { chaveMolde, caminhoPublicDocx, base64Fallback } = params;
 
-  // 1º: Tenta buscar o arquivo real mais recente na pasta public/moldes-word/
+  // 1º: Verifica se há um molde atualizado salvo na Nuvem (Firebase V2) ou no Cache Local
+  const b64NuvemOuLocal = await carregarMoldeWordDaNuvem(chaveMolde);
+  if (b64NuvemOuLocal) {
+    return base64ParaArrayBuffer(b64NuvemOuLocal);
+  }
+
+  // 2º: Busca o arquivo .docx da pasta public/moldes-word/ (compatível com Vercel e GitHub Pages)
   if (caminhoPublicDocx) {
     try {
-      const urlSemCache = `${caminhoPublicDocx}?t=${Date.now()}`;
-      const resp = await fetch(urlSemCache, { cache: 'no-store' });
+      const urlFinal = `${resolverUrlPublicaMolde(
+        caminhoPublicDocx
+      )}?t=${Date.now()}`;
+      const resp = await fetch(urlFinal, { cache: 'no-store' });
       if (resp.ok) {
         return await resp.arrayBuffer();
       }
     } catch {
-      // Se não encontrar na pasta public, tenta o localStorage
+      // Fallback para o Base64 embutido
     }
   }
 
-  // 2º: Tenta o localStorage do navegador
-  if (typeof window !== 'undefined') {
-    const customB64 = window.localStorage.getItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`);
-    if (customB64) {
-      return base64ParaArrayBuffer(customB64);
-    }
-  }
-
-  // 3º: Fallback para a string Base64 original
+  // 3º: Usa o Base64 embutido em moldesBase64Originais.ts
   if (base64Fallback && !base64Fallback.startsWith('COLE_AQUI')) {
     return base64ParaArrayBuffer(base64Fallback);
   }
