@@ -81,6 +81,8 @@ interface ModuloKanbanProps {
   onLimparDestaqueExterno?: () => void;
   onAbrirClienteEmContratacoes?: (card: CardKanban) => void;
   onAbrirClienteEmDesembolsos?: (card: CardKanban) => void;
+  modoOverlayCardUnicoId?: string | null;
+  onFecharOverlayCardUnico?: () => void;
 }
 
 const ORDEM_ETAPAS: EtapaKanban[] = [
@@ -159,6 +161,8 @@ export default function ModuloKanban({
   onAbrirClienteEmDesembolsos,
   onAlterarSituacaoDesembolsoPeloKanban,
   onInlineEditCabecalho,
+  modoOverlayCardUnicoId = null,
+  onFecharOverlayCardUnico,
 }: ModuloKanbanProps) {
   const [termoBusca, setTermoBusca] = useState('');
   const [incluirArquivadosNaBusca, setIncluirArquivadosNaBusca] = useState(false);
@@ -210,7 +214,37 @@ export default function ModuloKanban({
   const [menuFiltroCorAberto, setMenuFiltroCorAberto] = useState(false);
   const [menuCorCardAbertoId, setMenuCorCardAbertoId] = useState<string | null>(null);
 
-  const [cardFullscreenId, setCardFullscreenId] = useState<string | null>(null);
+  const [cardFullscreenId, setCardFullscreenId] = useState<string | null>(
+    modoOverlayCardUnicoId || null
+  );
+
+useEffect(() => {
+    if (modoOverlayCardUnicoId) {
+      setCardFullscreenId(modoOverlayCardUnicoId);
+    }
+  }, [modoOverlayCardUnicoId]);
+
+  // Recebe atualizações feitas quando o card foi editado pelo atalho da Planilha da Carteira
+  useEffect(() => {
+    if (modoOverlayCardUnicoId) return;
+    const sincronizarVindoDoOverlay = (ev: Event) => {
+      const customEv = ev as CustomEvent<{
+        cards?: CardKanban[];
+        contratacoes?: RegistroContratacao[];
+      }>;
+      if (customEv.detail?.cards) {
+        onAtualizarCards(customEv.detail.cards);
+      }
+      if (customEv.detail?.contratacoes) {
+        onAtualizarContratacoes?.(customEv.detail.contratacoes);
+      }
+    };
+    window.addEventListener('bnb_v2_sync_externo', sincronizarVindoDoOverlay);
+    return () =>
+      window.removeEventListener('bnb_v2_sync_externo', sincronizarVindoDoOverlay);
+  }, [modoOverlayCardUnicoId, onAtualizarCards, onAtualizarContratacoes]);
+
+
   const [termoBuscaInterna, setTermoBuscaInterna] = useState('');
   const [buscaInternaStatus, setBuscaInternaStatus] = useState<'neutro' | 'achou' | 'erro'>('neutro');
 
@@ -2000,6 +2034,11 @@ const opNumero =
       salvarTextoCardBlur(cardId, editor.innerHTML, editor.innerText);
     }
 
+    if (modoOverlayCardUnicoId && onFecharOverlayCardUnico) {
+      onFecharOverlayCardUnico();
+      return;
+    }
+
     setCardFullscreenId((prev) => (prev === cardId ? null : cardId));
   };
 
@@ -2086,6 +2125,9 @@ const opNumero =
 
   // ITEM 4.1, 4.2, 4.3 e 6.1: Regras de visibilidade dos cards (Arquivados + Porte + Cor + Busca)
   const cardPassaNoFiltro = (card: CardKanban): boolean => {
+    if (modoOverlayCardUnicoId) {
+      return card.id === modoOverlayCardUnicoId;
+    }
     const isArquivado = card.statusCor === 'roxo';
 
     // Se clicou na guia "📦 ARQUIVADOS", mostra apenas os cards que estão arquivados!
@@ -2135,7 +2177,28 @@ const opNumero =
   const isNovoClientePronafA = ncPorte.toUpperCase().trim() === 'PRONAF A';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '10px', background: '#f4f5f7', overflow: 'hidden' }}>
+    <div
+  onClick={(e) => e.stopPropagation()}
+  style={
+    modoOverlayCardUnicoId
+      ? {
+          position: 'fixed',
+          inset: 0,
+          zIndex: 9999990,
+          background: 'rgba(15, 23, 42, 0.72)',
+          backdropFilter: 'blur(3px)',
+          overflow: 'hidden',
+        }
+      : {
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          padding: '10px',
+          background: '#f4f5f7',
+          overflow: 'hidden',
+        }
+  }
+>
       <datalist id="dl_projetistas_kanban">
         {LISTA_PROJETISTAS_CURTOS.map((p) => (
           <option key={p} value={p} />
@@ -2158,7 +2221,7 @@ const opNumero =
           background: '#fff',
           boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
           padding: '6px 12px',
-          display: 'flex',
+          display: modoOverlayCardUnicoId ? 'none' : 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           flexWrap: 'wrap',
@@ -2540,13 +2603,25 @@ const opNumero =
       </div>
 
       {/* CARROSSEL DE COLUNAS DO KANBAN */}
-      <div className="kanban-carousel-viewport" ref={carouselRef}>
+      <div
+        className="kanban-carousel-viewport"
+        ref={carouselRef}
+        style={
+          modoOverlayCardUnicoId
+            ? { background: 'transparent', border: 'none', boxShadow: 'none' }
+            : undefined
+        }
+      >
         {ORDEM_ETAPAS.map((etapa) => {
           const cardsDaColuna = cards.filter(
             (c) => c.etapa === etapa && cardPassaNoFiltro(c)
           );
-          // Contador da coluna reflete os cards visíveis (respeitando o filtro de Porte ativo!)
           const totalRealColuna = cardsDaColuna.length;
+
+          // Quando aberto pelo atalho (i) da Planilha da Carteira, NÃO renderiza nenhuma coluna vazia!
+          if (modoOverlayCardUnicoId && cardsDaColuna.length === 0) {
+            return null;
+          }
 
           let mostrarColuna = true;
           if (
@@ -2563,13 +2638,12 @@ const opNumero =
 
           const configCol = TITULOS_COLUNAS[etapa];
           const isNotas = etapa === 'NOTAS';
-          // ITEM 1.1: Permite minimizar a coluna de NOTAS mesmo quando há filtros ativos!
           const isMinimized =
+            !modoOverlayCardUnicoId &&
             isNotas &&
             notasMinimizadas &&
             filtroEtapa !== 'NOTAS';
 
-          // ITEM 1.2: Só expande em coluna única se o usuário clicou na guia de uma etapa ou se há busca de texto/cor com 1 coluna restante
           const isFocusSingle =
             (filtroEtapa === etapa && !modoFiltroCruzadoAtivo) ||
             (modoFiltroCruzadoAtivo && etapasComCardsVisiveis.length === 1);
@@ -2580,12 +2654,34 @@ const opNumero =
                 id={`col_${etapa}`}
                 className={`kanban-coluna-workflow ${isMinimized ? 'is-minimized' : ''} ${
                   isFocusSingle ? 'focus-single' : ''
-                } ${isNotas && notificacoes.length > 0 ? 'has-notifications' : ''}`}
-                style={{ borderTopColor: configCol.corTopo }}
+                } ${
+                  !modoOverlayCardUnicoId && isNotas && notificacoes.length > 0
+                    ? 'has-notifications'
+                    : ''
+                }`}
+                style={
+                  modoOverlayCardUnicoId
+                    ? {
+                        background: 'transparent',
+                        border: 'none',
+                        borderTop: 'none',
+                        boxShadow: 'none',
+                        padding: 0,
+                        margin: 0,
+                        width: 0,
+                        minWidth: 0,
+                        height: 0,
+                        overflow: 'visible',
+                      }
+                    : { borderTopColor: configCol.corTopo }
+                }
                 onDragOver={handleDragOverColuna}
                 onDrop={(e) => handleDropColuna(e, etapa)}
               >
-                <div className="kanban-column-title normal-view">
+                <div
+                  className="kanban-column-title normal-view"
+                  style={modoOverlayCardUnicoId ? { display: 'none' } : undefined}
+                >
                   <span style={{ color: isNotas ? '#455a64' : '#333' }}>
                     {configCol.titulo}
                   </span>
@@ -2684,7 +2780,9 @@ const opNumero =
                   )}
 
                   {cardsDaColuna.map((card) => {
-                    const isFullscreen = cardFullscreenId === card.id;
+                    const isFullscreen =
+                      cardFullscreenId === card.id ||
+                      modoOverlayCardUnicoId === card.id;
                     const isPulsing = cardPulsandoId === card.id;
                     const dragOverClass =
                       dragOverInfo?.cardId === card.id
@@ -4598,6 +4696,20 @@ const opNumero =
                   }}
                 />
               )}
+
+
+              {!modoOverlayCardUnicoId && isNotas && filtroEtapa === 'TODOS' && (
+                <div
+                  style={{
+                    width: '2px',
+                    background: '#e0e0e0',
+                    alignSelf: 'stretch',
+                    margin: '5px 0',
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+
             </React.Fragment>
           );
         })}

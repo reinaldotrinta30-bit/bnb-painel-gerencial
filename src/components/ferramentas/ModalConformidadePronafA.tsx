@@ -1321,7 +1321,7 @@ export default function ModalConformidadePronafA({
           borderTop: '5px solid #8B1530',
         }}
       >
-        {/* CABEÇALHO DO MODAL + GERENCIADOR DE LISTAS SALVAS */}
+        {/* CABEÇALHO DO MODAL: TÍTULO À ESQUERDA E GERENCIADOR DE LISTAS + ABAS ORGANIZADOS À DIREITA */}
         <div
           style={{
             padding: '12px 22px',
@@ -1331,69 +1331,91 @@ export default function ModalConformidadePronafA({
             justifyContent: 'space-between',
             alignItems: 'center',
             flexWrap: 'wrap',
-            gap: '12px',
+            gap: '14px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <h3 style={{ margin: 0, fontSize: '15.5px', color: '#8B1530', fontWeight: 800 }}>
-                  🎯 CONFORMIDADE CADASTRAL — PRONAF A
-                </h3>
-                <span
-                  style={{
-                    fontSize: '10px',
-                    fontWeight: 800,
-                    padding: '2px 8px',
-                    borderRadius: '10px',
-                    background: statusSyncNuvem === 'SINCRONIZADO' ? '#dcfce7' : '#fef9c3',
-                    color: statusSyncNuvem === 'SINCRONIZADO' ? '#15803d' : '#854d0e',
-                  }}
-                >
-                  {statusSyncNuvem === 'SINCRONIZADO'
-                    ? '☁️ Sincronizado no Servidor'
-                    : '⏳ Salvando...'}
-                </span>
-              </div>
-              <span style={{ fontSize: '11px', color: '#64748b' }}>
-                Suas listas ficam salvas permanentemente no servidor e nunca são zeradas sozinhas.
+          {/* BLOCO ESQUERDO: TÍTULO E STATUS DE SINCRONIZAÇÃO */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <h3 style={{ margin: 0, fontSize: '15.5px', color: '#8B1530', fontWeight: 800 }}>
+                🎯 CONFORMIDADE CADASTRAL — PRONAF A
+              </h3>
+              <span
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  padding: '2px 8px',
+                  borderRadius: '10px',
+                  background:
+                    statusSyncNuvem === 'SINCRONIZADO' ? '#dcfce7' : '#fef9c3',
+                  color:
+                    statusSyncNuvem === 'SINCRONIZADO' ? '#15803d' : '#854d0e',
+                }}
+              >
+                {statusSyncNuvem === 'SINCRONIZADO'
+                  ? '☁️ Sincronizado na Nuvem'
+                  : '⏳ Salvando...'}
               </span>
             </div>
+            <span style={{ fontSize: '11px', color: '#64748b' }}>
+              Conferência das 14 colunas e fila priorizada automática (Grupos 1 a 4).
+            </span>
+          </div>
 
-            {/* SELETOR DE MÚLTIPLAS LISTAS SALVAS */}
+          {/* BLOCO DIREITO: SELETOR DE LISTAS SALVAS + ALTERNADOR DE VISÃO + FECHAR */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              flexWrap: 'wrap',
+              marginLeft: 'auto',
+            }}
+          >
+            {/* CAIXINHA DE SELEÇÃO E GESTÃO DE LISTAS SALVAS (ORGANIZADA À DIREITA DO TÍTULO) */}
             <div
               style={{
-                display: 'flex',
+                display: 'inline-flex',
                 alignItems: 'center',
-                gap: '6px',
+                gap: '5px',
                 background: '#ffffff',
                 border: '1px solid #cbd5e1',
-                padding: '5px 10px',
+                padding: '4px 8px',
                 borderRadius: '8px',
+                boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
               }}
             >
-              <strong style={{ fontSize: '11.5px', color: '#334155', whiteSpace: 'nowrap' }}>
-                📂 Lista Salva:
-              </strong>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  color: '#475569',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                📂 Lista:
+              </span>
               <select
                 value={listaAtiva.id}
                 onChange={(e) => setListaAtivaId(e.target.value)}
                 style={{
                   width: 'auto',
-                  minWidth: '210px',
-                  height: '30px',
-                  fontSize: '12px',
+                  minWidth: '185px',
+                  maxWidth: '240px',
+                  height: '28px',
+                  fontSize: '11.5px',
                   fontWeight: 700,
                   color: '#8B1530',
-                  border: '1px solid #cbd5e1',
-                  borderRadius: '6px',
-                  padding: '0 8px',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '5px',
+                  padding: '0 6px',
+                  background: '#f8fafc',
                 }}
               >
                 {listasSalvas.map((l) => (
                   <option key={l.id} value={l.id}>
-                    {l.nomeLista} ({l.itens.filter((x) => x.nomeCliente.trim() !== '').length}{' '}
-                    clientes)
+                    {l.nomeLista} (
+                    {l.itens.filter((x) => x.nomeCliente.trim() !== '').length})
                   </option>
                 ))}
               </select>
@@ -1401,10 +1423,11 @@ export default function ModalConformidadePronafA({
               <button
                 type="button"
                 onClick={handleCriarNovaLista}
-                title="Criar uma nova lista de conferência em branco"
+                title="Criar Nova Lista de Conferência"
                 style={{
                   width: 'auto',
-                  padding: '5px 10px',
+                  height: '28px',
+                  padding: '0 8px',
                   fontSize: '11px',
                   fontWeight: 800,
                   background: '#15803d',
@@ -1415,16 +1438,17 @@ export default function ModalConformidadePronafA({
                   whiteSpace: 'nowrap',
                 }}
               >
-                ➕ Nova Lista
+                + Nova
               </button>
 
               <button
                 type="button"
                 onClick={handleRenomearListaAtiva}
-                title="Renomear a lista selecionada"
+                title="Renomear Lista Atual"
                 style={{
                   width: 'auto',
-                  padding: '5px 8px',
+                  height: '28px',
+                  padding: '0 7px',
                   fontSize: '11px',
                   background: '#f1f5f9',
                   color: '#334155',
@@ -1439,10 +1463,11 @@ export default function ModalConformidadePronafA({
               <button
                 type="button"
                 onClick={handleExcluirListaAtiva}
-                title="Excluir esta lista inteira permanentemente"
+                title="Excluir Lista Atual Permanentemente"
                 style={{
                   width: 'auto',
-                  padding: '5px 8px',
+                  height: '28px',
+                  padding: '0 7px',
                   fontSize: '11px',
                   background: '#fee2e2',
                   color: '#b91c1c',
@@ -1451,19 +1476,21 @@ export default function ModalConformidadePronafA({
                   cursor: 'pointer',
                 }}
               >
-                🗑️ Excluir Lista
+                🗑️
               </button>
             </div>
-          </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <div style={{ width: '1px', height: '24px', background: '#cbd5e1' }} />
+
+            {/* BOTÕES DE NAVEGAÇÃO ENTRE PLANILHA, FILA E PDF */}
             <button
               type="button"
               onClick={() => setAbaAtiva('PLANILHA')}
               style={{
                 width: 'auto',
-                padding: '7px 14px',
-                fontSize: '12px',
+                height: '32px',
+                padding: '0 12px',
+                fontSize: '11.5px',
                 fontWeight: 800,
                 borderRadius: '6px',
                 border: '1px solid #cbd5e1',
@@ -1472,7 +1499,7 @@ export default function ModalConformidadePronafA({
                 cursor: 'pointer',
               }}
             >
-              📋 1. Planilha (14 Colunas) ({itens.length})
+              📋 1. Planilha ({itens.length})
             </button>
 
             <button
@@ -1480,8 +1507,9 @@ export default function ModalConformidadePronafA({
               onClick={() => setAbaAtiva('RANKING')}
               style={{
                 width: 'auto',
-                padding: '7px 16px',
-                fontSize: '12px',
+                height: '32px',
+                padding: '0 13px',
+                fontSize: '11.5px',
                 fontWeight: 800,
                 borderRadius: '6px',
                 border: '1px solid #15803d',
@@ -1498,8 +1526,9 @@ export default function ModalConformidadePronafA({
               onClick={exportarRelatorioPrioridadesPDF}
               style={{
                 width: 'auto',
-                padding: '7px 14px',
-                fontSize: '12px',
+                height: '32px',
+                padding: '0 12px',
+                fontSize: '11.5px',
                 fontWeight: 700,
                 borderRadius: '6px',
                 border: '1px solid #dc2626',
@@ -1508,7 +1537,7 @@ export default function ModalConformidadePronafA({
                 cursor: 'pointer',
               }}
             >
-              🖨️ Exportar PDF
+              🖨️ PDF
             </button>
 
             <button
@@ -1521,8 +1550,10 @@ export default function ModalConformidadePronafA({
                 fontSize: '24px',
                 color: '#64748b',
                 cursor: 'pointer',
-                padding: '0 6px',
+                padding: '0 4px',
+                lineHeight: 1,
               }}
+              title="Fechar"
             >
               &times;
             </button>
