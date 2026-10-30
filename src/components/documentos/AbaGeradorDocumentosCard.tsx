@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { salvarFerramentasSync } from '@/lib/firebaseSync';
 import { CardKanban, RegistroContratacao } from '@/types/painel';
 import ModalConsolidadaRural, {
   DadosIniciaisClienteDoc,

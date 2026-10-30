@@ -1,0 +1,55 @@
+{
+  "listasConformidadePronafA": [
+    {
+      "id": "lista_migrada_1793331193997",
+      "nomeLista": "Lista Principal PRONAF A (30/10/2026)",
+      "dataCriacao": "30/10/2026",
+      "dataAtualizacao": "30/10/2026",
+      "itens": [
+        {
+          "id": "conf_1793326962099_8r65b",
+          "nomeCliente": "",
+          "cpfCliente": "",
+          "visitado": "SIM",
+          "cadastroClienteOk": "OK",
+          "dataRefCadastral": "29/10/2026",
+          "restricaoClienteNivel": "SEM_RESTRICAO",
+          "restricaoClienteDetalhe": "",
+          "contaCorrente": "",
+          "conjugeNome": "",
+          "conjugeCpf": "",
+          "cadastroConjugeOk": "NAO_SE_APLICA",
+          "restricaoConjugeNivel": "SEM_RESTRICAO",
+          "restricaoConjugeDetalhe": "",
+          "procuradorNome": "",
+          "procuradorCpf": "",
+          "cadastroProcuradorOk": "NAO_SE_APLICA",
+          "restricaoProcuradorNivel": "SEM_RESTRICAO",
+          "restricaoProcuradorDetalhe": ""
+        },
+        {
+          "id": "conf_1793326970054_2kuw1",
+          "nomeCliente": "",
+          "cpfCliente": "",
+          "visitado": "SIM",
+          "cadastroClienteOk": "OK",
+          "dataRefCadastral": "29/10/2026",
+          "restricaoClienteNivel": "SEM_RESTRICAO",
+          "restricaoClienteDetalhe": "",
+          "contaCorrente": "",
+          "conjugeNome": "",
+          "conjugeCpf": "",
+          "cadastroConjugeOk": "NAO_SE_APLICA",
+          "restricaoConjugeNivel": "SEM_RESTRICAO",
+          "restricaoConjugeDetalhe": "",
+          "procuradorNome": "",
+          "procuradorCpf": "",
+          "cadastroProcuradorOk": "NAO_SE_APLICA",
+          "restricaoProcuradorNivel": "SEM_RESTRICAO",
+          "restricaoProcuradorDetalhe": ""
+        }
+      ]
+    }
+  ],
+  "ultimaSincronizacao": "2026-10-30T03:33:40.395Z"
+}

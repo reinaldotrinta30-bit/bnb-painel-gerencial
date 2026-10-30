@@ -2,6 +2,10 @@
 
 import React, { useState, useEffect } from 'react';
 import {
+  salvarFerramentasSync,
+  carregarFerramentasSync,
+} from '@/lib/firebaseSync';
+import {
   obterListaProgramas,
   obterListaProjetistas,
   ProjetistaConfig,
@@ -22,7 +26,7 @@ import ModalDeclaracoesAmbientais, {
 } from '@/components/documentos/ModalDeclaracoesAmbientais';
 import ModalRenovacaoPlanta from '@/components/documentos/ModalRenovacaoPlanta';
 import ModalConformidadePronafA, {
-  STORAGE_KEY_CONFORMIDADE_PRONAF_A,
+  STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A,
 } from '@/components/ferramentas/ModalConformidadePronafA';
 
 interface ModuloFerramentasProps {
@@ -73,16 +77,30 @@ export default function ModuloFerramentas({
   const [modalConformidadePronafAberto, setModalConformidadePronafAberto] =
     useState(false);
 
-  // Estados dos Modais do Gerador de Documentos Word (.DOCX)
   const [modalConsolidada, setModalConsolidada] = useState<'PF' | 'PRONAF' | null>(null);
   const [modalDeclGeral, setModalDeclGeral] = useState<TipoDeclaracaoGeral | null>(null);
   const [modalPlanta, setModalPlanta] = useState<'PROTOCOLO' | 'SOLICITACAO' | null>(
     null
   );
 
+  // Carrega localmente e sincroniza direto com o nó /ferramentas do Firebase Realtime Database
   useEffect(() => {
     setProgramas(obterListaProgramas());
     setProjetistas(obterListaProjetistas());
+
+    carregarFerramentasSync()
+      .then((dadosNuvem) => {
+        if (Array.isArray(dadosNuvem?.programas) && dadosNuvem.programas.length > 0) {
+          setProgramas(dadosNuvem.programas as string[]);
+        }
+        if (
+          Array.isArray(dadosNuvem?.projetistas) &&
+          dadosNuvem.projetistas.length > 0
+        ) {
+          setProjetistas(dadosNuvem.projetistas as ProjetistaConfig[]);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const salvarProgramas = (novaLista: string[]) => {
@@ -92,6 +110,7 @@ export default function ModuloFerramentas({
         'bnb_v2_config_programas',
         JSON.stringify(novaLista)
       );
+      salvarFerramentasSync({ programas: novaLista }).catch(() => {});
     }
   };
 
@@ -119,6 +138,7 @@ export default function ModuloFerramentas({
         'bnb_v2_config_projetistas',
         JSON.stringify(novaLista)
       );
+      salvarFerramentasSync({ projetistas: novaLista }).catch(() => {});
     }
   };
 
@@ -153,6 +173,22 @@ export default function ModuloFerramentas({
   };
 
   const exportarBackupUnificado = () => {
+    const listasPronafA =
+      typeof window !== 'undefined'
+        ? JSON.parse(
+            window.localStorage.getItem(
+              STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A
+            ) || '[]'
+          )
+        : [];
+    const parametrosCarteira =
+      typeof window !== 'undefined'
+        ? JSON.parse(
+            window.localStorage.getItem('bnb_v2_parametros_oficiais_carteira') ||
+              'null'
+          )
+        : null;
+
     const pacote = {
       versao: 'BNB_PAINEL_V2',
       dataExportacao: new Date().toISOString(),
@@ -162,6 +198,8 @@ export default function ModuloFerramentas({
       cardsKanban,
       programas,
       projetistas,
+      listasConformidadePronafA: listasPronafA,
+      parametrosCarteira,
     };
     const blob = new Blob([JSON.stringify(pacote, null, 2)], {
       type: 'application/json',
@@ -184,18 +222,37 @@ export default function ModuloFerramentas({
         if (dados.contratacoes && dados.cardsKanban) {
           if (dados.programas) salvarProgramas(dados.programas);
           if (dados.projetistas) salvarProjetistas(dados.projetistas);
+          if (dados.listasConformidadePronafA) {
+            window.localStorage.setItem(
+              STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A,
+              JSON.stringify(dados.listasConformidadePronafA)
+            );
+            salvarFerramentasSync({
+              listasConformidadePronafA: dados.listasConformidadePronafA,
+            }).catch(() => {});
+          }
+          if (dados.parametrosCarteira) {
+            window.localStorage.setItem(
+              'bnb_v2_parametros_oficiais_carteira',
+              JSON.stringify(dados.parametrosCarteira)
+            );
+            salvarFerramentasSync({
+              parametrosCarteira: dados.parametrosCarteira,
+            }).catch(() => {});
+          }
+
           onRestaurarBackupCompleto({
             contratacoes: dados.contratacoes || [],
             operacoesBase: dados.operacoesBase || [],
             eventos: dados.eventos || [],
             cardsKanban: dados.cardsKanban || [],
           });
-          alert('✅ Backup Geral Unificado restaurado com sucesso!');
+          alert('✅ Backup Geral Unificado restaurado e sincronizado na nuvem com sucesso!');
         } else {
-          alert('❌ Ficheiro de backup inválido.');
+          alert('❌ Arquivo de backup inválido.');
         }
       } catch {
-        alert('❌ Erro ao ler ficheiro JSON.');
+        alert('❌ Erro ao ler arquivo JSON.');
       }
     };
     reader.readAsText(file);
@@ -286,10 +343,10 @@ export default function ModuloFerramentas({
           >
             <div>
               <strong style={{ color: 'var(--primary-color)', fontSize: '14.5px' }}>
-                📄 GERADOR de DOCUMENTOS E DECLARAÇÕES
+                📄 GERADOR DE DOCUMENTOS E DECLARAÇÕES
               </strong>
               <span style={{ display: 'block', fontSize: '11.5px', color: '#64748b' }}>
-                Em qualquer documento abaixo, pode clicar em &ldquo;📥 Baixar Molde .DOCX&rdquo; para editar cláusulas no Word e clicar em &ldquo;📤 Atualizar Molde .DOCX&rdquo; para substituir!
+                Em qualquer documento abaixo, pode usar &ldquo;📤 Comparar Modelo&rdquo; para varrer diferenças lado a lado, &ldquo;📥 Baixar Molde .DOCX&rdquo; ou &ldquo;📤 Atualizar Molde .DOCX&rdquo;!
               </span>
             </div>
           </div>
@@ -503,7 +560,7 @@ export default function ModuloFerramentas({
               🎯 CONFORMIDADE CADASTRAL & PRIORIZAÇÃO AUTOMÁTICA — PRONAF A
             </strong>
             <span style={{ fontSize: '12px', color: '#475569' }}>
-              Planilha de conferência de 14 colunas (Titular, Cônjuge, Procurador, Restrições CI Leves/Graves e C/C) com classificação automática nos 4 Grupos de Prioridade e envio em 1 clique para a etapa de Cadastros do Kanban.
+              Gerencie múltiplas listas salvas na nuvem (14 colunas), importe/exporte planilhas Excel (.XLSX) e envie propostas em 1 clique para a etapa de Cadastros do Kanban.
             </span>
           </div>
 
@@ -686,21 +743,6 @@ export default function ModuloFerramentas({
               </button>
             </div>
 
-            <ModalConformidadePronafA
-        aberto={modalConformidadePronafAberto}
-        onFechar={() => setModalConformidadePronafAberto(false)}
-        contratacoes={contratacoes}
-        cardsKanban={cardsKanban}
-        onCadastrarPropostaNoPainel={(novaContratacao, novoCardKanban) => {
-          onRestaurarBackupCompleto({
-            contratacoes: [novaContratacao, ...contratacoes],
-            operacoesBase,
-            eventos,
-            cardsKanban: [novoCardKanban, ...cardsKanban],
-          });
-        }}
-      />
-
             <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
               <table className="conf-table" style={{ marginTop: 0 }}>
                 <thead>
@@ -764,7 +806,22 @@ export default function ModuloFerramentas({
         </div>
       </div>
 
-      {/* MODAIS DE GERAÇÃO DE DOCUMENTOS WORD */}
+      {/* MODAIS DE FERRAMENTAS E GERAÇÃO DE DOCUMENTOS */}
+      <ModalConformidadePronafA
+        aberto={modalConformidadePronafAberto}
+        onFechar={() => setModalConformidadePronafAberto(false)}
+        contratacoes={contratacoes}
+        cardsKanban={cardsKanban}
+        onCadastrarPropostaNoPainel={(novaContratacao, novoCardKanban) => {
+          onRestaurarBackupCompleto({
+            contratacoes: [novaContratacao, ...contratacoes],
+            operacoesBase,
+            eventos,
+            cardsKanban: [novoCardKanban, ...cardsKanban],
+          });
+        }}
+      />
+
       <ModalConsolidadaRural
         aberto={modalConsolidada !== null}
         modalidade={modalConsolidada || 'PF'}
@@ -786,7 +843,5 @@ export default function ModuloFerramentas({
         contratacoes={contratacoes}
       />
     </div>
-      
-    
   );
 }

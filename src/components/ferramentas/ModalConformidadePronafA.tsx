@@ -1,7 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import * as XLSX from 'xlsx';
+import {
+  salvarFerramentasSync,
+  carregarFerramentasSync,
+} from '@/lib/firebaseSync';
 import {
   RegistroContratacao,
   CardKanban,
@@ -26,7 +31,6 @@ export type NivelRestricaoCI = 'SEM_RESTRICAO' | 'LEVE' | 'GRAVE';
 
 export interface ItemConformidadePronafA {
   id: string;
-  // 1 a 7: Dados do Titular
   nomeCliente: string;
   cpfCliente: string;
   visitado: StatusVisitado;
@@ -35,18 +39,24 @@ export interface ItemConformidadePronafA {
   restricaoClienteNivel: NivelRestricaoCI;
   restricaoClienteDetalhe: string;
   contaCorrente: string;
-  // 8 a 11: Dados do Cônjuge / Companheiro(a)
   conjugeNome: string;
   conjugeCpf: string;
   cadastroConjugeOk: StatusCadastroOpcional;
   restricaoConjugeNivel: NivelRestricaoCI;
   restricaoConjugeDetalhe: string;
-  // 12 a 14 (+ Restrição Procurador): Dados do Procurador
   procuradorNome: string;
   procuradorCpf: string;
   cadastroProcuradorOk: StatusCadastroOpcional;
   restricaoProcuradorNivel: NivelRestricaoCI;
   restricaoProcuradorDetalhe: string;
+}
+
+export interface ListaSalvaConformidadePronafA {
+  id: string;
+  nomeLista: string;
+  dataCriacao: string;
+  dataAtualizacao: string;
+  itens: ItemConformidadePronafA[];
 }
 
 export interface ResultadoClassificacaoPronafA {
@@ -72,12 +82,40 @@ interface ModalConformidadePronafAProps {
   ) => void;
 }
 
-export const STORAGE_KEY_CONFORMIDADE_PRONAF_A = 'bnb_v2_conformidade_pronaf_a';
+export const STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A =
+  'bnb_v2_listas_conformidade_pronaf_a';
+const STORAGE_KEY_LEGADO_CONFORMIDADE = 'bnb_v2_conformidade_pronaf_a';
 
-// Detecta automaticamente se um texto de restrição colado/digitado é LEVE (CAEMA, Equatorial, etc.) ou GRAVE (REFIN, Bancos)
+// Cabeçalhos exatos das 14 colunas oficiais da planilha de conferência
+const CABECALHOS_EXCEL_14_COLUNAS = [
+  '1. Nome do cliente',
+  '2. CPF do cliente',
+  '3. Visitado?',
+  '4. Cadastro do cliente OK?',
+  '5. Data (ref.) da situação Cadastral',
+  '6. Restrição CI?',
+  '7. C/C aberta? (nº)',
+  '8. Cônjuge / Comp.',
+  '9. CPF do Cônjuge / Comp.',
+  '10. Cadastro do cônjuge/companheiro(a) OK?',
+  '11. Restrição do cônjuge/companheiro(a) CI?',
+  '12. Nome do procurador',
+  '13. CPF do procurador',
+  '14. Cadastro do procurador OK?',
+];
+
 function detectarNivelRestricaoPorTexto(texto: string): NivelRestricaoCI {
   const up = (texto || '').toUpperCase().trim();
-  if (!up || up === 'NÃO' || up === 'NAO' || up === 'NADA CONSTA' || up === 'SEM RESTRIÇÃO' || up === 'OK' || up === '-') {
+  if (
+    !up ||
+    up === 'NÃO' ||
+    up === 'NAO' ||
+    up === 'NADA CONSTA' ||
+    up === 'SEM RESTRIÇÃO' ||
+    up === 'SEM RESTRICAO' ||
+    up === 'OK' ||
+    up === '-'
+  ) {
     return 'SEM_RESTRICAO';
   }
   if (
@@ -100,24 +138,55 @@ function detectarNivelRestricaoPorTexto(texto: string): NivelRestricaoCI {
   ) {
     return 'GRAVE';
   }
-  if (
-    up.includes('CAEMA') ||
-    up.includes('EQUATORIAL') ||
-    up.includes('CEMAR') ||
-    up.includes('PEFIN') ||
-    up.includes('CLARO') ||
-    up.includes('VIVO') ||
-    up.includes('TIM') ||
-    up.includes('OI') ||
-    up.includes('LEVE') ||
-    up.includes('COMERCIAL')
-  ) {
-    return 'LEVE';
-  }
   return 'LEVE';
 }
 
-// Calcula a sub-ordem exata (1 a 9) para os Grupos 1 e 2 conforme a regra de negócios do usuário
+function interpretarVisitadoExcel(val: string): StatusVisitado {
+  const up = (val || '').toUpperCase().trim();
+  if (up.startsWith('N')) return 'NAO';
+  if (up.startsWith('P')) return 'PENDENTE';
+  return 'SIM';
+}
+
+function interpretarStatusCadastroTitularExcel(val: string): StatusCadastroPessoa {
+  const up = (val || '').toUpperCase().trim();
+  if (up.includes('RENOV') || up.includes('VENCID') || up.includes('ATUALIZAR')) {
+    return 'A_RENOVAR';
+  }
+  if (
+    up.includes('ELAB') ||
+    up.includes('FAZER') ||
+    up.includes('SEM CAD') ||
+    up === 'NÃO' ||
+    up === 'NAO'
+  ) {
+    return 'A_ELABORAR';
+  }
+  return 'OK';
+}
+
+function interpretarStatusCadastroOpcionalExcel(
+  val: string,
+  temNomeVinculado: boolean
+): StatusCadastroOpcional {
+  if (!temNomeVinculado) return 'NAO_SE_APLICA';
+  const up = (val || '').toUpperCase().trim();
+  if (!up || up.includes('NÃO SE APLICA') || up === '-') return 'OK';
+  if (up.includes('RENOV') || up.includes('VENCID') || up.includes('ATUALIZAR')) {
+    return 'A_RENOVAR';
+  }
+  if (
+    up.includes('ELAB') ||
+    up.includes('FAZER') ||
+    up.includes('SEM CAD') ||
+    up === 'NÃO' ||
+    up === 'NAO'
+  ) {
+    return 'A_ELABORAR';
+  }
+  return 'OK';
+}
+
 function calcularSubgrupoGrupos1e2(
   temConjuge: boolean,
   temProcurador: boolean,
@@ -188,7 +257,6 @@ export function classificarListaConformidadePronafA(
     const temGraveProc = temProcurador && restProc === 'GRAVE';
     const possuiAlgumaGrave = temGraveCli || temGraveConj || temGraveProc;
 
-    // Monta resumos automáticos para exibir no relatório e pré-preencher o Card do Kanban
     const resumoPontosOk: string[] = [];
     const resumoPendencias: string[] = [];
 
@@ -218,13 +286,17 @@ export function classificarListaConformidadePronafA(
     if (restCli === 'LEVE') {
       resumoPendencias.push(
         `RESTRIÇÃO LEVE TITULAR${
-          item.restricaoClienteDetalhe ? `: ${item.restricaoClienteDetalhe.toUpperCase()}` : ' (PEFIN COMERCIAL)'
+          item.restricaoClienteDetalhe
+            ? `: ${item.restricaoClienteDetalhe.toUpperCase()}`
+            : ' (PEFIN COMERCIAL)'
         }`
       );
     } else if (restCli === 'GRAVE') {
       resumoPendencias.push(
         `RESTRIÇÃO GRAVE TITULAR (REFIN/BANCOS)${
-          item.restricaoClienteDetalhe ? `: ${item.restricaoClienteDetalhe.toUpperCase()}` : ''
+          item.restricaoClienteDetalhe
+            ? `: ${item.restricaoClienteDetalhe.toUpperCase()}`
+            : ''
         }`
       );
     }
@@ -245,13 +317,17 @@ export function classificarListaConformidadePronafA(
       if (restConj === 'LEVE') {
         resumoPendencias.push(
           `RESTRIÇÃO LEVE DO CÔNJUGE${
-            item.restricaoConjugeDetalhe ? `: ${item.restricaoConjugeDetalhe.toUpperCase()}` : ''
+            item.restricaoConjugeDetalhe
+              ? `: ${item.restricaoConjugeDetalhe.toUpperCase()}`
+              : ''
           }`
         );
       } else if (restConj === 'GRAVE') {
         resumoPendencias.push(
           `RESTRIÇÃO GRAVE DO CÔNJUGE${
-            item.restricaoConjugeDetalhe ? `: ${item.restricaoConjugeDetalhe.toUpperCase()}` : ''
+            item.restricaoConjugeDetalhe
+              ? `: ${item.restricaoConjugeDetalhe.toUpperCase()}`
+              : ''
           }`
         );
       }
@@ -291,9 +367,8 @@ export function classificarListaConformidadePronafA(
       }
     }
 
-    // Cálculo de penalidade de desempate (quanto menor o scoreDesempate, mais no topo fica!)
     let penalidade = 0;
-    if (restCli === 'LEVE') penalidade += 100; // Titular sem restrição ganha de titular com restrição leve na mesma faixa
+    if (restCli === 'LEVE') penalidade += 100;
     const qtdEnvolvidosExtras = (temConjuge ? 1 : 0) + (temProcurador ? 1 : 0);
     penalidade += qtdEnvolvidosExtras * 30;
 
@@ -377,7 +452,8 @@ export function classificarListaConformidadePronafA(
         subgrupoDescricao = 'Com restrições leves identificadas';
       } else {
         subgrupoOrdem = 4;
-        subgrupoDescricao = 'Com maior quantidade de pendências cadastrais / envolvidos';
+        subgrupoDescricao =
+          'Com maior quantidade de pendências cadastrais / envolvidos';
       }
     }
 
@@ -386,7 +462,10 @@ export function classificarListaConformidadePronafA(
     const jaCadastradoNoPainel = contratacoesAtuais.some((r) => {
       const rCpf = (r.cpf || '').replace(/\D/g, '');
       const rNome = (r.cliente || '').toUpperCase().trim();
-      return (cpfLimpo.length === 11 && rCpf === cpfLimpo) || (nomeUpper.length > 3 && rNome === nomeUpper);
+      return (
+        (cpfLimpo.length === 11 && rCpf === cpfLimpo) ||
+        (nomeUpper.length > 3 && rNome === nomeUpper)
+      );
     });
 
     return {
@@ -434,19 +513,39 @@ function criarLinhaVazia(): ItemConformidadePronafA {
   };
 }
 
+function criarNovaListaPadrao(nomePersonalizado?: string): ListaSalvaConformidadePronafA {
+  const agora = getHojeBR();
+  return {
+    id: `lista_pronafa_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    nomeLista: nomePersonalizado || `Lista de Conferência (${agora})`,
+    dataCriacao: agora,
+    dataAtualizacao: agora,
+    itens: [criarLinhaVazia()],
+  };
+}
+
 export default function ModalConformidadePronafA({
   aberto,
   onFechar,
   contratacoes,
-  cardsKanban,
   onCadastrarPropostaNoPainel,
 }: ModalConformidadePronafAProps) {
   const [abaAtiva, setAbaAtiva] = useState<'PLANILHA' | 'RANKING'>('PLANILHA');
-  const [itens, setItens] = useState<ItemConformidadePronafA[]>([]);
+
+  // Gerenciador de Múltiplas Listas Salvas (Local + Nuvem)
+  const [listasSalvas, setListasSalvas] = useState<ListaSalvaConformidadePronafA[]>([]);
+  const [listaAtivaId, setListaAtivaId] = useState<string>('');
+  const [statusSyncNuvem, setStatusSyncNuvem] = useState<'SINCRONIZADO' | 'SALVANDO'>(
+    'SINCRONIZADO'
+  );
+
+  const inputImportarExcelRef = useRef<HTMLInputElement>(null);
+
+  // Sub-Modal de Colagem Rápida
   const [modalColarAberto, setModalColarAberto] = useState(false);
   const [textoColagemMassa, setTextoColagemMassa] = useState('');
 
-  // Estados do Sub-Modal "🚀 Cadastrar Operação PRONAF A no Painel & Kanban"
+  // Sub-Modal de Iniciar Proposta PRONAF A no Painel e Kanban
   const [itemParaCadastro, setItemParaCadastro] =
     useState<ResultadoClassificacaoPronafA | null>(null);
   const [cadValor, setCadValor] = useState('');
@@ -462,30 +561,162 @@ export default function ModalConformidadePronafA({
 
   const listaProgramas = useMemo(() => obterListaProgramas(), []);
 
+  // Carrega as listas salvas (do Servidor/Nuvem e do LocalStorage, migrando listas antigas sem nunca apagar!)
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const salvo = window.localStorage.getItem(STORAGE_KEY_CONFORMIDADE_PRONAF_A);
-      if (salvo) {
-        const parsed = JSON.parse(salvo);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setItens(parsed);
-          return;
+    if (!aberto || typeof window === 'undefined') return;
+
+    const carregarListasIniciais = async () => {
+      let listasLocais: ListaSalvaConformidadePronafA[] = [];
+
+      try {
+        const salvoMulti = window.localStorage.getItem(
+          STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A
+        );
+        if (salvoMulti) {
+          const parsed = JSON.parse(salvoMulti);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            listasLocais = parsed;
+          }
+        } else {
+          // Migra eventual lista única da versão anterior para não perder nenhum dado já digitado
+          const legado = window.localStorage.getItem(STORAGE_KEY_LEGADO_CONFORMIDADE);
+          if (legado) {
+            const itensLegado = JSON.parse(legado);
+            if (Array.isArray(itensLegado) && itensLegado.length > 0) {
+              listasLocais = [
+                {
+                  id: `lista_migrada_${Date.now()}`,
+                  nomeLista: `Lista Principal PRONAF A (${getHojeBR()})`,
+                  dataCriacao: getHojeBR(),
+                  dataAtualizacao: getHojeBR(),
+                  itens: itensLegado,
+                },
+              ];
+            }
+          }
         }
+      } catch {
+        // Ignora erro local
       }
-    } catch {
-      // ignora erro de parse
-    }
-    setItens([criarLinhaVazia()]);
+
+      // Consulta diretamente o Firebase Realtime Database (sistema_bnb_v2_homolog/ferramentas)
+      try {
+        const dadosNuvem = await carregarFerramentasSync();
+        const listasNuvem = dadosNuvem?.listasConformidadePronafA;
+        if (Array.isArray(listasNuvem) && listasNuvem.length > 0) {
+          const mapa = new Map<string, ListaSalvaConformidadePronafA>();
+          listasLocais.forEach((l) => mapa.set(l.id, l));
+          // Prioriza a versão mais recente da nuvem e mantém listas locais novas
+          (listasNuvem as ListaSalvaConformidadePronafA[]).forEach((l) =>
+            mapa.set(l.id, l)
+          );
+          listasLocais = Array.from(mapa.values());
+        }
+      } catch {
+        // Fallback para listasLocais
+      }
+
+      if (listasLocais.length === 0) {
+        listasLocais = [criarNovaListaPadrao('Lista 01 — Conformidade PRONAF A')];
+      }
+
+      setListasSalvas(listasLocais);
+      setListaAtivaId((prev) =>
+        listasLocais.some((l) => l.id === prev) ? prev : listasLocais[0].id
+      );
+      window.localStorage.setItem(
+        STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A,
+        JSON.stringify(listasLocais)
+      );
+    };
+
+    carregarListasIniciais();
   }, [aberto]);
 
-  const salvarItens = (novaLista: ItemConformidadePronafA[]) => {
-    setItens(novaLista);
+  // Salva todas as listas no LocalStorage e sincroniza com o Servidor/Nuvem
+  const persistirListas = (novasListas: ListaSalvaConformidadePronafA[]) => {
+    setListasSalvas(novasListas);
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(
-        STORAGE_KEY_CONFORMIDADE_PRONAF_A,
-        JSON.stringify(novaLista)
+        STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A,
+        JSON.stringify(novasListas)
       );
+      window.dispatchEvent(
+        new CustomEvent('bnb_ferramentas_sync_changed', {
+          detail: { listasConformidadePronafA: novasListas },
+        })
+      );
+    }
+
+    setStatusSyncNuvem('SALVANDO');
+    salvarFerramentasSync({
+  listasConformidadePronafA: novasListas,
+})
+      .catch(() => {})
+      .finally(() => setStatusSyncNuvem('SINCRONIZADO'));
+  };
+
+  const listaAtiva = useMemo(() => {
+    return (
+      listasSalvas.find((l) => l.id === listaAtivaId) ||
+      listasSalvas[0] ||
+      criarNovaListaPadrao()
+    );
+  }, [listasSalvas, listaAtivaId]);
+
+  const itens = listaAtiva.itens;
+
+  const salvarItensDaListaAtiva = (novosItens: ItemConformidadePronafA[]) => {
+    const novasListas = listasSalvas.map((l) =>
+      l.id === listaAtiva.id
+        ? { ...l, dataAtualizacao: getHojeBR(), itens: novosItens }
+        : l
+    );
+    persistirListas(novasListas);
+  };
+
+  // Ações de Gestão de Múltiplas Listas (Criar, Renomear, Excluir)
+  const handleCriarNovaLista = () => {
+    const nome = window.prompt(
+      'Digite o nome da nova Lista de Conferência PRONAF A:',
+      `Lote PRONAF A — ${getHojeBR()}`
+    );
+    if (!nome || !nome.trim()) return;
+    const nova = criarNovaListaPadrao(nome.trim());
+    const atualizadas = [nova, ...listasSalvas];
+    persistirListas(atualizadas);
+    setListaAtivaId(nova.id);
+    setAbaAtiva('PLANILHA');
+  };
+
+  const handleRenomearListaAtiva = () => {
+    const novoNome = window.prompt(
+      'Renomear a lista atual:',
+      listaAtiva.nomeLista
+    );
+    if (!novoNome || !novoNome.trim()) return;
+    const atualizadas = listasSalvas.map((l) =>
+      l.id === listaAtiva.id ? { ...l, nomeLista: novoNome.trim() } : l
+    );
+    persistirListas(atualizadas);
+  };
+
+  const handleExcluirListaAtiva = () => {
+    if (
+      !window.confirm(
+        `⚠️ Tem certeza que deseja EXCLUIR permanentemente a lista "${listaAtiva.nomeLista}" (${itens.length} linhas)?`
+      )
+    ) {
+      return;
+    }
+    const restantes = listasSalvas.filter((l) => l.id !== listaAtiva.id);
+    if (restantes.length === 0) {
+      const novaPadrao = criarNovaListaPadrao('Lista 01 — Conformidade PRONAF A');
+      persistirListas([novaPadrao]);
+      setListaAtivaId(novaPadrao.id);
+    } else {
+      persistirListas(restantes);
+      setListaAtivaId(restantes[0].id);
     }
   };
 
@@ -497,7 +728,6 @@ export default function ModalConformidadePronafA({
     const copia = [...itens];
     copia[idx] = { ...copia[idx], [campo]: valor };
 
-    // Inteligência: se preencheu nome do cônjuge e o status estava NÃO SE APLICA, muda para OK automaticamente
     if (
       campo === 'conjugeNome' &&
       String(valor).trim() !== '' &&
@@ -513,13 +743,258 @@ export default function ModalConformidadePronafA({
       copia[idx].cadastroProcuradorOk = 'OK';
     }
 
-    salvarItens(copia);
+    salvarItensDaListaAtiva(copia);
   };
 
   const rankingClassificado = useMemo(
     () => classificarListaConformidadePronafA(itens, contratacoes),
     [itens, contratacoes]
   );
+
+  // =========================================================================
+  // INTEGRAÇÃO DIRETA COM EXCEL (.XLSX): MODELO, EXPORTAÇÃO E IMPORTAÇÃO
+  // =========================================================================
+
+  // 1. EXPORTAR MODELO (.XLSX) EM BRANCO COM AS 14 COLUNAS EXATAS
+  const exportarModeloExcel14Colunas = () => {
+    const linhaExemplo = [
+      'EXEMPLO: MARIA JOSÉ DA SILVA (APAGUE ESTA LINHA)',
+      '000.000.000-00',
+      'SIM',
+      'OK',
+      getHojeBR(),
+      'CAEMA (LEVE)',
+      '47706-6',
+      'JOÃO DA SILVA',
+      '111.222.333-44',
+      'OK',
+      'NÃO',
+      '',
+      '',
+      'NÃO SE APLICA',
+    ];
+
+    const aoa = [CABECALHOS_EXCEL_14_COLUNAS, linhaExemplo, []];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [
+      { wch: 34 },
+      { wch: 16 },
+      { wch: 12 },
+      { wch: 22 },
+      { wch: 18 },
+      { wch: 24 },
+      { wch: 16 },
+      { wch: 30 },
+      { wch: 16 },
+      { wch: 26 },
+      { wch: 24 },
+      { wch: 28 },
+      { wch: 16 },
+      { wch: 24 },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'MODELO_CONFERENCIA_PRONAF_A');
+    XLSX.writeFile(wb, 'MODELO_CONFORMIDADE_CADASTRAL_PRONAF_A.xlsx');
+  };
+
+  // 2. EXPORTAR LISTA ATUAL (.XLSX) COM 2 ABAS (CONFERÊNCIA + FILA PRIORIZADA)
+  const exportarListaAtivaParaExcel = () => {
+    const linhasConferencia = itens
+      .filter((i) => i.nomeCliente.trim() !== '')
+      .map((it) => {
+        const fmtRest = (niv: NivelRestricaoCI, det: string) => {
+          if (niv === 'SEM_RESTRICAO') return det || 'NÃO';
+          const rotulo = niv === 'GRAVE' ? 'GRAVE (REFIN/BANCOS)' : 'LEVE (PEFIN)';
+          return det ? `${rotulo} - ${det}` : rotulo;
+        };
+
+        return [
+          it.nomeCliente.toUpperCase(),
+          it.cpfCliente,
+          it.visitado,
+          it.cadastroClienteOk === 'OK'
+            ? 'OK'
+            : it.cadastroClienteOk === 'A_RENOVAR'
+            ? 'A RENOVAR'
+            : 'A ELABORAR',
+          it.dataRefCadastral,
+          fmtRest(it.restricaoClienteNivel, it.restricaoClienteDetalhe),
+          it.contaCorrente || 'NÃO',
+          it.conjugeNome.toUpperCase(),
+          it.conjugeCpf,
+          it.cadastroConjugeOk === 'NAO_SE_APLICA' ? 'NÃO SE APLICA' : it.cadastroConjugeOk,
+          fmtRest(it.restricaoConjugeNivel, it.restricaoConjugeDetalhe),
+          it.procuradorNome.toUpperCase(),
+          it.procuradorCpf,
+          it.cadastroProcuradorOk === 'NAO_SE_APLICA'
+            ? 'NÃO SE APLICA'
+            : `${it.cadastroProcuradorOk} (${
+                it.restricaoProcuradorNivel === 'SEM_RESTRICAO'
+                  ? 'S/ Restr.'
+                  : it.restricaoProcuradorNivel
+              })`,
+        ];
+      });
+
+    const wsConferencia = XLSX.utils.aoa_to_sheet([
+      CABECALHOS_EXCEL_14_COLUNAS,
+      ...linhasConferencia,
+    ]);
+    wsConferencia['!cols'] = CABECALHOS_EXCEL_14_COLUNAS.map(() => ({ wch: 24 }));
+
+    const cabecalhoRanking = [
+      'Ordem na Fila',
+      'Grupo de Prioridade',
+      'Subgrupo / Critério',
+      'Nome do Cliente',
+      'CPF do Cliente',
+      'C/C Aberta',
+      'Visitado?',
+      'Cônjuge / Comp.',
+      'Procurador',
+      'Diagnóstico / Pendências',
+    ];
+
+    const linhasRanking = rankingClassificado.map((r, idx) => [
+      `${idx + 1}º`,
+      r.grupoTitulo,
+      `Subgrupo ${r.grupoNumero}.${r.subgrupoOrdem}: ${r.subgrupoDescricao}`,
+      r.item.nomeCliente.toUpperCase(),
+      r.item.cpfCliente,
+      r.item.contaCorrente || 'Não aberta',
+      r.item.visitado,
+      r.item.conjugeNome || 'Sem cônjuge',
+      r.item.procuradorNome || 'Sem procurador',
+      r.resumoPendencias.length > 0
+        ? r.resumoPendencias.join(' | ')
+        : '100% OK — Pronta para encaminhamento',
+    ]);
+
+    const wsRanking = XLSX.utils.aoa_to_sheet([cabecalhoRanking, ...linhasRanking]);
+    wsRanking['!cols'] = cabecalhoRanking.map(() => ({ wch: 26 }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsConferencia, '1_CONFERENCIA_14_COLUNAS');
+    XLSX.utils.book_append_sheet(wb, wsRanking, '2_FILA_PRIORIDADES');
+
+    const nomeLimpo = listaAtiva.nomeLista
+      .replace(/[^\w\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '_');
+    XLSX.writeFile(wb, `CONFORMIDADE_PRONAF_A_${nomeLimpo || getHojeISO()}.xlsx`);
+  };
+
+  // 3. IMPORTAR LISTA DIRETAMENTE DO EXCEL (.XLSX / .XLS)
+  const handleImportarArquivoExcel = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array' });
+      const primeiraAba = wb.SheetNames[0];
+      const ws = wb.Sheets[primeiraAba];
+      const matriz = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+        header: 1,
+        defval: '',
+      });
+
+      const novosItens: ItemConformidadePronafA[] = [];
+
+      matriz.forEach((linhaRaw, idxLinha) => {
+        if (!Array.isArray(linhaRaw)) return;
+        const cols = linhaRaw.map((c) => String(c ?? '').trim());
+        const nomeCandidato = (cols[0] || '').toUpperCase().trim();
+
+        // Ignora cabeçalho ou linha de exemplo do modelo
+        if (
+          !nomeCandidato ||
+          (idxLinha === 0 &&
+            (nomeCandidato.includes('NOME DO CLIENTE') ||
+              nomeCandidato.includes('1. NOME') ||
+              nomeCandidato === 'NOME')) ||
+          nomeCandidato.startsWith('EXEMPLO:')
+        ) {
+          return;
+        }
+
+        const novo = criarLinhaVazia();
+        novo.nomeCliente = nomeCandidato;
+        novo.cpfCliente = aplicarMascaraCPF(cols[1] || '');
+        novo.visitado = interpretarVisitadoExcel(cols[2] || 'SIM');
+        novo.cadastroClienteOk = interpretarStatusCadastroTitularExcel(cols[3] || 'OK');
+        novo.dataRefCadastral = cols[4] || getHojeBR();
+
+        const restCliTxt = cols[5] || '';
+        novo.restricaoClienteDetalhe =
+          restCliTxt.toUpperCase() === 'NÃO' || restCliTxt.toUpperCase() === 'NAO'
+            ? ''
+            : restCliTxt;
+        novo.restricaoClienteNivel = detectarNivelRestricaoPorTexto(restCliTxt);
+
+        novo.contaCorrente = cols[6] || '';
+        novo.conjugeNome = (cols[7] || '').toUpperCase().trim();
+        novo.conjugeCpf = aplicarMascaraCPF(cols[8] || '');
+        novo.cadastroConjugeOk = interpretarStatusCadastroOpcionalExcel(
+          cols[9] || '',
+          Boolean(novo.conjugeNome || novo.conjugeCpf)
+        );
+
+        const restConjTxt = cols[10] || '';
+        novo.restricaoConjugeDetalhe =
+          restConjTxt.toUpperCase() === 'NÃO' || restConjTxt.toUpperCase() === 'NAO'
+            ? ''
+            : restConjTxt;
+        novo.restricaoConjugeNivel = detectarNivelRestricaoPorTexto(restConjTxt);
+
+        novo.procuradorNome = (cols[11] || '').toUpperCase().trim();
+        novo.procuradorCpf = aplicarMascaraCPF(cols[12] || '');
+        novo.cadastroProcuradorOk = interpretarStatusCadastroOpcionalExcel(
+          cols[13] || '',
+          Boolean(novo.procuradorNome || novo.procuradorCpf)
+        );
+        novo.restricaoProcuradorNivel = detectarNivelRestricaoPorTexto(cols[13] || '');
+
+        novosItens.push(novo);
+      });
+
+      if (novosItens.length === 0) {
+        alert('⚠️ Nenhum cliente válido foi encontrado nas linhas da planilha Excel.');
+        e.target.value = '';
+        return;
+      }
+
+      const criarComoNovaLista = window.confirm(
+        `✅ Foram lidos ${novosItens.length} cliente(s) da planilha "${file.name}".\n\n` +
+          `• Clique em [OK] para criar uma NOVA LISTA salva com esses clientes;\n` +
+          `• Ou clique em [Cancelar] para ADICIONAR esses clientes dentro da lista atual ("${listaAtiva.nomeLista}").`
+      );
+
+      if (criarComoNovaLista) {
+        const nomeSugerido = file.name.replace(/\.xlsx?$/i, '');
+        const novaLista: ListaSalvaConformidadePronafA = {
+          id: `lista_xlsx_${Date.now()}`,
+          nomeLista: nomeSugerido,
+          dataCriacao: getHojeBR(),
+          dataAtualizacao: getHojeBR(),
+          itens: novosItens,
+        };
+        const atualizadas = [novaLista, ...listasSalvas];
+        persistirListas(atualizadas);
+        setListaAtivaId(novaLista.id);
+      } else {
+        const atuaisPreenchidos = itens.filter((i) => i.nomeCliente.trim() !== '');
+        salvarItensDaListaAtiva([...atuaisPreenchidos, ...novosItens]);
+      }
+    } catch {
+      alert('❌ Erro ao ler a planilha Excel. Verifique se o arquivo é um .xlsx válido.');
+    }
+
+    e.target.value = '';
+  };
 
   const processarColagemEmLote = () => {
     const linhas = textoColagemMassa
@@ -531,7 +1006,6 @@ export default function ModalConformidadePronafA({
     const novosItens: ItemConformidadePronafA[] = [];
 
     linhas.forEach((linha) => {
-      // Suporta colagem do Excel (separado por TAB) ou lista simples (Nome - CPF)
       const cols = linha.includes('\t') ? linha.split('\t') : linha.split(/[;|-]/);
       const nomeLimpo = (cols[0] || '').toUpperCase().trim();
       if (!nomeLimpo || nomeLimpo === 'NOME DO CLIENTE' || nomeLimpo === 'NOME') return;
@@ -541,16 +1015,8 @@ export default function ModalConformidadePronafA({
       novo.cpfCliente = aplicarMascaraCPF(cols[1] || '');
 
       if (cols.length >= 4) {
-        const vis = (cols[2] || '').toUpperCase();
-        novo.visitado = vis.includes('N') ? 'NAO' : vis.includes('P') ? 'PENDENTE' : 'SIM';
-
-        const cadCli = (cols[3] || '').toUpperCase();
-        novo.cadastroClienteOk = cadCli.includes('RENOV')
-          ? 'A_RENOVAR'
-          : cadCli.includes('ELAB') || cadCli.includes('NÃO') || cadCli.includes('NAO')
-          ? 'A_ELABORAR'
-          : 'OK';
-
+        novo.visitado = interpretarVisitadoExcel(cols[2] || 'SIM');
+        novo.cadastroClienteOk = interpretarStatusCadastroTitularExcel(cols[3] || 'OK');
         novo.dataRefCadastral = cols[4] || getHojeBR();
         const txtRestCli = cols[5] || '';
         novo.restricaoClienteDetalhe = txtRestCli;
@@ -558,27 +1024,19 @@ export default function ModalConformidadePronafA({
         novo.contaCorrente = cols[6] || '';
         novo.conjugeNome = (cols[7] || '').toUpperCase().trim();
         novo.conjugeCpf = aplicarMascaraCPF(cols[8] || '');
-        if (novo.conjugeNome) {
-          const cadConj = (cols[9] || '').toUpperCase();
-          novo.cadastroConjugeOk = cadConj.includes('RENOV')
-            ? 'A_RENOVAR'
-            : cadConj.includes('ELAB') || cadConj.includes('NÃO')
-            ? 'A_ELABORAR'
-            : 'OK';
-          const txtRestConj = cols[10] || '';
-          novo.restricaoConjugeDetalhe = txtRestConj;
-          novo.restricaoConjugeNivel = detectarNivelRestricaoPorTexto(txtRestConj);
-        }
+        novo.cadastroConjugeOk = interpretarStatusCadastroOpcionalExcel(
+          cols[9] || '',
+          Boolean(novo.conjugeNome)
+        );
+        const txtRestConj = cols[10] || '';
+        novo.restricaoConjugeDetalhe = txtRestConj;
+        novo.restricaoConjugeNivel = detectarNivelRestricaoPorTexto(txtRestConj);
         novo.procuradorNome = (cols[11] || '').toUpperCase().trim();
         novo.procuradorCpf = aplicarMascaraCPF(cols[12] || '');
-        if (novo.procuradorNome) {
-          const cadProc = (cols[13] || '').toUpperCase();
-          novo.cadastroProcuradorOk = cadProc.includes('RENOV')
-            ? 'A_RENOVAR'
-            : cadProc.includes('ELAB') || cadProc.includes('NÃO')
-            ? 'A_ELABORAR'
-            : 'OK';
-        }
+        novo.cadastroProcuradorOk = interpretarStatusCadastroOpcionalExcel(
+          cols[13] || '',
+          Boolean(novo.procuradorNome)
+        );
       }
 
       novosItens.push(novo);
@@ -586,7 +1044,7 @@ export default function ModalConformidadePronafA({
 
     if (novosItens.length > 0) {
       const atuaisLimpos = itens.filter((i) => i.nomeCliente.trim() !== '');
-      salvarItens([...atuaisLimpos, ...novosItens]);
+      salvarItensDaListaAtiva([...atuaisLimpos, ...novosItens]);
       setTextoColagemMassa('');
       setModalColarAberto(false);
     }
@@ -707,6 +1165,7 @@ export default function ModalConformidadePronafA({
     );
   };
 
+  // ITEM 1 CORRIGIDO: O Grupo 1 inicia imediatamente na Página 1 abaixo do cabeçalho (sem page-break-inside no container do grupo)
   const exportarRelatorioPrioridadesPDF = () => {
     if (rankingClassificado.length === 0) {
       alert('Preencha ao menos um cliente na planilha antes de gerar o PDF.');
@@ -733,13 +1192,13 @@ export default function ModalConformidadePronafA({
 
       const estilo = coresGrupo[numG];
       htmlGrupos += `
-        <div style="margin-bottom: 18px; page-break-inside: avoid;">
-          <div style="background:${estilo.bg}; border-left:5px solid ${estilo.borda}; padding:8px 12px; font-weight:bold; color:${estilo.texto}; font-size:11pt; margin-bottom:8px;">
+        <div style="margin-bottom: 16px;">
+          <div style="background:${estilo.bg}; border-left:5px solid ${estilo.borda}; padding:7px 12px; font-weight:bold; color:${estilo.texto}; font-size:10.5pt; margin-bottom:6px; page-break-after: avoid; break-after: avoid;">
             ${doGrupo[0].grupoTitulo} (${doGrupo.length} cliente${doGrupo.length > 1 ? 's' : ''})
           </div>
-          <table style="width:100%; border-collapse:collapse; font-size:8.5pt;">
-            <thead>
-              <tr style="background:#f1f5f9; text-align:left;">
+          <table style="width:100%; border-collapse:collapse; font-size:8.5pt; page-break-inside: auto;">
+            <thead style="display: table-header-group;">
+              <tr style="background:#f1f5f9; text-align:left; page-break-inside: avoid; break-inside: avoid;">
                 <th style="border:1px solid #cbd5e1; padding:5px; width:36px; text-align:center;"> Fila </th>
                 <th style="border:1px solid #cbd5e1; padding:5px;"> Cliente / CPF </th>
                 <th style="border:1px solid #cbd5e1; padding:5px;"> Enquadramento & Envolvidos </th>
@@ -760,7 +1219,7 @@ export default function ModalConformidadePronafA({
         ].join(' • ');
 
         htmlGrupos += `
-          <tr>
+          <tr style="page-break-inside: avoid; break-inside: avoid;">
             <td style="border:1px solid #cbd5e1; padding:5px; text-align:center; font-weight:bold; font-size:9.5pt; color:${estilo.texto};">
               ${posGeral++}º
             </td>
@@ -800,12 +1259,12 @@ export default function ModalConformidadePronafA({
   <style>
     @page {
       size: A4 landscape;
-      margin: 0mm !important;
+      margin: 10mm 12mm !important;
     }
     body {
       font-family: "Segoe UI", Arial, sans-serif;
       margin: 0;
-      padding: 12mm 14mm;
+      padding: 0;
       color: #0f172a;
     }
     @media print {
@@ -814,16 +1273,16 @@ export default function ModalConformidadePronafA({
   </style>
 </head>
 <body>
-  <div class="no-print" style="background:#1e293b; color:#fff; padding:10px 16px; margin:-12mm -14mm 14px -14mm; display:flex; justify-content:space-between; align-items:center;">
-    <span>🏆 <strong>RELATÓRIO DE PRIORIZAÇÃO E CONFORMIDADE CADASTRAL — PRONAF A</strong></span>
+  <div class="no-print" style="background:#1e293b; color:#fff; padding:10px 16px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; border-radius:6px;">
+    <span>🏆 <strong>${listaAtiva.nomeLista.toUpperCase()} — RELATÓRIO DE PRIORIDADES PRONAF A</strong></span>
     <button onclick="window.print()" style="background:#dc2626; color:#fff; border:none; padding:6px 14px; border-radius:4px; font-weight:bold; cursor:pointer;">🖨️ Imprimir / Salvar PDF</button>
   </div>
-  <div style="border-bottom:2px solid #8B1530; padding-bottom:8px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:flex-end;">
+  <div style="border-bottom:2px solid #8B1530; padding-bottom:6px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:flex-end;">
     <div>
-      <h2 style="margin:0; color:#8B1530; font-size:14pt;">ORDEM DE PRIORIDADE E CONFORMIDADE CADASTRAL — PRONAF A</h2>
-      <span style="font-size:9pt; color:#475569;">Classificação Automática por Grupos (1 a 4), Vínculos (Cônjuge/Procurador) e Nível de Restrições</span>
+      <h2 style="margin:0; color:#8B1530; font-size:13pt;">ORDEM DE PRIORIDADE E CONFORMIDADE CADASTRAL — PRONAF A (${listaAtiva.nomeLista})</h2>
+      <span style="font-size:8.5pt; color:#475569;">Classificação Automática por Grupos (1 a 4), Vínculos (Cônjuge/Procurador) e Nível de Restrições</span>
     </div>
-    <span style="font-size:9pt; font-weight:bold; color:#334155;">Data: ${getHojeBR()} • Total: ${rankingClassificado.length} clientes</span>
+    <span style="font-size:8.5pt; font-weight:bold; color:#334155;">Data: ${getHojeBR()} • Total: ${rankingClassificado.length} clientes</span>
   </div>
   ${htmlGrupos}
   <script>
@@ -862,10 +1321,10 @@ export default function ModalConformidadePronafA({
           borderTop: '5px solid #8B1530',
         }}
       >
-        {/* CABEÇALHO DO MODAL */}
+        {/* CABEÇALHO DO MODAL + GERENCIADOR DE LISTAS SALVAS */}
         <div
           style={{
-            padding: '14px 22px',
+            padding: '12px 22px',
             background: '#f8fafc',
             borderBottom: '1px solid #e2e8f0',
             display: 'flex',
@@ -875,13 +1334,126 @@ export default function ModalConformidadePronafA({
             gap: '12px',
           }}
         >
-          <div>
-            <h3 style={{ margin: 0, fontSize: '16px', color: '#8B1530', fontWeight: 800 }}>
-              🎯 CONFORMIDADE CADASTRAL & FILA DE PRIORIDADES — PRONAF A
-            </h3>
-            <span style={{ fontSize: '11.5px', color: '#64748b' }}>
-              Preencha as 14 colunas da conferência e gere em 1 clique a fila priorizada (Grupos 1 a 4) com envio direto para o Kanban!
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <h3 style={{ margin: 0, fontSize: '15.5px', color: '#8B1530', fontWeight: 800 }}>
+                  🎯 CONFORMIDADE CADASTRAL — PRONAF A
+                </h3>
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontWeight: 800,
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    background: statusSyncNuvem === 'SINCRONIZADO' ? '#dcfce7' : '#fef9c3',
+                    color: statusSyncNuvem === 'SINCRONIZADO' ? '#15803d' : '#854d0e',
+                  }}
+                >
+                  {statusSyncNuvem === 'SINCRONIZADO'
+                    ? '☁️ Sincronizado no Servidor'
+                    : '⏳ Salvando...'}
+                </span>
+              </div>
+              <span style={{ fontSize: '11px', color: '#64748b' }}>
+                Suas listas ficam salvas permanentemente no servidor e nunca são zeradas sozinhas.
+              </span>
+            </div>
+
+            {/* SELETOR DE MÚLTIPLAS LISTAS SALVAS */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: '#ffffff',
+                border: '1px solid #cbd5e1',
+                padding: '5px 10px',
+                borderRadius: '8px',
+              }}
+            >
+              <strong style={{ fontSize: '11.5px', color: '#334155', whiteSpace: 'nowrap' }}>
+                📂 Lista Salva:
+              </strong>
+              <select
+                value={listaAtiva.id}
+                onChange={(e) => setListaAtivaId(e.target.value)}
+                style={{
+                  width: 'auto',
+                  minWidth: '210px',
+                  height: '30px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  color: '#8B1530',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '6px',
+                  padding: '0 8px',
+                }}
+              >
+                {listasSalvas.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.nomeLista} ({l.itens.filter((x) => x.nomeCliente.trim() !== '').length}{' '}
+                    clientes)
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={handleCriarNovaLista}
+                title="Criar uma nova lista de conferência em branco"
+                style={{
+                  width: 'auto',
+                  padding: '5px 10px',
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  background: '#15803d',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                ➕ Nova Lista
+              </button>
+
+              <button
+                type="button"
+                onClick={handleRenomearListaAtiva}
+                title="Renomear a lista selecionada"
+                style={{
+                  width: 'auto',
+                  padding: '5px 8px',
+                  fontSize: '11px',
+                  background: '#f1f5f9',
+                  color: '#334155',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '5px',
+                  cursor: 'pointer',
+                }}
+              >
+                ✏️
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExcluirListaAtiva}
+                title="Excluir esta lista inteira permanentemente"
+                style={{
+                  width: 'auto',
+                  padding: '5px 8px',
+                  fontSize: '11px',
+                  background: '#fee2e2',
+                  color: '#b91c1c',
+                  border: '1px solid #fecaca',
+                  borderRadius: '5px',
+                  cursor: 'pointer',
+                }}
+              >
+                🗑️ Excluir Lista
+              </button>
+            </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -900,7 +1472,7 @@ export default function ModalConformidadePronafA({
                 cursor: 'pointer',
               }}
             >
-              📋 1. Planilha de Conferência (14 Colunas) ({itens.length})
+              📋 1. Planilha (14 Colunas) ({itens.length})
             </button>
 
             <button
@@ -918,7 +1490,7 @@ export default function ModalConformidadePronafA({
                 cursor: 'pointer',
               }}
             >
-              🏆 2. Ver Fila de Prioridades Classificada ({rankingClassificado.length})
+              🏆 2. Fila de Prioridades ({rankingClassificado.length})
             </button>
 
             <button
@@ -936,7 +1508,7 @@ export default function ModalConformidadePronafA({
                 cursor: 'pointer',
               }}
             >
-              🖨️ Exportar Fila em PDF
+              🖨️ Exportar PDF
             </button>
 
             <button
@@ -962,7 +1534,7 @@ export default function ModalConformidadePronafA({
         {/* =================================================================== */}
         {abaAtiva === 'PLANILHA' && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Barra de Ações da Planilha */}
+            {/* Barra de Ações da Planilha + Botões Excel (.XLSX) */}
             <div
               style={{
                 padding: '10px 22px',
@@ -975,10 +1547,10 @@ export default function ModalConformidadePronafA({
                 gap: '10px',
               }}
             >
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                 <button
                   type="button"
-                  onClick={() => salvarItens([...itens, criarLinhaVazia()])}
+                  onClick={() => salvarItensDaListaAtiva([...itens, criarLinhaVazia()])}
                   style={{
                     width: 'auto',
                     padding: '6px 14px',
@@ -991,7 +1563,75 @@ export default function ModalConformidadePronafA({
                     cursor: 'pointer',
                   }}
                 >
-                  ➕ Adicionar Linha de Cliente
+                  ➕ Adicionar Cliente
+                </button>
+
+                <div style={{ width: '1px', height: '22px', background: '#cbd5e1', margin: '0 2px' }} />
+
+                {/* 3 BOTÕES EXCEL: IMPORTAR LISTA, EXPORTAR LISTA E EXPORTAR MODELO */}
+                <input
+                  ref={inputImportarExcelRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  style={{ display: 'none' }}
+                  onChange={handleImportarArquivoExcel}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => inputImportarExcelRef.current?.click()}
+                  style={{
+                    width: 'auto',
+                    padding: '6px 12px',
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    background: '#dcfce7',
+                    color: '#166534',
+                    border: '1px solid #86efac',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                  title="Importar uma planilha Excel (.xlsx) preenchida com os clientes"
+                >
+                  📥 Importar Lista (.XLSX)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportarListaAtivaParaExcel}
+                  style={{
+                    width: 'auto',
+                    padding: '6px 12px',
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    background: '#eff6ff',
+                    color: '#1e40af',
+                    border: '1px solid #bfdbfe',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                  title="Exportar esta lista e o ranking de prioridades diretamente para o Excel (.xlsx)"
+                >
+                  📊 Exportar Lista (.XLSX)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportarModeloExcel14Colunas}
+                  style={{
+                    width: 'auto',
+                    padding: '6px 12px',
+                    fontSize: '11.5px',
+                    fontWeight: 700,
+                    background: '#fef9c3',
+                    color: '#854d0e',
+                    border: '1px solid #fde047',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                  title="Baixar a planilha modelo em branco com as 14 colunas exatas para preencher no Excel e importar depois"
+                >
+                  📄 Exportar Modelo (.XLSX)
                 </button>
 
                 <button
@@ -999,53 +1639,28 @@ export default function ModalConformidadePronafA({
                   onClick={() => setModalColarAberto(true)}
                   style={{
                     width: 'auto',
-                    padding: '6px 14px',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    background: '#eff6ff',
-                    color: '#1d4ed8',
-                    border: '1px solid #bfdbfe',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  📥 Colar Lista de Clientes (Excel / Texto)
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        'Deseja limpar todas as linhas da planilha de conferência?'
-                      )
-                    ) {
-                      salvarItens([criarLinhaVazia()]);
-                    }
-                  }}
-                  style={{
-                    width: 'auto',
                     padding: '6px 12px',
                     fontSize: '11.5px',
-                    background: '#f1f5f9',
-                    color: '#475569',
+                    fontWeight: 600,
+                    background: '#f8fafc',
+                    color: '#334155',
                     border: '1px solid #cbd5e1',
                     borderRadius: '6px',
                     cursor: 'pointer',
                   }}
                 >
-                  🧹 Limpar Planilha
+                  📋 Colar Texto Rápido
                 </button>
               </div>
 
-              <div style={{ fontSize: '11.5px', color: '#475569' }}>
-                💡 <b>Dica:</b> PEFIN comercial (CAEMA, Equatorial, etc.) deve ser marcado como{' '}
-                <span style={{ color: '#b45309', fontWeight: 700 }}>Leve</span>; REFIN ou dívida bancária como{' '}
-                <span style={{ color: '#dc2626', fontWeight: 700 }}>Grave</span>.
+              <div style={{ fontSize: '11px', color: '#475569' }}>
+                💡 PEFIN comercial (CAEMA, Equatorial) ={' '}
+                <b style={{ color: '#b45309' }}>Leve</b> • REFIN / Bancos ={' '}
+                <b style={{ color: '#dc2626' }}>Grave</b>
               </div>
             </div>
 
-            {/* Tabela Rolável Horizontal e Vertical com as 14 Colunas */}
+            {/* Tabela Rolável com as 14 Colunas */}
             <div style={{ flex: 1, overflow: 'auto', padding: '12px 18px', background: '#f8fafc' }}>
               <table
                 style={{
@@ -1065,7 +1680,9 @@ export default function ModalConformidadePronafA({
                     <th style={{ padding: '8px 6px', width: '95px' }}>3. Visitado?</th>
                     <th style={{ padding: '8px 6px', width: '130px' }}>4. Cadastro OK?</th>
                     <th style={{ padding: '8px 6px', width: '105px' }}>5. Data Ref. Cad.</th>
-                    <th style={{ padding: '8px 6px', width: '240px' }}>6. Restrição CI? (Nível + Detalhe)</th>
+                    <th style={{ padding: '8px 6px', width: '240px' }}>
+                      6. Restrição CI? (Nível + Detalhe)
+                    </th>
                     <th style={{ padding: '8px 6px', width: '115px' }}>7. C/C Aberta? (Nº)</th>
                     <th style={{ padding: '8px 6px', width: '180px', background: '#0f172a' }}>
                       8. Cônjuge / Comp.
@@ -1088,7 +1705,9 @@ export default function ModalConformidadePronafA({
                     <th style={{ padding: '8px 6px', width: '220px', background: '#334155' }}>
                       14. Cad. & Restrição Procurador
                     </th>
-                    <th style={{ padding: '8px 6px', width: '80px', textAlign: 'center' }}>Ações</th>
+                    <th style={{ padding: '8px 6px', width: '80px', textAlign: 'center' }}>
+                      Ações
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1105,7 +1724,6 @@ export default function ModalConformidadePronafA({
                         {idx + 1}
                       </td>
 
-                      {/* 1. Nome do Cliente */}
                       <td style={{ padding: '5px' }}>
                         <input
                           type="text"
@@ -1118,7 +1736,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 2. CPF do Cliente */}
                       <td style={{ padding: '5px' }}>
                         <input
                           type="text"
@@ -1136,7 +1753,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 3. Visitado? */}
                       <td style={{ padding: '5px' }}>
                         <select
                           value={it.visitado}
@@ -1155,7 +1771,6 @@ export default function ModalConformidadePronafA({
                         </select>
                       </td>
 
-                      {/* 4. Cadastro do cliente OK? */}
                       <td style={{ padding: '5px' }}>
                         <select
                           value={it.cadastroClienteOk}
@@ -1190,7 +1805,6 @@ export default function ModalConformidadePronafA({
                         </select>
                       </td>
 
-                      {/* 5. Data ref. da situação Cadastral */}
                       <td style={{ padding: '5px' }}>
                         <input
                           type="text"
@@ -1208,7 +1822,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 6. Restrição CI? (Titular) */}
                       <td style={{ padding: '5px' }}>
                         <div style={{ display: 'flex', gap: '4px' }}>
                           <select
@@ -1254,7 +1867,7 @@ export default function ModalConformidadePronafA({
                                 restricaoClienteDetalhe: txt,
                                 restricaoClienteNivel: detectarNivelRestricaoPorTexto(txt),
                               };
-                              salvarItens(copia);
+                              salvarItensDaListaAtiva(copia);
                             }}
                             placeholder="Ex: CAEMA / REFIN..."
                             style={{ flex: 1, height: '30px', fontSize: '11px' }}
@@ -1262,7 +1875,6 @@ export default function ModalConformidadePronafA({
                         </div>
                       </td>
 
-                      {/* 7. C/C aberta? (nº) */}
                       <td style={{ padding: '5px' }}>
                         <input
                           type="text"
@@ -1275,7 +1887,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 8. Cônjuge / Comp. */}
                       <td style={{ padding: '5px', background: '#f8fafc' }}>
                         <input
                           type="text"
@@ -1288,7 +1899,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 9. CPF do Cônjuge */}
                       <td style={{ padding: '5px', background: '#f8fafc' }}>
                         <input
                           type="text"
@@ -1306,7 +1916,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 10. Cadastro do Cônjuge OK? */}
                       <td style={{ padding: '5px', background: '#f8fafc' }}>
                         <select
                           value={it.cadastroConjugeOk}
@@ -1326,7 +1935,6 @@ export default function ModalConformidadePronafA({
                         </select>
                       </td>
 
-                      {/* 11. Restrição do Cônjuge CI? */}
                       <td style={{ padding: '5px', background: '#f8fafc' }}>
                         <div style={{ display: 'flex', gap: '4px' }}>
                           <select
@@ -1355,7 +1963,7 @@ export default function ModalConformidadePronafA({
                                 restricaoConjugeDetalhe: txt,
                                 restricaoConjugeNivel: detectarNivelRestricaoPorTexto(txt),
                               };
-                              salvarItens(copia);
+                              salvarItensDaListaAtiva(copia);
                             }}
                             placeholder="Detalhe..."
                             style={{ flex: 1, height: '30px', fontSize: '11px' }}
@@ -1363,7 +1971,6 @@ export default function ModalConformidadePronafA({
                         </div>
                       </td>
 
-                      {/* 12. Nome do Procurador */}
                       <td style={{ padding: '5px' }}>
                         <input
                           type="text"
@@ -1376,7 +1983,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 13. CPF do Procurador */}
                       <td style={{ padding: '5px' }}>
                         <input
                           type="text"
@@ -1394,7 +2000,6 @@ export default function ModalConformidadePronafA({
                         />
                       </td>
 
-                      {/* 14. Cadastro do Procurador OK? + Restrição Procurador */}
                       <td style={{ padding: '5px' }}>
                         <div style={{ display: 'flex', gap: '4px' }}>
                           <select
@@ -1431,12 +2036,11 @@ export default function ModalConformidadePronafA({
                         </div>
                       </td>
 
-                      {/* Ações da Linha */}
                       <td style={{ padding: '5px', textAlign: 'center' }}>
                         <button
                           type="button"
                           onClick={() =>
-                            salvarItens(
+                            salvarItensDaListaAtiva(
                               itens.length > 1
                                 ? itens.filter((_, i) => i !== idx)
                                 : [criarLinhaVazia()]
@@ -1451,7 +2055,7 @@ export default function ModalConformidadePronafA({
                             borderRadius: '4px',
                             cursor: 'pointer',
                           }}
-                          title="Remover linha"
+                          title="Remover este cliente da lista"
                         >
                           🗑️
                         </button>
@@ -1479,8 +2083,8 @@ export default function ModalConformidadePronafA({
                   color: '#64748b',
                 }}
               >
-                Nenhum cliente preenchido na planilha ainda. Volte à aba{' '}
-                <b>1. Planilha de Conferência</b> para inserir os nomes!
+                Nenhum cliente preenchido nesta lista ainda. Volte à aba{' '}
+                <b>1. Planilha (14 Colunas)</b> para inserir ou importar do Excel!
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
@@ -1688,7 +2292,7 @@ export default function ModalConformidadePronafA({
         )}
       </div>
 
-      {/* SUB-MODAL: COLAR LISTA EM LOTE DO EXCEL / WHATSAPP */}
+      {/* SUB-MODAL: COLAR LISTA EM LOTE */}
       {modalColarAberto && (
         <div
           style={{
@@ -1712,11 +2316,8 @@ export default function ModalConformidadePronafA({
             }}
           >
             <h4 style={{ margin: '0 0 6px 0', color: '#8B1530' }}>
-              📥 Colar Lista de Clientes (Excel ou Nome + CPF)
+              📋 Colar Texto Rápido (Linhas do Excel ou Nome + CPF)
             </h4>
-            <p style={{ fontSize: '11.5px', color: '#64748b', margin: '0 0 10px 0' }}>
-              Cole abaixo as linhas copiadas direto da sua planilha Excel (com todas as colunas separadas por TAB) ou uma lista simples no formato <code>NOME DO CLIENTE - 000.000.000-00</code>:
-            </p>
             <textarea
               rows={9}
               value={textoColagemMassa}
@@ -1737,14 +2338,14 @@ export default function ModalConformidadePronafA({
                 onClick={processarColagemEmLote}
                 style={{ width: 'auto', padding: '7px 18px', background: '#8B1530', color: '#fff', fontSize: '12px', fontWeight: 700 }}
               >
-                ✔ Importar Clientes para a Planilha
+                ✔ Adicionar à Lista Atual
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* SUB-MODAL: CADASTRAR NOVA OPERAÇÃO PRONAF A (ESTILO KANBAN) */}
+      {/* SUB-MODAL: CADASTRAR NOVA OPERAÇÃO PRONAF A */}
       {itemParaCadastro && (
         <div
           style={{

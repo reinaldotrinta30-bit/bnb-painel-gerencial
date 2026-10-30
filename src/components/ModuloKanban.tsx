@@ -1491,12 +1491,22 @@ const opNumero =
     novaSitRigida: string
   ) => {
     const hoje = getHojeISO();
-    const novaEtapa =
+    let novaEtapa = card.etapa;
+
+    if (
       novaSitRigida === 'Contratado' &&
       card.etapa !== 'DESEMBOLSOS' &&
       card.etapa !== 'ACOMPANHAMENTO'
-        ? 'DESEMBOLSOS'
-        : card.etapa;
+    ) {
+      novaEtapa = 'DESEMBOLSOS';
+    } else if (
+      (novaSitRigida === 'F. Assinar' || novaSitRigida === 'F. Conformidade') &&
+      card.etapa !== 'CONTRATOS' &&
+      card.etapa !== 'DESEMBOLSOS' &&
+      card.etapa !== 'ACOMPANHAMENTO'
+    ) {
+      novaEtapa = 'CONTRATOS';
+    }
 
     const atualizado: CardKanban = {
       ...card,
@@ -3137,8 +3147,14 @@ const opNumero =
                                       <option value="Na Central" style={{ background: '#fff', color: '#333' }}>
                                         Na Central (S522)
                                       </option>
-                                      <option value="Contratado" style={{ background: '#fff', color: '#333' }}>
-                                        Contratado
+                                      <option value="F. Assinar" style={{ background: '#fff', color: '#5b21b6', fontWeight: 'bold' }}>
+                                        ✍️ F. Assinar
+                                      </option>
+                                      <option value="F. Conformidade" style={{ background: '#fff', color: '#0e7490', fontWeight: 'bold' }}>
+                                        🔎 F. Conformidade
+                                      </option>
+                                      <option value="Contratado" style={{ background: '#fff', color: '#137333', fontWeight: 'bold' }}>
+                                        ✅ Contratado
                                       </option>
                                     </select>
 
@@ -3589,20 +3605,26 @@ const opNumero =
                               title="Situação da Contratação"
                             >
                               <option value="Com Cliente/Projetista" style={{ background: '#fff', color: '#333' }}>
-                                Com Cliente/Proj.
-                              </option>
-                              <option value="Na Agência" style={{ background: '#fff', color: '#333' }}>
-                                Na Agência (AG)
-                              </option>
-                              <option value="Devolvido AG" style={{ background: '#fff', color: '#333' }}>
-                                Devolvido AG
-                              </option>
-                              <option value="Na Central" style={{ background: '#fff', color: '#333' }}>
-                                Na Central (S522)
-                              </option>
-                              <option value="Contratado" style={{ background: '#fff', color: '#333' }}>
-                                Contratado
-                              </option>
+                                        Com Cliente/Projetista
+                                      </option>
+                                      <option value="Na Agência" style={{ background: '#fff', color: '#333' }}>
+                                        Na Agência (AG)
+                                      </option>
+                                      <option value="Devolvido AG" style={{ background: '#fff', color: '#333' }}>
+                                        Devolvido AG
+                                      </option>
+                                      <option value="Na Central" style={{ background: '#fff', color: '#333' }}>
+                                        Na Central (S522)
+                                      </option>
+                                      <option value="F. Assinar" style={{ background: '#fff', color: '#5b21b6', fontWeight: 'bold' }}>
+                                        ✍️ F. Assinar
+                                      </option>
+                                      <option value="F. Conformidade" style={{ background: '#fff', color: '#0e7490', fontWeight: 'bold' }}>
+                                        🔎 F. Conformidade
+                                      </option>
+                                      <option value="Contratado" style={{ background: '#fff', color: '#137333', fontWeight: 'bold' }}>
+                                        ✅ Contratado
+                                      </option>
                             </select>
 
                             {/* ITEM 2 e 9.1: Segunda Tarja compacta (11 Situações) — Apenas para Derivada Contratada em Desembolsos/Acompanhamento */}
@@ -4000,10 +4022,12 @@ const opNumero =
                                           <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>Situação Oficial</label>
                                           <select value={fcSituacao} onChange={(e) => setFcSituacao(e.target.value)} style={{ height: '32px', fontSize: '12px' }}>
                                             <option value="Com Cliente/Projetista">Com Cliente/Projetista</option>
-                                            <option value="Na Agência">Na Agência</option>
-                                            <option value="Devolvido AG">Devolvido AG</option>
-                                            <option value="Na Central">Na Central</option>
-                                            <option value="Contratado">Contratado</option>
+                  <option value="Na Agência">Na Agência (AG)</option>
+                  <option value="Devolvido AG">Devolvido AG</option>
+                  <option value="Na Central">Na Central (S522)</option>
+                  <option value="F. Assinar">F. Assinar (Liberado S522)</option>
+                  <option value="F. Conformidade">F. Conformidade (Setor Operacional)</option>
+                  <option value="Contratado">Contratado</option>
                                           </select>
                                         </div>
                                         <div>
@@ -4710,8 +4734,10 @@ const opNumero =
                 <select value={ncSituacao} onChange={(e) => setNcSituacao(e.target.value)}>
                   <option value="Com Cliente/Projetista">Com Cliente/Projetista</option>
                   <option value="Na Agência">Na Agência (AG)</option>
-                  <option value="Na Central">Na Central (S522)</option>
                   <option value="Devolvido AG">Devolvido AG</option>
+                  <option value="Na Central">Na Central (S522)</option>
+                  <option value="F. Assinar">F. Assinar (Liberado S522)</option>
+                  <option value="F. Conformidade">F. Conformidade (Setor Operacional)</option>
                   <option value="Contratado">Contratado</option>
                 </select>
               </div>
@@ -4924,8 +4950,10 @@ const opNumero =
                 >
                   <option value="Com Cliente/Projetista">Com Cliente/Projetista</option>
                   <option value="Na Agência">Na Agência (AG)</option>
-                  <option value="Na Central">Na Central (S522)</option>
                   <option value="Devolvido AG">Devolvido AG</option>
+                  <option value="Na Central">Na Central (S522)</option>
+                  <option value="F. Assinar">F. Assinar (Liberado S522)</option>
+                  <option value="F. Conformidade">F. Conformidade (Setor Operacional)</option>
                   <option value="Contratado">Contratado</option>
                 </select>
               </div>

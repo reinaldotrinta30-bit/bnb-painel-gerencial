@@ -600,27 +600,28 @@ export function mapearContratacaoParaKanban(reg: RegistroContratacao): {
 
 export function mapearEtapaKanbanParaSituacaoContratacao(
   etapa: EtapaKanban,
-  corAtual?: StatusCorKanban,
-  situacaoAnterior?: string
+  cor: StatusCorKanban,
+  situacaoAtual?: string
 ): string {
-  switch (etapa) {
-    case 'CADASTROS':
-      return 'Com Cliente/Projetista';
-    case 'PCE':
-      if (corAtual === 'vermelho' && situacaoAnterior === 'Devolvido AG') {
-        return 'Devolvido AG';
-      }
-      return 'Na Agência';
-    case 'S522':
-      return 'Na Central';
-    case 'CONTRATOS':
-      return situacaoAnterior === 'Na Central' ? 'Na Central' : 'Na Agência';
-    case 'DESEMBOLSOS':
-    case 'ACOMPANHAMENTO':
-      return 'Contratado';
-    default:
-      return situacaoAnterior || 'Na Agência';
+  if (etapa === 'DESEMBOLSOS' || etapa === 'ACOMPANHAMENTO') {
+    return 'Contratado';
   }
+  if (etapa === 'CONTRATOS') {
+    if (situacaoAtual === 'F. Assinar' || situacaoAtual === 'F. Conformidade') {
+      return situacaoAtual;
+    }
+    return 'F. Assinar';
+  }
+  if (etapa === 'S522') {
+    return cor === 'vermelho' ? 'Devolvido AG' : 'Na Central';
+  }
+  if (etapa === 'PCE') {
+    return 'Na Agência';
+  }
+  if (etapa === 'CADASTROS') {
+    return cor === 'azul' ? 'Na Agência' : 'Com Cliente/Projetista';
+  }
+  return situacaoAtual || 'Na Agência';
 }
 
 export function localizarCardDoClienteNoKanban(

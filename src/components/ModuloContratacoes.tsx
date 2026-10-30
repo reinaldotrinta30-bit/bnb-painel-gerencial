@@ -1351,6 +1351,8 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
                     <option value="Na Agência">Na Agência (AG)</option>
                     <option value="Na Central">Na Central (S522)</option>
                     <option value="Devolvido AG">Devolvido AG (Regularização)</option>
+                    <option value="F. Assinar">F. Assinar (Liberado S522)</option>
+                    <option value="F. Conformidade">F. Conformidade (Setor Operacional)</option>
                     <option value="Contratado">Contratado</option>
                   </select>
                 </div>

@@ -182,7 +182,7 @@ export default function ModalRenovacaoPlanta({
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      await salvarMoldeCustomizadoNoSistema(chaveMolde, file);
+      await salvarMoldeCustomizadoNoSistema(chaveMolde, file, caminhoPublicDocx);
       setTemMoldeCustom(true);
       alert(`✅ Novo molde Word (${file.name}) salvo com sucesso!`);
     } catch {

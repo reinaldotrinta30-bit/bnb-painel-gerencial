@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getDatabase, ref, set, get } from 'firebase/database';
+import { getDatabase, ref, set, get, update } from 'firebase/database';
 import {
   RegistroContratacao,
   OperacaoBaseDesembolso,
@@ -21,21 +21,18 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 export const dbNuvem = getDatabase(app);
 
-// ============================================================================
-// 🛡️ BLINDAGEM SÊNIOR DE AMBIENTE (HOMOLOGAÇÃO / SANDBOX ISOLADO)
-// ============================================================================
 // Caminho antigo (SOMENTE LEITURA para clonagem inicial - NUNCA recebe escrita!)
 const PATH_PRODUCAO_LEGADO = 'sistema_bnb';
 
 // Novo caminho isolado no Firebase para não afetar o HTML antigo em uso
 const PATH_SANDBOX_V2 = 'sistema_bnb_v2_homolog';
 
-// Chaves de cache local exclusivas da V2 (não sobrescrevem o localStorage do HTML antigo)
 export const STORAGE_KEYS_V2 = {
   CONTRATACOES: 'bnb_v2_sandbox_contratacoes',
   DESEMB_OP: 'bnb_v2_sandbox_desemb_op',
   DESEMB_EV: 'bnb_v2_sandbox_desemb_ev',
   KANBAN: 'bnb_v2_sandbox_kanban',
+  FERRAMENTAS: 'bnb_v2_sandbox_ferramentas',
   JA_CLONOU_INICIAL: 'bnb_v2_sandbox_clonado_ok',
   MODO_ESTRITO_LOCAL: 'bnb_v2_modo_estrito_local',
 };
@@ -62,7 +59,6 @@ export function lerCacheLocal<T>(key: string, fallback: T): T {
 
 export function isModoEstritoLocal(): boolean {
   if (typeof window === 'undefined') return false;
-  // Nova chave limpa: por padrão é SEMPRE false (Nuvem V2 100% ligada em qualquer navegador/PC)
   return window.localStorage.getItem('bnb_v2_forcar_offline') === 'true';
 }
 
@@ -71,10 +67,29 @@ export function setModoEstritoLocal(valor: boolean) {
   window.localStorage.setItem('bnb_v2_forcar_offline', valor ? 'true' : 'false');
 }
 
+// Hidrata as chaves individuais usadas pelos módulos a partir do pacote unificado de Ferramentas da Nuvem
+function hidratarChavesLocaisDeFerramentas( pacote: Record<string, unknown> ) {
+  if (typeof window === 'undefined' || !pacote) return;
+  if (Array.isArray(pacote.programas) && pacote.programas.length > 0) {
+    safeSetLocal('bnb_v2_config_programas', pacote.programas);
+  }
+  if (Array.isArray(pacote.projetistas) && pacote.projetistas.length > 0) {
+    safeSetLocal('bnb_v2_config_projetistas', pacote.projetistas);
+  }
+  if (Array.isArray(pacote.listasConformidadePronafA)) {
+    safeSetLocal(
+      'bnb_v2_listas_conformidade_pronaf_a',
+      pacote.listasConformidadePronafA
+    );
+  }
+  if (pacote.parametrosCarteira && typeof pacote.parametrosCarteira === 'object') {
+    safeSetLocal('bnb_v2_parametros_oficiais_carteira', pacote.parametrosCarteira);
+  }
+}
+
 // ============================================================================
-// FUNÇÕES DE SALVAMENTO BLINDADAS (Gravam no LocalStorage V2 e, se autorizado, no Sandbox V2)
+// FUNÇÕES DE SALVAMENTO BLINDADAS
 // ============================================================================
-// Funções de Salvamento Híbrido com Limpeza de Undefined para o Firebase
 export async function salvarContratacoesSync(dados: RegistroContratacao[]) {
   safeSetLocal(STORAGE_KEYS_V2.CONTRATACOES, dados);
   if (isModoEstritoLocal()) return;
@@ -119,9 +134,72 @@ export async function salvarKanbanSync(dados: CardKanban[]) {
   }
 }
 
-// ============================================================================
-// CLONAGEM SOMENTE-LEITURA DA PRODUÇÃO (Importa os dados atuais sem afetar o HTML antigo)
-// ============================================================================
+// CORRIGIDO: Agora faz MERGE (update) no Firebase e no LocalStorage para nunca sobrescrever outras ferramentas!
+export async function salvarFerramentasSync(
+  dadosParciais: Record<string, unknown>
+): Promise<void> {
+  const atualLocal = lerCacheLocal<Record<string, unknown>>(
+    STORAGE_KEYS_V2.FERRAMENTAS,
+    {}
+  );
+  const mesclado = {
+    ...atualLocal,
+    ...dadosParciais,
+    ultimaAtualizacao: new Date().toISOString(),
+  };
+
+  safeSetLocal(STORAGE_KEYS_V2.FERRAMENTAS, mesclado);
+  hidratarChavesLocaisDeFerramentas(mesclado);
+
+  if (!isModoEstritoLocal()) {
+    try {
+      const dadosLimpos = JSON.parse(JSON.stringify(dadosParciais));
+      await update(ref(dbNuvem, `${PATH_SANDBOX_V2}/ferramentas`), dadosLimpos);
+    } catch (e) {
+      console.error('Erro ao atualizar ferramentas no Firebase V2:', e);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('bnb_ferramentas_sync_changed', {
+        detail: mesclado,
+      })
+    );
+  }
+}
+
+export async function carregarFerramentasSync(): Promise<
+  Record<string, unknown>
+> {
+  const dadosLocais = lerCacheLocal<Record<string, unknown>>(
+    STORAGE_KEYS_V2.FERRAMENTAS,
+    {}
+  );
+
+  if (isModoEstritoLocal()) {
+    return dadosLocais;
+  }
+
+  try {
+    const snapshot = await get(
+      ref(dbNuvem, `${PATH_SANDBOX_V2}/ferramentas`)
+    );
+
+    if (snapshot.exists()) {
+      const dadosNuvem = snapshot.val() as Record<string, unknown>;
+      const unificado = { ...dadosLocais, ...dadosNuvem };
+      safeSetLocal(STORAGE_KEYS_V2.FERRAMENTAS, unificado);
+      hidratarChavesLocaisDeFerramentas(unificado);
+      return unificado;
+    }
+  } catch (e) {
+    console.error('Erro ao carregar ferramentas do Firebase V2:', e);
+  }
+
+  return dadosLocais;
+}
+
 export async function clonarDadosDaProducaoLegada(): Promise<{
   contratacoes: RegistroContratacao[];
   desembOp: OperacaoBaseDesembolso[];
@@ -146,7 +224,6 @@ export async function clonarDadosDaProducaoLegada(): Promise<{
         ? normalizarDadosKanban(val.kanban_tarefas)
         : [];
 
-      // Salva tudo no cache isolado da V2
       safeSetLocal(STORAGE_KEYS_V2.CONTRATACOES, contratacoes);
       safeSetLocal(STORAGE_KEYS_V2.DESEMB_OP, desembOp);
       safeSetLocal(STORAGE_KEYS_V2.DESEMB_EV, desembEv);
@@ -161,7 +238,6 @@ export async function clonarDadosDaProducaoLegada(): Promise<{
     console.warn('Não foi possível ler a nuvem legada, tentando cache local legado...', e);
   }
 
-  // Fallback: lê do localStorage antigo se estiver no mesmo navegador sem internet
   const contratacoes = lerCacheLocal<RegistroContratacao[]>('bnb_db_contratacoes_v1', []);
   const desembOp = lerCacheLocal<OperacaoBaseDesembolso[]>('bnb_db_op_desemb_v1', []);
   const desembEv = lerCacheLocal<EventoDesembolso[]>('bnb_db_ev_desemb_v1', []);
@@ -178,12 +254,6 @@ export async function clonarDadosDaProducaoLegada(): Promise<{
   return { contratacoes, desembOp, desembEv, kanban, sucesso: true };
 }
 
-// ============================================================================
-// CARREGAMENTO INICIAL INTELIGENTE
-// ============================================================================
-// ============================================================================
-// CARREGAMENTO INICIAL INTELIGENTE (PRIORIDADE ABSOLUTA NA NUVEM V2)
-// ============================================================================
 export async function carregarTudoDaNuvem(): Promise<{
   contratacoes: RegistroContratacao[];
   desembOp: OperacaoBaseDesembolso[];
@@ -194,7 +264,6 @@ export async function carregarTudoDaNuvem(): Promise<{
 }> {
   const modoLocal = isModoEstritoLocal();
 
-  // Se estiver em Modo Estrito Local, usa apenas o banco local V2 sem chamar a rede
   const localContrat = lerCacheLocal<RegistroContratacao[]>(STORAGE_KEYS_V2.CONTRATACOES, []);
   const localOp = lerCacheLocal<OperacaoBaseDesembolso[]>(STORAGE_KEYS_V2.DESEMB_OP, []);
   const localEv = lerCacheLocal<EventoDesembolso[]>(STORAGE_KEYS_V2.DESEMB_EV, []);
@@ -213,7 +282,6 @@ export async function carregarTudoDaNuvem(): Promise<{
     };
   }
 
-  // 1º Tenta ler DIRETAMENTE da Nuvem V2 Oficial ('sistema_bnb_v2_homolog')
   try {
     const snapshot = await get(ref(dbNuvem, PATH_SANDBOX_V2));
     if (snapshot.exists()) {
@@ -225,11 +293,16 @@ export async function carregarTudoDaNuvem(): Promise<{
         ? normalizarDadosKanban(val.kanban_tarefas)
         : localKanban;
 
-      // Atualiza o cache local deste navegador com os dados frescos da Nuvem V2
       safeSetLocal(STORAGE_KEYS_V2.CONTRATACOES, contratacoes);
       safeSetLocal(STORAGE_KEYS_V2.DESEMB_OP, desembOp);
       safeSetLocal(STORAGE_KEYS_V2.DESEMB_EV, desembEv);
       safeSetLocal(STORAGE_KEYS_V2.KANBAN, kanban);
+
+      // Hidrata também as ferramentas (Listas PRONAF A, Projetistas, Programas, Parâmetros Carteira) vindas do Firebase!
+      if (val.ferramentas && typeof val.ferramentas === 'object') {
+        safeSetLocal(STORAGE_KEYS_V2.FERRAMENTAS, val.ferramentas);
+        hidratarChavesLocaisDeFerramentas(val.ferramentas as Record<string, unknown>);
+      }
 
       return { contratacoes, desembOp, desembEv, kanban, online: true, modoLocal: false };
     }
@@ -237,8 +310,6 @@ export async function carregarTudoDaNuvem(): Promise<{
     console.warn('Falha ao ler Sandbox V2, usando cache local:', err);
   }
 
-  // 2º Se a Nuvem V2 estiver vazia (ex: primeiro acesso absoluto em outro PC),
-  // verifica se já temos dados salvos no cache local deste aparelho.
   if (localContrat.length > 0 || localKanban.length > 0) {
     return {
       contratacoes: localContrat,
@@ -250,7 +321,6 @@ export async function carregarTudoDaNuvem(): Promise<{
     };
   }
 
-  // 3º Último recurso (apenas se tudo mais estiver vazio): Executa a clonagem inicial da produção antiga
   const clone = await clonarDadosDaProducaoLegada();
   return { ...clone, online: true, modoLocal };
 }

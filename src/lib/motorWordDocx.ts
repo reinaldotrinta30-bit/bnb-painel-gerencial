@@ -39,20 +39,49 @@ export function arrayBufferParaBase64(buffer: ArrayBuffer): string {
 
 export async function salvarMoldeCustomizadoNoSistema(
   chaveMolde: string,
-  arquivoDocx: File
+  arquivoDocx: File,
+  caminhoPublicDocx?: string
 ): Promise<void> {
   const buffer = await arquivoDocx.arrayBuffer();
   const b64 = arrayBufferParaBase64(buffer);
   window.localStorage.setItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`, b64);
+
+  // Grava também fisicamente na pasta public/moldes-word/ do projeto!
+  if (caminhoPublicDocx) {
+    try {
+      await fetch('/api/moldes-word', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caminhoPublicDocx, base64: b64 }),
+      });
+    } catch {
+      // Se estiver em ambiente estático sem servidor Node local, mantém no localStorage
+    }
+  }
 }
 
-export function salvarBufferMoldeCustomizadoNoSistema(
+export async function salvarBufferMoldeCustomizadoNoSistema(
   chaveMolde: string,
-  buffer: ArrayBuffer
-): void {
+  buffer: ArrayBuffer,
+  caminhoPublicDocx?: string
+): Promise<void> {
   const b64 = arrayBufferParaBase64(buffer);
   window.localStorage.setItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`, b64);
+
+  if (caminhoPublicDocx) {
+    try {
+      await fetch('/api/moldes-word', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caminhoPublicDocx, base64: b64 }),
+      });
+    } catch {
+      // Fallback silencioso
+    }
+  }
 }
+
+
 
 export function removerMoldeCustomizadoDoSistema(chaveMolde: string): void {
   window.localStorage.removeItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`);
@@ -63,6 +92,8 @@ export function possuiMoldeCustomizadoSalvo(chaveMolde: string): boolean {
   return Boolean(window.localStorage.getItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`));
 }
 
+// AGORA: Prioriza SEMPRE o arquivo atualizado na pasta public/moldes-word/ (com cache-busting)
+// para que qualquer alteração feita na pasta do projeto ou via botão "📤 Atualizar Molde" reflita imediatamente!
 export async function carregarBufferDoMolde(params: {
   chaveMolde: string;
   caminhoPublicDocx?: string;
@@ -70,6 +101,20 @@ export async function carregarBufferDoMolde(params: {
 }): Promise<ArrayBuffer> {
   const { chaveMolde, caminhoPublicDocx, base64Fallback } = params;
 
+  // 1º: Tenta buscar o arquivo real mais recente na pasta public/moldes-word/
+  if (caminhoPublicDocx) {
+    try {
+      const urlSemCache = `${caminhoPublicDocx}?t=${Date.now()}`;
+      const resp = await fetch(urlSemCache, { cache: 'no-store' });
+      if (resp.ok) {
+        return await resp.arrayBuffer();
+      }
+    } catch {
+      // Se não encontrar na pasta public, tenta o localStorage
+    }
+  }
+
+  // 2º: Tenta o localStorage do navegador
   if (typeof window !== 'undefined') {
     const customB64 = window.localStorage.getItem(`${PREFIXO_STORAGE_MOLDE}${chaveMolde}`);
     if (customB64) {
@@ -77,17 +122,7 @@ export async function carregarBufferDoMolde(params: {
     }
   }
 
-  if (caminhoPublicDocx) {
-    try {
-      const resp = await fetch(caminhoPublicDocx, { cache: 'no-store' });
-      if (resp.ok) {
-        return await resp.arrayBuffer();
-      }
-    } catch {
-      // Continua para o fallback em Base64
-    }
-  }
-
+  // 3º: Fallback para a string Base64 original
   if (base64Fallback && !base64Fallback.startsWith('COLE_AQUI')) {
     return base64ParaArrayBuffer(base64Fallback);
   }
