@@ -447,3 +447,65 @@ export async function carregarMoldeWordDaNuvem(
   }
   return null;
 }
+
+// ============================================================================
+// SINCRONIZAÇÃO NA NUVEM DA GAVETA DE CORINGAS (SEMA, CREA, RB E CAR P.A.)
+// ============================================================================
+export interface CoringaGavetaNuvemItem {
+  id: string;
+  tipo: 'PARECER_SEMA' | 'CREA_PROJETISTA' | 'RB_PA' | 'CAR_PA';
+  chaveReferencia: string;
+  nomeArquivoOriginal: string;
+  base64Dados: string;
+  dataAtualizacao?: string;
+}
+
+export async function salvarCoringaGavetaSync(
+  item: CoringaGavetaNuvemItem
+): Promise<void> {
+  if (isModoEstritoLocal()) return;
+  try {
+    const limpo = JSON.parse(
+      JSON.stringify({
+        ...item,
+        dataAtualizacao: new Date().toISOString(),
+      })
+    );
+    await set(
+      ref(dbNuvem, `${PATH_SANDBOX_V2}/cofre_coringas/${item.id}`),
+      limpo
+    );
+  } catch (e) {
+    console.error('Erro ao salvar documento coringa no Firebase V2:', e);
+  }
+}
+
+export async function removerCoringaGavetaSync(id: string): Promise<void> {
+  if (isModoEstritoLocal()) return;
+  try {
+    await set(
+      ref(dbNuvem, `${PATH_SANDBOX_V2}/cofre_coringas/${id}`),
+      null
+    );
+  } catch (e) {
+    console.error('Erro ao remover documento coringa do Firebase V2:', e);
+  }
+}
+
+export async function carregarCoringasGavetaSync(): Promise<
+  CoringaGavetaNuvemItem[]
+> {
+  if (isModoEstritoLocal()) return [];
+  try {
+    const snap = await get(ref(dbNuvem, `${PATH_SANDBOX_V2}/cofre_coringas`));
+    if (snap.exists() && typeof snap.val() === 'object') {
+      const obj = snap.val() as Record<string, CoringaGavetaNuvemItem>;
+      return Object.values(obj).filter(
+        (x) => x && typeof x === 'object' && Boolean(x.id) && Boolean(x.base64Dados)
+      );
+    }
+  } catch (e) {
+    console.error('Erro ao carregar cofre de coringas do Firebase V2:', e);
+  }
+  return [];
+}

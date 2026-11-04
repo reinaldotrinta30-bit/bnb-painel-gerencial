@@ -83,6 +83,7 @@ interface ModuloKanbanProps {
   onAbrirClienteEmDesembolsos?: (card: CardKanban) => void;
   modoOverlayCardUnicoId?: string | null;
   onFecharOverlayCardUnico?: () => void;
+  abaInicialOverlay?: 'notas' | 'contratacoes' | 'desembolsos' | 'parecer' | 'documentos';
 }
 
 const ORDEM_ETAPAS: EtapaKanban[] = [
@@ -163,6 +164,7 @@ export default function ModuloKanban({
   onInlineEditCabecalho,
   modoOverlayCardUnicoId = null,
   onFecharOverlayCardUnico,
+  abaInicialOverlay,
 }: ModuloKanbanProps) {
   const [termoBusca, setTermoBusca] = useState('');
   const [incluirArquivadosNaBusca, setIncluirArquivadosNaBusca] = useState(false);
@@ -221,8 +223,11 @@ export default function ModuloKanban({
 useEffect(() => {
     if (modoOverlayCardUnicoId) {
       setCardFullscreenId(modoOverlayCardUnicoId);
+      if (abaInicialOverlay) {
+        setAbaInternaCard(abaInicialOverlay);
+      }
     }
-  }, [modoOverlayCardUnicoId]);
+  }, [modoOverlayCardUnicoId, abaInicialOverlay]);
 
   // Recebe atualizações feitas quando o card foi editado pelo atalho da Planilha da Carteira
   useEffect(() => {

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import ModalOrganizadorPastasCliente from '@/components/ferramentas/ModalOrganizadorPastasCliente';
 import {
   salvarFerramentasSync,
   carregarFerramentasSync,
@@ -75,13 +76,16 @@ export default function ModuloFerramentas({
   const [editandoProjIdx, setEditandoProjIdx] = useState<number | null>(null);
 
   const [modalConformidadePronafAberto, setModalConformidadePronafAberto] =
-    useState(false);
+    useState(false); 
 
   const [modalConsolidada, setModalConsolidada] = useState<'PF' | 'PRONAF' | null>(null);
   const [modalDeclGeral, setModalDeclGeral] = useState<TipoDeclaracaoGeral | null>(null);
   const [modalPlanta, setModalPlanta] = useState<'PROTOCOLO' | 'SOLICITACAO' | null>(
     null
   );
+
+  const [modalOrganizadorPastasAberto, setModalOrganizadorPastasAberto] =
+    useState(false);
 
   // Carrega localmente e sincroniza direto com o nó /ferramentas do Firebase Realtime Database
   useEffect(() => {
@@ -584,6 +588,50 @@ export default function ModuloFerramentas({
           </button>
         </div>
 
+        {/* BLOCO DE DESTAQUE: ORGANIZADOR AUTOMÁTICO DE PASTAS & COFRE DE CORINGAS */}
+        <div
+          className="person-card"
+          style={{
+            borderLeftColor: '#0369a1',
+            background: 'linear-gradient(90deg, #f0f9ff 0%, #ffffff 100%)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '14px',
+            marginBottom: 0,
+            padding: '16px 20px',
+          }}
+        >
+          <div>
+            <strong style={{ color: '#0369a1', fontSize: '15px', display: 'block' }}>
+              🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS DE CLIENTES & GAVETA DE CORINGAS
+            </strong>
+            <span style={{ fontSize: '12px', color: '#475569' }}>
+              Renomeia e numera de 1 a 21 na Raiz (com VITI), move e numera documentos pessoais na subpasta <b>CADASTRO</b>, copia os itens ambientais para <b>CERTIFICAÇÃO SOCIOAMBIENTAL</b> e injeta automaticamente <b>Parecer da SEMA</b>, <b>CREA</b> e <b>RB do P.A.</b>
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setModalOrganizadorPastasAberto(true)}
+            style={{
+              width: 'auto',
+              background: '#0369a1',
+              color: '#ffffff',
+              padding: '10px 20px',
+              fontSize: '12.5px',
+              fontWeight: 800,
+              borderRadius: '8px',
+              border: 'none',
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(3, 105, 161, 0.25)',
+            }}
+          >
+            📂 Abrir Organizador de Pastas
+          </button>
+        </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '20px' }}>
           {/* COLUNA 1: GESTÃO DE PROGRAMAS DE CRÉDITO */}
           <div className="person-card" style={{ background: '#fff', marginBottom: 0 }}>
@@ -820,6 +868,12 @@ export default function ModuloFerramentas({
             cardsKanban: [novoCardKanban, ...cardsKanban],
           });
         }}
+      />
+
+      <ModalOrganizadorPastasCliente
+        aberto={modalOrganizadorPastasAberto}
+        onFechar={() => setModalOrganizadorPastasAberto(false)}
+        contratacoes={contratacoes}
       />
 
       <ModalConsolidadaRural

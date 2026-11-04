@@ -1,16 +1,25 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import ModuloKanban from '@/components/ModuloKanban';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import {
   salvarFerramentasSync,
   carregarFerramentasSync,
+  salvarKanbanSync,
+  salvarContratacoesSync,
+  salvarDesembOpSync,
+  salvarDesembEvSync,
+  lerCacheLocal,
+  STORAGE_KEYS_V2,
 } from '@/lib/firebaseSync';
 import {
   RegistroContratacao,
   CardKanban,
   EtapaKanban,
+  OperacaoBaseDesembolso,
+  EventoDesembolso,
 } from '@/types/painel';
 import {
   aplicarMascaraCPF,
@@ -22,7 +31,10 @@ import {
   obterListaProgramas,
   isEnquadradoCadaVezMelhor,
 } from '@/lib/utils';
-import { montarHtmlCardSincronizado } from '@/lib/integradorSincronizado';
+import {
+  montarHtmlCardSincronizado,
+  localizarCardDoClienteNoKanban,
+} from '@/lib/integradorSincronizado';
 
 export type StatusVisitado = 'SIM' | 'NAO' | 'PENDENTE';
 export type StatusCadastroPessoa = 'OK' | 'A_RENOVAR' | 'A_ELABORAR';
@@ -528,9 +540,66 @@ export default function ModalConformidadePronafA({
   aberto,
   onFechar,
   contratacoes,
+  cardsKanban,
   onCadastrarPropostaNoPainel,
 }: ModalConformidadePronafAProps) {
   const [abaAtiva, setAbaAtiva] = useState<'PLANILHA' | 'RANKING'>('PLANILHA');
+
+  // Estados para abrir o Card Expandido pela Lupinha (🔍) sem sair da Fila de Prioridades
+  const [listaContratacoes, setListaContratacoes] =
+    useState<RegistroContratacao[]>(contratacoes);
+  const [listaCards, setListaCards] = useState<CardKanban[]>(cardsKanban);
+  const [listaOpBase, setListaOpBase] = useState<OperacaoBaseDesembolso[]>([]);
+  const [listaEventos, setListaEventos] = useState<EventoDesembolso[]>([]);
+  const [cardOverlayKanbanId, setCardOverlayKanbanId] = useState<string | null>(
+    null
+  );
+
+  useEffect(() => {
+    setListaContratacoes(contratacoes);
+  }, [contratacoes]);
+
+  useEffect(() => {
+    setListaCards(cardsKanban);
+  }, [cardsKanban]);
+
+  useEffect(() => {
+    setListaOpBase(
+      lerCacheLocal<OperacaoBaseDesembolso[]>(STORAGE_KEYS_V2.DESEMB_OP, [])
+    );
+    setListaEventos(
+      lerCacheLocal<EventoDesembolso[]>(STORAGE_KEYS_V2.DESEMB_EV, [])
+    );
+  }, [aberto]);
+
+  const abrirCardExistentePelaLupinha = (itemConf: ItemConformidadePronafA) => {
+    const cpfLimpo = itemConf.cpfCliente.replace(/\D/g, '');
+    const nomeUpper = itemConf.nomeCliente.toUpperCase().trim();
+
+    const regVinc = listaContratacoes.find((r) => {
+      const rCpf = (r.cpf || '').replace(/\D/g, '');
+      const rNome = (r.cliente || '').toUpperCase().trim();
+      return (
+        (cpfLimpo.length === 11 && rCpf === cpfLimpo) ||
+        (nomeUpper.length > 3 && rNome === nomeUpper)
+      );
+    });
+
+    const cardAchado = regVinc
+      ? localizarCardDoClienteNoKanban(regVinc, listaCards)
+      : listaCards.find(
+          (c) =>
+            (cpfLimpo.length === 11 &&
+              (c.cpfVinculado || '').replace(/\D/g, '') === cpfLimpo) ||
+            (c.clienteVinculado || '').toUpperCase().trim() === nomeUpper
+        );
+
+    if (cardAchado) {
+      setCardOverlayKanbanId(cardAchado.id);
+    } else {
+      alert('⚠️ O registro consta em Contratações, mas o Card não foi localizado no Kanban.');
+    }
+  };
 
   // Gerenciador de Múltiplas Listas Salvas (Local + Nuvem)
   const [listasSalvas, setListasSalvas] = useState<ListaSalvaConformidadePronafA[]>([]);
@@ -1301,7 +1370,7 @@ export default function ModalConformidadePronafA({
         position: 'fixed',
         inset: 0,
         background: 'rgba(15, 23, 42, 0.72)',
-        zIndex: 20000000,
+        zIndex: 900000,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -2275,19 +2344,53 @@ export default function ModalConformidadePronafA({
 
                                 <td style={{ padding: '10px 12px', textAlign: 'right' }}>
                                   {res.jaCadastradoNoPainel ? (
-                                    <span
+                                    <div
                                       style={{
-                                        display: 'inline-block',
-                                        background: '#e2e8f0',
-                                        color: '#334155',
-                                        padding: '6px 10px',
-                                        borderRadius: '6px',
-                                        fontSize: '11px',
-                                        fontWeight: 700,
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'flex-end',
+                                        gap: '6px',
                                       }}
                                     >
-                                      ✅ Já Cadastrado no Painel
-                                    </span>
+                                      <span
+                                        style={{
+                                          display: 'inline-block',
+                                          background: '#e2e8f0',
+                                          color: '#334155',
+                                          padding: '6px 10px',
+                                          borderRadius: '6px',
+                                          fontSize: '11px',
+                                          fontWeight: 700,
+                                        }}
+                                      >
+                                        ✅ Já Cadastrado no Painel
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          abrirCardExistentePelaLupinha(res.item)
+                                        }
+                                        title="Abrir Card Expandido do Kanban deste cliente por cima desta tela"
+                                        style={{
+                                          width: '30px',
+                                          height: '30px',
+                                          minWidth: '30px',
+                                          padding: 0,
+                                          borderRadius: '6px',
+                                          background: '#fdf2f4',
+                                          color: '#8B1530',
+                                          border: '1px solid #f5c2c7',
+                                          fontSize: '13px',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          cursor: 'pointer',
+                                          boxShadow: '0 1px 2px rgba(139,21,48,0.12)',
+                                        }}
+                                      >
+                                        🔍
+                                      </button>
+                                    </div>
                                   ) : (
                                     <button
                                       type="button"
@@ -2566,6 +2669,57 @@ export default function ModalConformidadePronafA({
           </div>
         </div>
       )}
+
+
+      {/* OVERLAY DO CARD EXPANDIDO ACIONADO PELA LUPINHA (🔍) NA FILA DE PRIORIDADES */}
+      {cardOverlayKanbanId && (
+        <ModuloKanban
+          cards={listaCards}
+          contratacoes={listaContratacoes}
+          operacoesBase={listaOpBase}
+          eventos={listaEventos}
+          modoOverlayCardUnicoId={cardOverlayKanbanId}
+          onFecharOverlayCardUnico={() => setCardOverlayKanbanId(null)}
+          onAtualizarCards={(novosCards) => {
+            setListaCards(novosCards);
+            salvarKanbanSync(novosCards).catch(() => {});
+          }}
+          onCardSincronizadoAlterado={(cardAtualizado, todosOsCards) => {
+            setListaCards(todosOsCards);
+            salvarKanbanSync(todosOsCards).catch(() => {});
+            const novasContrat = listaContratacoes.map((r) =>
+              String(r.id) === String(cardAtualizado.propostaIdVinculada)
+                ? {
+                    ...r,
+                    situacao: cardAtualizado.situacaoVinculada || r.situacao,
+                    situacaoDetalhada:
+                      cardAtualizado.situacaoDetalhadaVinculada ?? r.situacaoDetalhada,
+                    obs: cardAtualizado.obsVinculada ?? r.obs,
+                  }
+                : r
+            );
+            setListaContratacoes(novasContrat);
+            salvarContratacoesSync(novasContrat).catch(() => {});
+          }}
+          onAtualizarContratacoes={(novas) => {
+            setListaContratacoes(novas);
+            salvarContratacoesSync(novas).catch(() => {});
+          }}
+          onRegistroContratacaoSalvo={(_reg, todas) => {
+            setListaContratacoes(todas);
+            salvarContratacoesSync(todas).catch(() => {});
+          }}
+          onAtualizarOperacoesBase={(ops) => {
+            setListaOpBase(ops);
+            salvarDesembOpSync(ops).catch(() => {});
+          }}
+          onAtualizarEventos={(evs) => {
+            setListaEventos(evs);
+            salvarDesembEvSync(evs).catch(() => {});
+          }}
+        />
+      )}
+
     </div>,
     document.body
   );
