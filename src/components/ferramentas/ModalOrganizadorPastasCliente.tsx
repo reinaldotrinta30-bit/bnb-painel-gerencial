@@ -114,6 +114,68 @@ const CATEGORIAS_QUE_ACEITAM_VITI = new Set<CategoriaDocPasta>([
   'CAD_5_PROPOSTA_CADASTRO',
 ]);
 
+// Ordem rigorosa de exibição na tabela: Itens 1 a 21 da Raiz (com VITI logo abaixo do principal) ➔ Itens 1 a 9 de CADASTRO
+const PESO_ORDEM_CATEGORIA: Record<CategoriaDocPasta, number> = {
+  ITEM_1_PROJETO_ARQ: 10,
+  ITEM_2_AUT_ALTERACAO: 20,
+  ITEM_3_EMBARGOS_TITULAR: 30,
+  ITEM_3_EMBARGOS_CONJUGE: 31,
+  ITEM_4_IMPROBIDADE_TITULAR: 40,
+  ITEM_4_IMPROBIDADE_CONJUGE: 41,
+  ITEM_5_CERT_SOCIOAMBIENTAL: 50,
+  ITEM_6_CREA: 60,
+  ITEM_7_EXTRATO_SICOR: 70,
+  ITEM_8_CONTRATO_ASSESSORIA: 80,
+  ITEM_9_CONSOLIDADAS: 90,
+  ITEM_10_DEC_AMBIENTAIS: 100,
+  ITEM_10_1_REG_AMBIENTAL: 101,
+  ITEM_10_2_NAO_DESMATAMENTO: 102,
+  ITEM_10_3_RECOMPOSICAO: 103,
+  ITEM_10_4_OUTRA_DEC_AMBIENTAL: 104,
+  ITEM_11_ESPELHO_UND: 110,
+  ITEM_12_PROJETO_PDF: 120,
+  ITEM_13_CAR: 130,
+  ITEM_13_CONSULTA_CAR: 131,
+  ITEM_14_CAF: 140,
+  ITEM_15_DCAA: 150,
+  ITEM_16_PARECER_TECNICO: 160,
+  ITEM_17_RB_PA: 170,
+  ITEM_18_ORCAMENTO: 180,
+  ITEM_19_CAPA_ANALISADOR: 190,
+  ITEM_20_PARECER_GERENCIAL: 200,
+  ITEM_21_PARECER_SEMA: 210,
+  // Subpasta CADASTRO (Exibida logo após o item 21, na ordem 1 a 9)
+  CAD_1_IDENTIDADE_TITULAR: 301,
+  CAD_1_IDENTIDADE_CONJUGE: 302,
+  CAD_1_IDENTIDADE_OUTRO: 303,
+  CAD_2_CERTIDAO_CASAMENTO: 304,
+  CAD_3_COMP_ENDERECO: 305,
+  CAD_4_COMP_RENDA: 306,
+  CAD_5_PROPOSTA_CADASTRO: 307,
+  CAD_6_PROCURACAO: 308,
+  CAD_8_SELO_CARTORIO: 309,
+  CAD_9_OUTROS_CADASTRO: 310,
+  IGNORAR: 999,
+};
+
+function ordenarArquivosPorSequenciaNumerica(
+  lista: ArquivoMapeadoItem[]
+): ArquivoMapeadoItem[] {
+  return [...lista].sort((a, b) => {
+    const pesoBaseA = PESO_ORDEM_CATEGORIA[a.categoria] ?? 900;
+    const pesoBaseB = PESO_ORDEM_CATEGORIA[b.categoria] ?? 900;
+
+    // Soma +0.5 quando for VITI para que o relatório VITI fique colado imediatamente abaixo do seu documento principal
+    const pesoFinalA = pesoBaseA + (a.isViti ? 0.5 : 0);
+    const pesoFinalB = pesoBaseB + (b.isViti ? 0.5 : 0);
+
+    if (pesoFinalA !== pesoFinalB) {
+      return pesoFinalA - pesoFinalB;
+    }
+    return a.nomeOriginal.localeCompare(b.nomeOriginal);
+  });
+}
+
 interface ArquivoMapeadoItem {
   id: string;
   nomeOriginal: string;
@@ -122,6 +184,7 @@ interface ArquivoMapeadoItem {
   categoria: CategoriaDocPasta;
   isViti: boolean;
   origemGaveta?: boolean;
+  origemSubpastaCadastro?: boolean;
   subtipoAmbientalExtra?: string;
 }
 
@@ -190,7 +253,6 @@ function arrayBufferParaBase64(buffer: ArrayBuffer): string {
   return window.btoa(binary);
 }
 
-// CORRIGIDO TS2322: Retorna ArrayBuffer puro (100% compatível com new File([buffer], ...))
 function base64ParaArrayBuffer(base64: string): ArrayBuffer {
   const bin = window.atob(base64.replace(/\s+/g, ''));
   const buffer = new ArrayBuffer(bin.length);
@@ -209,6 +271,15 @@ function extrairPrimeiroNome(nomeCompleto: string): string {
   const limpo = (nomeCompleto || '').trim().toUpperCase();
   if (!limpo) return '';
   return limpo.split(/\s+/)[0];
+}
+
+// Distingue o Parecer Gerencial real (mesmo quando está como "20. PARECER GERENCIAL - FALTA AJUSTAR.txt")
+// do lembrete vazio "20. FALTA PARECER GERENCIAL.txt"
+function isArquivoParecerGerencialReal(nomeArquivo: string): boolean {
+  const norm = removerAcentos(nomeArquivo).toUpperCase().trim();
+  if (!norm.includes('PARECER GERENCIAL')) return false;
+  if (norm.includes('FALTA PARECER GERENCIAL')) return false;
+  return true;
 }
 
 function obterNomesCurtosDesambiguados(params: {
@@ -329,7 +400,7 @@ function classificarArquivoAutomaticamente(
     .trim();
 
   if (ext === 'TXT') {
-    if (norm.includes('PARECER GERENCIAL') && !norm.includes('FALTA')) {
+    if (isArquivoParecerGerencialReal(nomeArquivo)) {
       return { categoria: 'ITEM_20_PARECER_GERENCIAL', isViti: false };
     }
     return { categoria: 'IGNORAR', isViti: false };
@@ -349,10 +420,13 @@ function classificarArquivoAutomaticamente(
     /^\d+(\.\d+)?\.?\s*VITI\b/.test(norm) ||
     norm.includes('VALIDACAO ITI');
 
+  // Remove numerações iniciais ("1. ", "10.1. ", "17 - ") e prefixos "Relatorio -" / "VITI -"
+  // para reconhecer tanto arquivos novos quanto arquivos de uma pasta já organizada!
   const miolo = norm
     .replace(/^RELATORIO\s*[-–]?\s*/, '')
-    .replace(/^\d+(\.\d+)?\.?\s*VITI\s*[-–]?\s*/, '')
+    .replace(/^\d+(\.\d+)?\s*[.\-–]\s*VITI\s*[-–]?\s*/, '')
     .replace(/^VITI\s*[-–]?\s*/, '')
+    .replace(/^\d+(\.\d+)?\s*[.\-–]\s*/, '')
     .trim();
 
   const mencionaConjuge = Boolean(
@@ -494,7 +568,7 @@ function classificarArquivoAutomaticamente(
   if (miolo.includes('CAPA DO ANALISADOR') || miolo.includes('ANALISADOR')) {
     return finalizar('ITEM_19_CAPA_ANALISADOR');
   }
-  if (miolo.includes('PARECER GERENCIAL') && !miolo.includes('FALTA')) {
+  if (isArquivoParecerGerencialReal(nomeArquivo)) {
     return finalizar('ITEM_20_PARECER_GERENCIAL');
   }
   if (/\bSEMA\b/.test(miolo) || miolo.includes('DISPENSA AMBIENTAL')) {
@@ -738,12 +812,19 @@ function calcularDestinosDoArquivo(
         nomeNoCadastro: null,
         nomeNaSocioambiental: null,
       };
-    case 'ITEM_20_PARECER_GERENCIAL':
+    case 'ITEM_20_PARECER_GERENCIAL': {
+      // Se o arquivo ainda estiver com o nome "FALTA AJUSTAR", preserva esse nome até o usuário inserir os IDs!
+      const aindaFaltaAjustar = item.nomeOriginal
+        .toUpperCase()
+        .includes('FALTA AJUSTAR');
       return {
-        nomeNaRaiz: `20. PARECER GERENCIAL - ${tit}${ext}`,
+        nomeNaRaiz: aindaFaltaAjustar
+          ? `20. PARECER GERENCIAL - FALTA AJUSTAR${ext}`
+          : `20. PARECER GERENCIAL - ${tit}${ext}`,
         nomeNoCadastro: null,
         nomeNaSocioambiental: null,
       };
+    }
     case 'ITEM_21_PARECER_SEMA':
       return {
         nomeNaRaiz: `21. PARECER DA SEMA${ext}`,
@@ -840,6 +921,7 @@ export default function ModalOrganizadorPastasCliente({
 
   const [dirHandleRoot, setDirHandleRoot] = useState<any>(null);
   const [nomePastaSelecionada, setNomePastaSelecionada] = useState('');
+  const [pastaJaEraOrganizada, setPastaJaEraOrganizada] = useState(false);
   const [arquivosMapeados, setArquivosMapeados] = useState<ArquivoMapeadoItem[]>(
     []
   );
@@ -867,7 +949,6 @@ export default function ModalOrganizadorPastasCliente({
     'P.A LAGO DA CARNAÚBA'
   );
 
-  // CORRIGIDO: Inicializa de forma segura sem "= []" no cabeçalho para jamais causar loop infinito!
   const [listaContratacoes, setListaContratacoes] = useState<
     RegistroContratacao[]
   >(() => contratacoes || []);
@@ -901,7 +982,6 @@ export default function ModalOrganizadorPastasCliente({
 
   const listaProgramas = useMemo(() => obterListaProgramas(), []);
 
-  // Sincroniza listas quando o modal é aberto, lendo do cache oficial se alguma prop não tiver vindo
   useEffect(() => {
     if (!aberto) return;
     const contrAtuais =
@@ -963,7 +1043,12 @@ export default function ModalOrganizadorPastasCliente({
     [titularNome, conjugeNome, procuradorNome, avalistaNome]
   );
 
-  // ITEM 3: Salva o parecer extraído com o nome "20. PARECER GERENCIAL - FALTA AJUSTAR.txt"
+  const arquivosMapeadosOrdenados = useMemo(
+    () => ordenarArquivosPorSequenciaNumerica(arquivosMapeados),
+    [arquivosMapeados]
+  );
+
+  // Salva o parecer extraído com o nome "20. PARECER GERENCIAL - FALTA AJUSTAR.txt"
   const gravarParecerGerencialRealNaPasta = async (conteudoTexto: string) => {
     if (!dirHandleRoot || !conteudoTexto.trim()) return;
     try {
@@ -977,7 +1062,6 @@ export default function ModalOrganizadorPastasCliente({
       await writable.write(conteudoTexto);
       await writable.close();
 
-      // Remove eventual "20. FALTA PARECER GERENCIAL.txt" se existir
       try {
         await dirHandleRoot.removeEntry('20. FALTA PARECER GERENCIAL.txt');
       } catch {
@@ -993,8 +1077,6 @@ export default function ModalOrganizadorPastasCliente({
     }
   };
 
-  // ITEM 1: Se o usuário fechar o Card sem ter clicado em Extrair .TXT (pulou a etapa),
-  // aí sim gera na pasta o arquivo vazio "20. FALTA PARECER GERENCIAL.txt"!
   const handleFecharOverlayParecer = async () => {
     const jaTinhaParecerNaPasta = arquivosMapeados.some(
       (a) => a.categoria === 'ITEM_20_PARECER_GERENCIAL'
@@ -1022,39 +1104,6 @@ export default function ModalOrganizadorPastasCliente({
     setCardOverlayParecerId(null);
   };
 
-  // Captura o texto do Parecer Gerencial diretamente da tela e salva na pasta com 1 clique
-  const capturarESalvarParecerDaTelaNaPasta = async () => {
-    const textareas = Array.from(document.querySelectorAll('textarea'));
-    const taParecer = textareas.find(
-      (t) =>
-        t.value.includes('PARECER') ||
-        t.value.includes('PROPONENTE') ||
-        t.value.includes('OPERACAO') ||
-        t.value.includes('OPERAÇÃO') ||
-        t.value.length > 100
-    );
-
-    if (taParecer && taParecer.value.trim()) {
-      await gravarParecerGerencialRealNaPasta(taParecer.value);
-      setCardOverlayParecerId(null);
-      return;
-    }
-
-    const pres = Array.from(document.querySelectorAll('pre'));
-    const preParecer = pres.find((p) => (p.innerText || '').length > 100);
-    if (preParecer && preParecer.innerText.trim()) {
-      await gravarParecerGerencialRealNaPasta(preParecer.innerText);
-      setCardOverlayParecerId(null);
-      return;
-    }
-
-    alert(
-      '⚠️ Gere ou preencha o texto do Parecer Gerencial na tela antes de salvar na pasta!'
-    );
-  };
-
-  // ITENS 1, 1.1 E 2: Intercepta o botão original de "Extrair .TXT" da aba Parecer Gerencial
-  // SOMENTE quando aberto por dentro do Organizador de Pastas (captura 100% do texto completo + edições)!
   useEffect(() => {
     if (!cardOverlayParecerId || !dirHandleRoot) return;
 
@@ -1062,7 +1111,6 @@ export default function ModalOrganizadorPastasCliente({
     const origShowSaveFilePicker = win.showSaveFilePicker;
     const origCreateObjectURL = URL.createObjectURL;
 
-    // 1. Se o botão Extrair .TXT usar showSaveFilePicker, intercepta e grava direto na pasta do cliente!
     if (origShowSaveFilePicker) {
       win.showSaveFilePicker = async function (opts: any) {
         const sugName = String(opts?.suggestedName || '').toLowerCase();
@@ -1091,7 +1139,6 @@ export default function ModalOrganizadorPastasCliente({
       };
     }
 
-    // 2. Se o botão Extrair .TXT usar Blob + URL.createObjectURL, captura o Blob inteiro e grava direto na pasta!
     URL.createObjectURL = function (obj: Blob | MediaSource) {
       if (
         obj instanceof Blob &&
@@ -1146,10 +1193,12 @@ export default function ModalOrganizadorPastasCliente({
     return (
       todosItensConformidadePronafA.find((it) => {
         const nIt = removerAcentos(it.nomeCliente).toUpperCase().trim();
+        const primIt = extrairPrimeiroNome(nIt);
         return (
           nIt === nomeLimpo ||
           nIt.startsWith(nomeLimpo) ||
-          nomeLimpo.startsWith(nIt)
+          nomeLimpo.startsWith(nIt) ||
+          (nomeLimpo.split(/\s+/).length === 1 && primIt === nomeLimpo)
         );
       }) || null
     );
@@ -1195,28 +1244,42 @@ export default function ModalOrganizadorPastasCliente({
     return lista;
   }, [todosItensConformidadePronafA, listaContratacoes]);
 
-  const autodetectarDadosPelosArquivos = (files: File[]) => {
-    let titDetectado = titularNome;
-    let conjDetectado = conjugeNome;
-    let procDetectado = procuradorNome;
+  // Autodetecta Titular, Cônjuge, Projetista e P.A. tanto em pastas brutas quanto em pastas JÁ ORGANIZADAS!
+  const autodetectarDadosPelosArquivos = (
+    files: File[],
+    nomeDaPastaRaiz?: string
+  ) => {
+    let titDetectado = '';
+    let conjDetectado = '';
+    let procDetectado = '';
     let paDetectado = paNome;
     let projDetectado = projetistaNome;
 
     files.forEach((f) => {
       const up = f.name.toUpperCase();
+      // 1. Arquivo .PRONAF_A2 (Bruto ou já numerado "1. PROJETO - ISMAEL.PRONAF_A2")
       if (up.includes('.PRONAF')) {
         const limpo = up
           .split('.PRONAF')[0]
-          .replace(/^\d+\.\s*PROJETO\s*-\s*/, '')
+          .replace(/^\d+\.\s*PROJETO\s*[-–]\s*/, '')
           .trim();
         if (limpo && !titDetectado) titDetectado = limpo;
       }
+      // 2. Padrão Bruto "_-_ISMAEL_ANDRADE_DA_SILVA_assinado.pdf"
       const matchTraco = up.match(
         /_-_\s*([A-ZÀ-Ú_ ]+?)(?:_ASSINADO|\.PDF|\s*\()/i
       );
       if (matchTraco && matchTraco[1] && !titDetectado) {
         titDetectado = matchTraco[1].replace(/_/g, ' ').trim();
       }
+      // 3. Padrão Já Organizado ("9. DECLARAÇÕES CONSOLIDADAS - ISMAEL.pdf" ou "12. PROJETO - ISMAEL.pdf")
+      const matchJaOrg = up.match(
+        /^\d+(?:\.\d+)?\.\s*(?:PROJETO|DECLARA[ÇC][ÕO]ES CONSOLIDADAS|CONTRATO DE ASSESSORIA|CAF|DCAA)\s*[-–]\s*([A-ZÀ-Ú ]+?)\.(?:PDF|PRONAF)/i
+      );
+      if (matchJaOrg && matchJaOrg[1] && !titDetectado) {
+        titDetectado = matchJaOrg[1].trim();
+      }
+      // 4. Assentamento P.A.
       const matchPa = up.match(
         /(P\.?A\.?\s+[A-ZÀ-Ú0-9 ]+?)(?:_COMPRESSED|_ASSINADO|\.PDF|$)/i
       );
@@ -1224,34 +1287,59 @@ export default function ModalOrganizadorPastasCliente({
         const pStr = matchPa[1].replace(/^PA\s+/i, 'P.A ').trim();
         paDetectado = pStr;
       }
-      const matchCrea = up.match(/CREA\s*[-–]\s*([A-ZÀ-Ú0-9_ ]+?)(?:\.PDF|$)/i);
+      // 5. Projetista em "6. CREA - ZEZÃO.pdf"
+      const matchCrea = up.match(
+        /CREA\s*[-–]\s*([A-ZÀ-Ú0-9_ ]+?)(?:\.PDF|$)/i
+      );
       if (matchCrea && matchCrea[1]) {
         projDetectado = matchCrea[1].trim();
       }
     });
 
+    // Se ainda não achou pelo arquivo, tenta pelo nome da própria pasta selecionada
+    if (!titDetectado && nomeDaPastaRaiz) {
+      const limpoPasta = nomeDaPastaRaiz
+        .replace(/^\d+\s*[-–.]\s*/, '')
+        .toUpperCase()
+        .trim();
+      if (limpoPasta.length >= 3) titDetectado = limpoPasta;
+    }
+
+    // Procura na lista de Conformidade PRONAF A (mesmo que na pasta organizada só tenha o 1º nome "ISMAEL")
     if (titDetectado) {
       const normTit = removerAcentos(titDetectado).toUpperCase().trim();
-      const encConf = todosItensConformidadePronafA.find(
-        (it) => removerAcentos(it.nomeCliente).toUpperCase().trim() === normTit
-      );
+      const primTitBusca = extrairPrimeiroNome(normTit);
+      const encConf = todosItensConformidadePronafA.find((it) => {
+        const nIt = removerAcentos(it.nomeCliente).toUpperCase().trim();
+        return (
+          nIt === normTit ||
+          (normTit.split(/\s+/).length === 1 &&
+            extrairPrimeiroNome(nIt) === primTitBusca)
+        );
+      });
       if (encConf) {
-        if (encConf.conjugeNome && !conjDetectado) {
+        titDetectado = encConf.nomeCliente.toUpperCase().trim();
+        if (encConf.conjugeNome) {
           conjDetectado = encConf.conjugeNome.toUpperCase().trim();
         }
-        if (encConf.procuradorNome && !procDetectado) {
+        if (encConf.procuradorNome) {
           procDetectado = encConf.procuradorNome.toUpperCase().trim();
         }
       }
     }
 
-    const primTit = extrairPrimeiroNome(titDetectado);
+    const primTit = extrairPrimeiroNome(titDetectado || titularNome);
 
+    // Procura segunda identidade ou Embargos/Improbidade do Cônjuge (tanto na raiz quanto na subpasta CADASTRO!)
     files.forEach((f) => {
-      const up = removerAcentos(f.name).toUpperCase().replace(/_/g, ' ');
+      const up = removerAcentos(f.name)
+        .toUpperCase()
+        .replace(/_/g, ' ')
+        .replace(/^\d+\.\s*/, '')
+        .trim();
       if (up.startsWith('IDENTIDADE ') || up.startsWith('RG ')) {
         const resto = up
-          .replace(/^(IDENTIDADE|RG)\s+/, '')
+          .replace(/^(IDENTIDADE|RG)\s*[-–]?\s*/, '')
           .replace(/\.PDF$/i, '')
           .replace(/ASSINADO/g, '')
           .trim();
@@ -1262,62 +1350,84 @@ export default function ModalOrganizadorPastasCliente({
       }
     });
 
-    if (titDetectado && titDetectado !== titularNome) setTitularNome(titDetectado);
-    if (conjDetectado && conjDetectado !== conjugeNome)
-      setConjugeNome(conjDetectado);
-    if (procDetectado && procDetectado !== procuradorNome)
-      setProcuradorNome(procDetectado);
-    if (paDetectado && paDetectado !== paNome) setPaNome(paDetectado);
-    if (projDetectado && projDetectado !== projetistaNome)
-      setProjetistaNome(projDetectado);
+    const titFinal = titDetectado || titularNome;
+    const conjFinal = conjDetectado || conjugeNome;
+    const procFinal = procDetectado || procuradorNome;
+
+    if (titFinal) setTitularNome(titFinal);
+    setConjugeNome(conjFinal);
+    setProcuradorNome(procFinal);
+    if (paDetectado) setPaNome(paDetectado);
+    if (projDetectado) setProjetistaNome(projDetectado);
 
     return {
-      primTit: primTit || extrairPrimeiroNome(titularNome),
-      primConj: extrairPrimeiroNome(conjDetectado || conjugeNome),
+      primTit: extrairPrimeiroNome(titFinal),
+      primConj: extrairPrimeiroNome(conjFinal),
       paDetectado,
       projDetectado,
     };
   };
 
   const processarArquivosLidos = (
-    files: File[],
+    entradas: Array<{ file: File; origemSubpastaCadastro: boolean }>,
     primTit: string,
     primConj: string,
     projAtual: string,
     paAtual: string
   ) => {
-    const arquivosReais = files.filter((f) => {
-      const isTxt = f.name.toLowerCase().endsWith('.txt');
+    const entradasFiltradas = entradas.filter(({ file }) => {
+      const nomeUp = file.name.toUpperCase().trim();
+      // Ignora a cópia extra sem número "- CERT. SOCIOAMBIENTAL..." para não duplicar o Item 5 na tabela
+      if (nomeUp.startsWith('- CERT') || nomeUp.startsWith('-CERT')) {
+        return false;
+      }
+      const isTxt = nomeUp.endsWith('.TXT');
       if (!isTxt) return true;
-      const up = f.name.toUpperCase();
-      return up.includes('PARECER GERENCIAL') && !up.includes('FALTA');
+      // Mantém apenas se for o Parecer Gerencial real (incluindo "20. PARECER GERENCIAL - FALTA AJUSTAR.txt")
+      return isArquivoParecerGerencialReal(file.name);
     });
 
-    const mapeados: ArquivoMapeadoItem[] = arquivosReais.map((file, idx) => {
-      const partes = file.name.split('.');
-      const ext = partes.length > 1 ? partes.pop() || 'pdf' : '';
-      const classif = classificarArquivoAutomaticamente(
-        file.name,
-        primTit,
-        primConj
-      );
-      return {
-        id: `arq_${idx}_${Date.now()}`,
-        nomeOriginal: file.name,
-        extensao: ext,
-        fileObj: file,
-        categoria: classif.categoria,
-        isViti: classif.isViti,
-        subtipoAmbientalExtra: classif.subtipoAmbientalExtra,
-      };
-    });
+    const mapeadosBrutos: ArquivoMapeadoItem[] = entradasFiltradas.map(
+      ({ file, origemSubpastaCadastro }, idx) => {
+        const partes = file.name.split('.');
+        const ext = partes.length > 1 ? partes.pop() || 'pdf' : '';
+        const classif = classificarArquivoAutomaticamente(
+          file.name,
+          primTit,
+          primConj
+        );
+        return {
+          id: `arq_${idx}_${Date.now()}`,
+          nomeOriginal: file.name,
+          extensao: ext,
+          fileObj: file,
+          categoria: classif.categoria,
+          isViti: classif.isViti,
+          origemSubpastaCadastro,
+          subtipoAmbientalExtra: classif.subtipoAmbientalExtra,
+        };
+      }
+    );
+
+    // Se a pasta já era organizada, a CAF existe tanto na Raiz (14. CAF) quanto na subpasta CADASTRO (5. CAF).
+    // Evita duplicar a CAF na listagem se ela já estiver presente na Raiz!
+    const jaTemCafNaRaiz = mapeadosBrutos.some(
+      (m) => m.categoria === 'ITEM_14_CAF' && !m.origemSubpastaCadastro
+    );
+    const mapeados = mapeadosBrutos.filter(
+      (m) =>
+        !(
+          m.categoria === 'ITEM_14_CAF' &&
+          m.origemSubpastaCadastro &&
+          jaTemCafNaRaiz
+        )
+    );
 
     const jaTemCrea = mapeados.some((m) => m.categoria === 'ITEM_6_CREA');
     const jaTemRb = mapeados.some((m) => m.categoria === 'ITEM_17_RB_PA');
     const jaTemSema = mapeados.some((m) => m.categoria === 'ITEM_21_PARECER_SEMA');
     const jaTemCar = mapeados.some((m) => m.categoria === 'ITEM_13_CAR');
 
-    // CORRIGIDO: Usa base64ParaArrayBuffer que retorna ArrayBuffer puro
     if (!jaTemCrea && projAtual) {
       const coringaCrea = coringasSalvos.find(
         (c) =>
@@ -1419,7 +1529,7 @@ export default function ModalOrganizadorPastasCliente({
 
     setArquivosMapeados(mapeados);
 
-    // ITEM 4: Dispara a leitura e auditoria inteligente dos 12 pontos nos PDFs da pasta!
+    // Roda (ou re-roda) a Auditoria Inteligente dos 12 Pontos incluindo os arquivos da Raiz e da subpasta CADASTRO!
     setAuditandoPdfs(true);
     executarAuditoriaCompletaDosPdfsDaPasta({
       arquivos: mapeados,
@@ -1438,6 +1548,78 @@ export default function ModalOrganizadorPastasCliente({
       .finally(() => setAuditandoPdfs(false));
   };
 
+  // Lê ou re-lê um dirHandle (tanto a Raiz quanto a subpasta CADASTRO, caso a pasta já tenha sido organizada antes!)
+  const escanearHandleDaPasta = async (handle: any) => {
+    setDirHandleRoot(handle);
+    setNomePastaSelecionada(handle.name);
+    setParecerGerencialExtraidoNaPasta(false);
+
+    const entradasLidas: Array<{
+      file: File;
+      origemSubpastaCadastro: boolean;
+    }> = [];
+    let achouSeloNoSubCadastro = false;
+    let achouProcOuCasamentoNoSubCadastro = false;
+    let tinhaSubpastaOrganizada = false;
+
+    for await (const [entryName, entryHandle] of handle.entries()) {
+      if (entryHandle.kind === 'file') {
+        if (
+          entryName.startsWith('.') ||
+          entryName.toLowerCase() === 'thumbs.db'
+        ) {
+          continue;
+        }
+        const file: File = await entryHandle.getFile();
+        entradasLidas.push({ file, origemSubpastaCadastro: false });
+      } else if (
+        entryHandle.kind === 'directory' &&
+        entryName.toUpperCase() === 'CADASTRO'
+      ) {
+        tinhaSubpastaOrganizada = true;
+        // Lê todos os documentos que já foram movidos para a subpasta CADASTRO na 1ª organização!
+        for await (const [subName, subHandle] of entryHandle.entries()) {
+          if (
+            subHandle.kind === 'file' &&
+            !subName.toLowerCase().endsWith('.txt') &&
+            !subName.startsWith('.') &&
+            subName.toLowerCase() !== 'thumbs.db'
+          ) {
+            const subFile: File = await subHandle.getFile();
+            entradasLidas.push({
+              file: subFile,
+              origemSubpastaCadastro: true,
+            });
+            const upSub = removerAcentos(subName).toUpperCase();
+            if (/\bSELOS?\b/.test(upSub)) achouSeloNoSubCadastro = true;
+            if (upSub.includes('PROCURACAO') || upSub.includes('CASAMENTO')) {
+              achouProcOuCasamentoNoSubCadastro = true;
+            }
+          }
+        }
+      } else if (
+        entryHandle.kind === 'directory' &&
+        entryName.toUpperCase().includes('SOCIOAMBIENTAL')
+      ) {
+        tinhaSubpastaOrganizada = true;
+      }
+    }
+
+    setPastaJaEraOrganizada(tinhaSubpastaOrganizada);
+    setJaTemSeloNaSubpastaCadastro(achouSeloNoSubCadastro);
+    setJaTemProcuracaoOuCasamentoNoCadastro(achouProcOuCasamentoNoSubCadastro);
+
+    const todosFiles = entradasLidas.map((e) => e.file);
+    const detectados = autodetectarDadosPelosArquivos(todosFiles, handle.name);
+    processarArquivosLidos(
+      entradasLidas,
+      detectados.primTit,
+      detectados.primConj,
+      detectados.projDetectado || projetistaNome,
+      detectados.paDetectado
+    );
+  };
+
   const selecionarPastaNoComputador = async () => {
     const win = window as unknown as {
       showDirectoryPicker?: (opts: { mode: string }) => Promise<any>;
@@ -1452,57 +1634,7 @@ export default function ModalOrganizadorPastasCliente({
 
     try {
       const handle = await win.showDirectoryPicker({ mode: 'readwrite' });
-      setDirHandleRoot(handle);
-      setNomePastaSelecionada(handle.name);
-      setParecerGerencialExtraidoNaPasta(false);
-
-      const listaFiles: File[] = [];
-      let achouSeloNoSubCadastro = false;
-      let achouProcOuCasamentoNoSubCadastro = false;
-
-      for await (const [entryName, entryHandle] of handle.entries()) {
-        if (entryHandle.kind === 'file') {
-          if (
-            entryName.startsWith('.') ||
-            entryName.toLowerCase() === 'thumbs.db'
-          ) {
-            continue;
-          }
-          const file: File = await entryHandle.getFile();
-          listaFiles.push(file);
-        } else if (
-          entryHandle.kind === 'directory' &&
-          entryName.toUpperCase() === 'CADASTRO'
-        ) {
-          for await (const [subName, subHandle] of entryHandle.entries()) {
-            if (
-              subHandle.kind === 'file' &&
-              !subName.toLowerCase().endsWith('.txt')
-            ) {
-              const upSub = removerAcentos(subName).toUpperCase();
-              if (/\bSELOS?\b/.test(upSub)) achouSeloNoSubCadastro = true;
-              if (
-                upSub.includes('PROCURACAO') ||
-                upSub.includes('CASAMENTO')
-              ) {
-                achouProcOuCasamentoNoSubCadastro = true;
-              }
-            }
-          }
-        }
-      }
-
-      setJaTemSeloNaSubpastaCadastro(achouSeloNoSubCadastro);
-      setJaTemProcuracaoOuCasamentoNoCadastro(achouProcOuCasamentoNoSubCadastro);
-
-      const detectados = autodetectarDadosPelosArquivos(listaFiles);
-      processarArquivosLidos(
-        listaFiles,
-        detectados.primTit,
-        detectados.primConj,
-        detectados.projDetectado || projetistaNome,
-        detectados.paDetectado
-      );
+      await escanearHandleDaPasta(handle);
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
       alert('❌ Erro ao acessar a pasta selecionada.');
@@ -1732,6 +1864,7 @@ export default function ModalOrganizadorPastasCliente({
       );
 
       const nomesSalvosNaRaiz = new Set<string>();
+      const nomesSalvosNoCadastro = new Set<string>();
 
       const gravarBufferEmPasta = async (
         pastaHandle: any,
@@ -1748,13 +1881,13 @@ export default function ModalOrganizadorPastasCliente({
         return nomeSeguro;
       };
 
-      // 1. Limpa antigos arquivos .txt vazios de lembretes na raiz
+      // 1. Limpa antigos arquivos .txt de lembretes vazios na raiz,
+      // MAS PROTEGE o "20. PARECER GERENCIAL - FALTA AJUSTAR.txt" e o "20. PARECER GERENCIAL..."!
       for await (const [entryName, entryHandle] of dirHandleRoot.entries()) {
         if (
           entryHandle.kind === 'file' &&
           entryName.toLowerCase().endsWith('.txt') &&
-          (!entryName.toUpperCase().includes('PARECER GERENCIAL') ||
-            entryName.toUpperCase().includes('FALTA'))
+          !isArquivoParecerGerencialReal(entryName)
         ) {
           try {
             await dirHandleRoot.removeEntry(entryName);
@@ -1770,7 +1903,7 @@ export default function ModalOrganizadorPastasCliente({
         // Ignora
       }
 
-      // 2. Grava todos os documentos nas respectivas pastas
+      // 2. Grava todos os documentos nas respectivas pastas (Raiz, CADASTRO e CERTIFICAÇÃO SOCIOAMBIENTAL)
       for (const item of arquivosMapeados) {
         if (item.categoria === 'IGNORAR') continue;
 
@@ -1809,11 +1942,12 @@ export default function ModalOrganizadorPastasCliente({
         }
 
         if (destinos.nomeNoCadastro) {
-          await gravarBufferEmPasta(
+          const salvoCad = await gravarBufferEmPasta(
             dirCadastro,
             destinos.nomeNoCadastro,
             buffer
           );
+          nomesSalvosNoCadastro.add(salvoCad);
         }
 
         if (destinos.nomeNaSocioambiental) {
@@ -1824,21 +1958,39 @@ export default function ModalOrganizadorPastasCliente({
           );
         }
 
-        if (!item.origemGaveta && !nomesSalvosNaRaiz.has(item.nomeOriginal)) {
-          try {
-            await dirHandleRoot.removeEntry(item.nomeOriginal);
-          } catch {
-            // Ignora
+        // Remove o arquivo original antigo caso o nome tenha mudado ou tenha sido movido da Raiz para CADASTRO
+        if (!item.origemGaveta) {
+          if (item.origemSubpastaCadastro) {
+            if (!nomesSalvosNoCadastro.has(item.nomeOriginal)) {
+              try {
+                await dirCadastro.removeEntry(item.nomeOriginal);
+              } catch {
+                // Ignora
+              }
+            }
+          } else if (!nomesSalvosNaRaiz.has(item.nomeOriginal)) {
+            try {
+              await dirHandleRoot.removeEntry(item.nomeOriginal);
+            } catch {
+              // Ignora
+            }
           }
         }
       }
 
-      // 3. Grava TODOS os .TXT vazios de pendências na pasta imediatamente (incluindo "20. FALTA PARECER GERENCIAL.txt")
-      // Se o usuário extrair o Parecer Gerencial no próximo passo, o sistema apaga o "20. FALTA PARECER GERENCIAL.txt" e grava o oficial!
+      // 3. Grava os .TXT vazios que ainda faltam (segurando o "20. FALTA PARECER GERENCIAL.txt" se for abrir o Parecer agora)
+      const jaTemParecerGerencialNaPasta =
+        arquivosMapeados.some(
+          (a) => a.categoria === 'ITEM_20_PARECER_GERENCIAL'
+        ) || parecerGerencialExtraidoNaPasta;
+
       if (gerarTxtsLembretesFaltantes) {
         for (const nomeTxtRaiz of planoArquivosTxtLembretes.txtsRaiz) {
-          if (nomeTxtRaiz === '20. FALTA PARECER GERENCIAL.txt') {
-            continue; // Só será gerado se o usuário pular/fechar a etapa do Parecer!
+          if (
+            nomeTxtRaiz === '20. FALTA PARECER GERENCIAL.txt' &&
+            !jaTemParecerGerencialNaPasta
+          ) {
+            continue;
           }
           await gravarBufferEmPasta(dirHandleRoot, nomeTxtRaiz, '');
         }
@@ -1847,7 +1999,10 @@ export default function ModalOrganizadorPastasCliente({
         }
       }
 
-      // 4. FLUXO AUTOMÁTICO (ITENS 3.1 E 3.2):
+      // 4. Re-escaneia a pasta após gravar para atualizar a tela e a Auditoria dos 12 pontos!
+      await escanearHandleDaPasta(dirHandleRoot);
+
+      // 5. FLUXO AUTOMÁTICO DO KANBAN & PARECER GERENCIAL:
       const itemConfBase: ItemConformidadePronafA =
         registroConformidadeVinculado || {
           id: `temp_${Date.now()}`,
@@ -1902,7 +2057,12 @@ export default function ModalOrganizadorPastasCliente({
             : '- SEM PENDÊNCIAS CADASTRAIS IDENTIFICADAS'
         );
         return;
-      } else if (resClassif && resClassif.jaCadastradoNoPainel) {
+      } else if (
+        resClassif &&
+        resClassif.jaCadastradoNoPainel &&
+        !jaTemParecerGerencialNaPasta
+      ) {
+        // Se já estava cadastrado no Kanban, mas ainda faltava o Parecer Gerencial na pasta, abre o Card direto no Parecer!
         const cpfLimpo = itemConfBase.cpfCliente.replace(/\D/g, '');
         const nomeUp = itemConfBase.nomeCliente.toUpperCase().trim();
         const cardVinc = listaCards.find(
@@ -1918,11 +2078,9 @@ export default function ModalOrganizadorPastasCliente({
       }
 
       alert(
-        `✅ Pasta "${nomePastaSelecionada}" organizada com sucesso!\n\n` +
-          `• ${resumoContadores.qtdRaiz} documento(s) padronizados na Raiz\n` +
-          `• ${resumoContadores.qtdCadastro} documento(s) numerados na subpasta [CADASTRO]\n` +
-          `• ${resumoContadores.qtdSocio} documento(s) numerados de 1 a 6 em [CERTIFICAÇÃO SOCIOAMBIENTAL]\n` +
-          `• ${resumoContadores.totalTxts} lembrete(s) .TXT gerados automaticamente!`
+        `✅ Pasta "${nomePastaSelecionada}" atualizada e revalidada com sucesso!\n\n` +
+          `• Novos documentos padronizados e .TXT de itens entregues removidos\n` +
+          `• Auditoria dos 12 pontos dos PDFs atualizada ao lado!`
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro desconhecido';
@@ -1932,7 +2090,6 @@ export default function ModalOrganizadorPastasCliente({
     }
   };
 
-  // CORRIGIDO: Salva na base viva, no Firebase, no callback pai e dispara o evento global bnb_v2_sync_externo!
   const confirmarCadastroPropostaEAbrirParecer = async () => {
     if (!modalIniciarPronafA) return;
     if (!cadValor.trim()) {
@@ -2228,7 +2385,7 @@ export default function ModalOrganizadorPastasCliente({
                   letterSpacing: '0.2px',
                 }}
               >
-                🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS & DOSSIÊ DO CLIENTE
+                🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS & AUDITORIA DE PDFs
               </h3>
               <span
                 style={{
@@ -2248,7 +2405,7 @@ export default function ModalOrganizadorPastasCliente({
               </span>
             </div>
             <span style={{ fontSize: '11px', color: '#64748b' }}>
-              Padroniza de 1 a 21 na Raiz, numera a subpasta <b>CADASTRO</b>, numera de 1 a 6 na <b>CERTIFICAÇÃO SOCIOAMBIENTAL</b> e integra com o <b>Parecer Gerencial</b>.
+              Organiza pastas novas ou revalida pastas já organizadas (lendo também a subpasta <b>CADASTRO</b>), atualiza os <b>.TXT</b> e audita os 12 pontos dos PDFs.
             </span>
           </div>
 
@@ -2276,7 +2433,7 @@ export default function ModalOrganizadorPastasCliente({
                 cursor: 'pointer',
               }}
             >
-              ⚡ 1. Organizar Pasta do Cliente
+              ⚡ 1. Organizar / Revalidar Pasta
             </button>
 
             <button
@@ -2537,7 +2694,7 @@ export default function ModalOrganizadorPastasCliente({
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '10px',
+                    gap: '8px',
                     flexWrap: 'wrap',
                   }}
                 >
@@ -2558,23 +2715,52 @@ export default function ModalOrganizadorPastasCliente({
                       boxShadow: '0 2px 6px rgba(139, 21, 48, 0.25)',
                     }}
                   >
-                    📂 1. Selecionar Pasta Raiz do Cliente no Windows
+                    📂 1. Selecionar Pasta do Cliente (Nova ou Já Organizada)
                   </button>
 
                   {nomePastaSelecionada && (
-                    <span
-                      style={{
-                        background: '#fdf2f4',
-                        color: '#8B1530',
-                        border: '1px solid #f5c2c7',
-                        padding: '5px 10px',
-                        borderRadius: '6px',
-                        fontSize: '11.5px',
-                        fontWeight: 800,
-                      }}
-                    >
-                      📁 {nomePastaSelecionada} ({arquivosMapeados.length} arq.)
-                    </span>
+                    <>
+                      <span
+                        style={{
+                          background: pastaJaEraOrganizada
+                            ? '#dcfce7'
+                            : '#fdf2f4',
+                          color: pastaJaEraOrganizada ? '#166534' : '#8B1530',
+                          border: `1px solid ${
+                            pastaJaEraOrganizada ? '#86efac' : '#f5c2c7'
+                          }`,
+                          padding: '5px 10px',
+                          borderRadius: '6px',
+                          fontSize: '11.5px',
+                          fontWeight: 800,
+                        }}
+                      >
+                        📁 {nomePastaSelecionada} ({arquivosMapeados.length} arq.)
+                        {pastaJaEraOrganizada ? ' • Pasta Já Estruturada' : ''}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          dirHandleRoot && escanearHandleDaPasta(dirHandleRoot)
+                        }
+                        title="Re-escanear a pasta aberta para detectar novos PDFs adicionados agora no Windows"
+                        style={{
+                          width: 'auto',
+                          height: '32px',
+                          padding: '0 10px',
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          background: '#eff6ff',
+                          color: '#1d4ed8',
+                          border: '1px solid #bfdbfe',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        🔄 Re-escanear Pasta
+                      </button>
+                    </>
                   )}
 
                   <label
@@ -2600,7 +2786,7 @@ export default function ModalOrganizadorPastasCliente({
                         accentColor: '#8B1530',
                       }}
                     />
-                    PRONAF A (Injetar SEMA e RB)
+                    PRONAF A (SEMA e RB)
                   </label>
 
                   <label
@@ -2628,7 +2814,7 @@ export default function ModalOrganizadorPastasCliente({
                         accentColor: '#b45309',
                       }}
                     />
-                    Gerar .TXT Vazios de Pendências/Lembretes
+                    Manter .TXT de Pendências
                   </label>
                 </div>
 
@@ -2679,7 +2865,9 @@ export default function ModalOrganizadorPastasCliente({
                       }}
                     >
                       {processando
-                        ? '⏳ Organizando Pasta...'
+                        ? '⏳ Processando Pasta...'
+                        : pastaJaEraOrganizada
+                        ? '⚡ 2. Atualizar Novos Arquivos & Revalidar Pasta!'
                         : '⚡ 2. Organizar Pasta & Iniciar Proposta / Parecer!'}
                     </button>
                   </div>
@@ -2770,9 +2958,9 @@ export default function ModalOrganizadorPastasCliente({
                     >
                       Clique em{' '}
                       <b style={{ color: '#8B1530' }}>
-                        &ldquo;📂 1. Selecionar Pasta Raiz do Cliente no Windows&rdquo;
+                        &ldquo;📂 1. Selecionar Pasta do Cliente (Nova ou Já Organizada)&rdquo;
                       </b>{' '}
-                      acima para carregar os arquivos enviados pelo projetista.
+                      acima para carregar e auditar os arquivos.
                     </div>
                   ) : (
                     <table
@@ -2799,7 +2987,7 @@ export default function ModalOrganizadorPastasCliente({
                               borderBottom: '1px solid #cbd5e1',
                             }}
                           >
-                            Arquivo Original na Pasta
+                            Arquivo Atual na Pasta
                           </th>
                           <th
                             style={{
@@ -2826,12 +3014,12 @@ export default function ModalOrganizadorPastasCliente({
                               borderBottom: '1px solid #cbd5e1',
                             }}
                           >
-                            Novo Nome Padronizado & Destino
+                            Nome Padronizado & Destino
                           </th>
                         </tr>
                       </thead>
                       <tbody>
-                        {arquivosMapeados.map((arq, idx) => {
+                        {arquivosMapeadosOrdenados.map((arq, idx) => {
                           const dest = calcularDestinosDoArquivo(
                             arq,
                             nomesCurtos,
@@ -2849,6 +3037,8 @@ export default function ModalOrganizadorPastasCliente({
                                 borderBottom: '1px solid #e2e8f0',
                                 background: arq.origemGaveta
                                   ? '#fffbeb'
+                                  : arq.origemSubpastaCadastro
+                                  ? '#faf5ff'
                                   : idx % 2 === 0
                                   ? '#ffffff'
                                   : '#f8fafc',
@@ -2860,12 +3050,20 @@ export default function ModalOrganizadorPastasCliente({
                                   wordBreak: 'break-all',
                                   color: arq.origemGaveta
                                     ? '#b45309'
+                                    : arq.origemSubpastaCadastro
+                                    ? '#6b21a8'
                                     : '#334155',
-                                  fontWeight: arq.origemGaveta ? 700 : 500,
+                                  fontWeight:
+                                    arq.origemGaveta ||
+                                    arq.origemSubpastaCadastro
+                                      ? 700
+                                      : 500,
                                   lineHeight: 1.35,
                                 }}
                               >
-                                {arq.nomeOriginal}
+                                {arq.origemSubpastaCadastro
+                                  ? `[Já em CADASTRO] ${arq.nomeOriginal}`
+                                  : arq.nomeOriginal}
                               </td>
 
                               <td style={{ padding: '6px 10px' }}>
@@ -2874,17 +3072,22 @@ export default function ModalOrganizadorPastasCliente({
                                   onChange={(e) => {
                                     const novaCat = e.target
                                       .value as CategoriaDocPasta;
-                                    const copia = [...arquivosMapeados];
-                                    copia[idx] = {
-                                      ...copia[idx],
-                                      categoria: novaCat,
-                                      isViti: CATEGORIAS_QUE_ACEITAM_VITI.has(
-                                        novaCat
+                                    setArquivosMapeados((prev) =>
+                                      prev.map((item) =>
+                                        item.id === arq.id
+                                          ? {
+                                              ...item,
+                                              categoria: novaCat,
+                                              isViti:
+                                                CATEGORIAS_QUE_ACEITAM_VITI.has(
+                                                  novaCat
+                                                )
+                                                  ? item.isViti
+                                                  : false,
+                                            }
+                                          : item
                                       )
-                                        ? copia[idx].isViti
-                                        : false,
-                                    };
-                                    setArquivosMapeados(copia);
+                                    );
                                   }}
                                   style={{
                                     width: '100%',
@@ -2900,6 +3103,7 @@ export default function ModalOrganizadorPastasCliente({
                                     borderRadius: '6px',
                                   }}
                                 >
+                                  {/* ...mantenha todos os <optgroup> e <option> exatamente iguais... */}
                                   <optgroup label="📂 Pasta Raiz (Itens 1 a 21)">
                                     <option value="ITEM_1_PROJETO_ARQ">
                                       1. PROJETO (.PRONAF_A2)
@@ -3026,12 +3230,14 @@ export default function ModalOrganizadorPastasCliente({
                                     type="checkbox"
                                     checked={arq.isViti}
                                     onChange={(e) => {
-                                      const copia = [...arquivosMapeados];
-                                      copia[idx] = {
-                                        ...copia[idx],
-                                        isViti: e.target.checked,
-                                      };
-                                      setArquivosMapeados(copia);
+                                      const marcado = e.target.checked;
+                                      setArquivosMapeados((prev) =>
+                                        prev.map((item) =>
+                                          item.id === arq.id
+                                            ? { ...item, isViti: marcado }
+                                            : item
+                                        )
+                                      );
                                     }}
                                     style={{
                                       width: '15px',
@@ -3108,7 +3314,7 @@ export default function ModalOrganizadorPastasCliente({
                 </div>
               </div>
 
-                  {/* COLUNA DIREITA: LEMBRETES .TXT GERADOS + CONFERÊNCIA DE ASSINATURA */}
+              {/* COLUNA DIREITA: AUDITORIA DOS 12 PONTOS + LEMBRETES .TXT + ASSINATURAS */}
               <div
                 style={{
                   display: 'flex',
@@ -3117,8 +3323,7 @@ export default function ModalOrganizadorPastasCliente({
                   overflowY: 'auto',
                 }}
               >
-              
-              {/* NOVO BLOCO: AUDITORIA INTELIGENTE DOS 12 PONTOS LIDOS NOS PDFs DA PASTA */}
+                {/* BLOCO 1: AUDITORIA INTELIGENTE DOS 12 PONTOS LIDOS NOS PDFs DA PASTA */}
                 <div
                   style={{
                     background: '#ffffff',
@@ -3141,7 +3346,13 @@ export default function ModalOrganizadorPastasCliente({
                       🧠 AUDITORIA AUTOMÁTICA DOS PDFs DA PASTA (12 VERIFICAÇÕES)
                     </strong>
                     {auditandoPdfs && (
-                      <span style={{ fontSize: '10.5px', color: '#b45309', fontWeight: 800 }}>
+                      <span
+                        style={{
+                          fontSize: '10.5px',
+                          color: '#b45309',
+                          fontWeight: 800,
+                        }}
+                      >
                         ⏳ Lendo PDFs...
                       </span>
                     )}
@@ -3164,12 +3375,32 @@ export default function ModalOrganizadorPastasCliente({
                       {auditoriaPdf.itensDiagnostico.map((diag) => {
                         const paleta =
                           diag.status === 'OK'
-                            ? { bg: '#f0fdf4', borda: '#86efac', cor: '#166534', icone: '✅' }
+                            ? {
+                                bg: '#f0fdf4',
+                                borda: '#86efac',
+                                cor: '#166534',
+                                icone: '✅',
+                              }
                             : diag.status === 'ERRO'
-                            ? { bg: '#fef2f2', borda: '#fca5a5', cor: '#991b1b', icone: '🚨' }
+                            ? {
+                                bg: '#fef2f2',
+                                borda: '#fca5a5',
+                                cor: '#991b1b',
+                                icone: '🚨',
+                              }
                             : diag.status === 'ALERTA'
-                            ? { bg: '#fffbeb', borda: '#fde68a', cor: '#92400e', icone: '⚠️' }
-                            : { bg: '#f8fafc', borda: '#e2e8f0', cor: '#334155', icone: 'ℹ️' };
+                            ? {
+                                bg: '#fffbeb',
+                                borda: '#fde68a',
+                                cor: '#92400e',
+                                icone: '⚠️',
+                              }
+                            : {
+                                bg: '#f8fafc',
+                                borda: '#e2e8f0',
+                                cor: '#334155',
+                                icone: 'ℹ️',
+                              };
 
                         return (
                           <div
@@ -3185,7 +3416,13 @@ export default function ModalOrganizadorPastasCliente({
                             <div style={{ fontWeight: 800, color: paleta.cor }}>
                               {paleta.icone} {diag.titulo}
                             </div>
-                            <div style={{ color: '#1e293b', marginTop: '2px', fontWeight: 600 }}>
+                            <div
+                              style={{
+                                color: '#1e293b',
+                                marginTop: '2px',
+                                fontWeight: 600,
+                              }}
+                            >
                               {diag.resumo}
                             </div>
                             {diag.detalhes && diag.detalhes.length > 0 && (
@@ -3212,9 +3449,8 @@ export default function ModalOrganizadorPastasCliente({
                     </div>
                   )}
                 </div>
-              
-              
-              
+
+                {/* BLOCO 2: LEMBRETES .TXT PENDENTES NA PASTA */}
                 <div
                   style={{
                     background: '#ffffff',
@@ -3259,7 +3495,7 @@ export default function ModalOrganizadorPastasCliente({
                       marginBottom: '8px',
                     }}
                   >
-                    Arquivos <b>.txt</b> vazios criados na pasta para destacar o que falta (incluindo <b>20. FALTA PARECER GERENCIAL.txt</b> até que o parecer oficial seja salvo):
+                    Quando você adiciona um documento que faltava e clica no botão verde, o respectivo <b>.txt</b> some automaticamente da pasta!
                   </span>
 
                   <div
@@ -3267,7 +3503,7 @@ export default function ModalOrganizadorPastasCliente({
                       display: 'flex',
                       flexDirection: 'column',
                       gap: '4px',
-                      maxHeight: '280px',
+                      maxHeight: '240px',
                       overflowY: 'auto',
                     }}
                   >
@@ -3334,6 +3570,7 @@ export default function ModalOrganizadorPastasCliente({
                   </div>
                 </div>
 
+                {/* BLOCO 3: CONFERÊNCIA VISUAL DE ASSINATURAS */}
                 <div
                   style={{
                     background: '#ffffff',
@@ -3704,15 +3941,15 @@ export default function ModalOrganizadorPastasCliente({
                     fontWeight: 700,
                   }}
                 >
-                  ✅ Pasta organizada (com 20. FALTA PARECER GERENCIAL.txt)! Cadastre a operação abaixo para abrir o Parecer Gerencial e substituir pelo parecer oficial.
+                  ✅ Pasta organizada! Cadastre a operação abaixo para já abrir o Parecer Gerencial no Card do Kanban.
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => {
-  setModalIniciarPronafA(null);
-  handleFecharOverlayParecer();
-}}
+                  setModalIniciarPronafA(null);
+                  handleFecharOverlayParecer();
+                }}
                 style={{
                   width: 'auto',
                   background: 'none',
@@ -3948,9 +4185,9 @@ export default function ModalOrganizadorPastasCliente({
               <button
                 type="button"
                 onClick={() => {
-  setModalIniciarPronafA(null);
-  handleFecharOverlayParecer();
-}}
+                  setModalIniciarPronafA(null);
+                  handleFecharOverlayParecer();
+                }}
                 style={{
                   width: 'auto',
                   padding: '8px 16px',
@@ -3959,7 +4196,7 @@ export default function ModalOrganizadorPastasCliente({
                   fontSize: '12px',
                 }}
               >
-                Pular Cadastro (Manter 20. FALTA PARECER GERENCIAL.txt)
+                Pular Cadastro (Gerar 20. FALTA PARECER GERENCIAL.txt)
               </button>
               <button
                 type="button"
@@ -4035,7 +4272,6 @@ export default function ModalOrganizadorPastasCliente({
             modoOverlayCardUnicoId={cardOverlayParecerId}
             abaInicialOverlay="parecer"
             onFecharOverlayCardUnico={handleFecharOverlayParecer}
-            /* ...mantenha os callbacks iguais... */
             onAtualizarCards={(novosCards) => {
               setListaCards(novosCards);
               salvarKanbanSync(novosCards).catch(() => {});

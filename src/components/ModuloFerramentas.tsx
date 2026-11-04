@@ -608,7 +608,7 @@ export default function ModuloFerramentas({
               🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS DE CLIENTES & GAVETA DE CORINGAS
             </strong>
             <span style={{ fontSize: '12px', color: '#475569' }}>
-              Renomeia e numera de 1 a 21 na Raiz (com VITI), move e numera documentos pessoais na subpasta <b>CADASTRO</b>, copia os itens ambientais para <b>CERTIFICAÇÃO SOCIOAMBIENTAL</b> e injeta automaticamente <b>Parecer da SEMA</b>, <b>CREA</b> e <b>RB do P.A.</b>
+              Organize automaticamente as pastas de clientes, com base em 6 critérios de ordenação, e armazene documentos coringa para uso rápido em qualquer proposta.
             </span>
           </div>
 
