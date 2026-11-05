@@ -302,6 +302,18 @@ const OPCOES_SELECT_CATEGORIA: Array<{
         valor: 'ITEM_PLANO_ATIVIDADE_RURAL',
         label: 'PLANO DE ATIVIDADE RURAL (PDF)',
       },
+      {
+        valor: 'ITEM_DEC_NAO_TRABALHO_INFANTIL',
+        label: 'DEC. DE NÃO TRABALHO INFANTIL',
+      },
+      {
+        valor: 'ITEM_DOC_IMOVEL_GENERICO',
+        label: 'DOC. DO IMÓVEL - XXXXX (NUMERAÇÃO INTEIRO TEOR)',
+      },
+      {
+        valor: 'OUTROS_NAO_IDENTIFICADO',
+        label: '📦 MOVER PARA SUBPASTA [OUTROS]',
+      },
       { valor: 'ITEM_ESPELHO_UND', label: 'ESPELHO - RELATÓRIO DA UND' },
       { valor: 'ITEM_PARECER_TECNICO', label: 'PARECER TÉCNICO' },
       { valor: 'ITEM_RB_PA', label: 'RELAÇÃO DE BENEFICIÁRIOS (RB DO P.A.)' },
@@ -512,6 +524,8 @@ export default function ModalOrganizadorPastasCliente({
       avalistaNome,
       projetistaNome,
       paOuImovelNome: paNome,
+      imoveisExtraidosPdf:
+        auditoriaPdf?.dadosProjetoParaParecer?.imoveisVinculados,
     }),
     [
       portePerfil,
@@ -526,6 +540,7 @@ export default function ModalOrganizadorPastasCliente({
       avalistaNome,
       projetistaNome,
       paNome,
+      auditoriaPdf,
     ]
   );
 
@@ -814,7 +829,9 @@ export default function ModalOrganizadorPastasCliente({
     let achouDocDerivada = false;
 
     files.forEach((f) => {
+      if (!f || !f.name) return;
       const up = f.name.toUpperCase();
+
       if (up.includes('.PRONAF_A')) {
         porteSugerido = 'PRONAF_A';
         achouDocDerivada = true;
@@ -904,6 +921,7 @@ export default function ModalOrganizadorPastasCliente({
 
     const primTit = extrairPrimeiroNome(titDetectado || titularNome);
     files.forEach((f) => {
+      if (!f || !f.name) return;
       const up = removerAcentos(f.name)
         .toUpperCase()
         .replace(/_/g, ' ')
@@ -961,16 +979,39 @@ export default function ModalOrganizadorPastasCliente({
     };
   };
 
+  // Blindado: aceita tanto Array<{ file: File; origemSubpasta?: string }> quanto File[]
   const processarArquivosLidos = (
-    entradas: Array<{ file: File; origemSubpasta?: string }>,
+    entradasBrutas: Array<{ file: File; origemSubpasta?: string } | File>,
     primTit: string,
     primConj: string,
     projAtual: string,
     paAtual: string,
-    escopoAtivo: EscopoOperacaoPasta,
-    porteAtivo: PorteOrganizador
+    escopoAtivo: EscopoOperacaoPasta = escopoPasta,
+    porteAtivo: PorteOrganizador = portePerfil
   ) => {
-    const entradasFiltradas = entradas.filter(({ file }) => {
+    const entradasNormalizadas: Array<{
+      file: File;
+      origemSubpasta?: string;
+    }> = [];
+
+    for (const item of entradasBrutas || []) {
+      if (item instanceof File && item.name) {
+        entradasNormalizadas.push({ file: item });
+      } else if (
+        item &&
+        typeof item === 'object' &&
+        'file' in item &&
+        item.file &&
+        item.file.name
+      ) {
+        entradasNormalizadas.push({
+          file: item.file,
+          origemSubpasta: item.origemSubpasta,
+        });
+      }
+    }
+
+    const entradasFiltradas = entradasNormalizadas.filter(({ file }) => {
       const nomeUp = file.name.toUpperCase().trim();
       if (nomeUp.startsWith('- CERT') || nomeUp.startsWith('-CERT')) {
         return false;
@@ -988,7 +1029,8 @@ export default function ModalOrganizadorPastasCliente({
           file.name,
           primTit,
           primConj,
-          escopoAtivo
+          escopoAtivo,
+          auditoriaPdf?.dadosProjetoParaParecer?.imoveisVinculados
         );
         return {
           id: `arq_${idx}_${Date.now()}`,
@@ -1003,14 +1045,24 @@ export default function ModalOrganizadorPastasCliente({
       }
     );
 
-    // Desduplica cópias idênticas que vieram de subpastas diferentes (ex: CAR que estava em LCGH e em INVESTIMENTO)
     const vistosPorChave = new Set<string>();
     const mapeados: ArquivoMapeadoItem[] = [];
     mapeadosBrutos.forEach((m) => {
-      const chaveUnica =
-        m.categoria === 'CAD_9_OUTROS_CADASTRO'
-          ? `${m.categoria}_${m.nomeOriginal}`
-          : `${m.categoria}_${m.isViti ? 'VITI' : 'DOC'}`;
+      const permiteMultiplosArquivos =
+        m.categoria === 'OUTROS_NAO_IDENTIFICADO' ||
+        m.categoria === 'CAD_9_OUTROS_CADASTRO' ||
+        m.categoria === 'ITEM_DOC_IMOVEL_GENERICO' ||
+        m.categoria === 'ITEM_INTEIRO_TEOR' ||
+        m.categoria === 'ITEM_TITULO_DOMINIO' ||
+        m.categoria === 'ITEM_CAR' ||
+        m.categoria === 'ITEM_CONSULTA_CAR' ||
+        m.categoria === 'ITEM_CCIR' ||
+        m.categoria === 'ITEM_CND_ITR_IMOVEL';
+
+      const chaveUnica = permiteMultiplosArquivos
+        ? `${m.categoria}_${m.nomeOriginal}`
+        : `${m.categoria}_${m.isViti ? 'VITI' : 'DOC'}`;
+
       if (!vistosPorChave.has(chaveUnica)) {
         vistosPorChave.add(chaveUnica);
         mapeados.push(m);
@@ -1022,7 +1074,6 @@ export default function ModalOrganizadorPastasCliente({
     const jaTemSema = mapeados.some((m) => m.categoria === 'ITEM_PARECER_SEMA');
     const jaTemCar = mapeados.some((m) => m.categoria === 'ITEM_CAR');
 
-    // Injeta Coringas da Gaveta da Nuvem
     if (!jaTemCrea && projAtual && escopoAtivo !== 'LIMITE_PURO') {
       const coringaCrea = coringasSalvos.find(
         (c) =>
@@ -1111,22 +1162,39 @@ export default function ModalOrganizadorPastasCliente({
     }
 
     setArquivosMapeados(mapeados);
+  };
 
+  useEffect(() => {
+    if (arquivosMapeados.length === 0) {
+      setAuditoriaPdf(null);
+      return;
+    }
+
+    let cancelado = false;
     setAuditandoPdfs(true);
+
     executarAuditoriaCompletaDosPdfsDaPasta({
-      arquivos: mapeados.map((m) => ({
+      arquivos: arquivosMapeados.map((m) => ({
         fileObj: m.fileObj,
         categoria: converterCategoriaParaAuditorPdf(m.categoria),
         isViti: m.isViti,
         nomeOriginal: m.nomeOriginal,
       })),
-      titularNome: primTit,
-      conjugeNome: primConj,
-      paEsperado: paAtual,
-      contaConformidade: registroConformidadeVinculado?.contaCorrente,
+      titularNome: nomesCurtos.titular,
+      conjugeNome: nomesCurtos.conjuge,
+      paEsperado: paNome,
+      contaConformidade:
+        portePerfil === 'PRONAF_A'
+          ? registroConformidadeVinculado?.contaCorrente
+          : undefined,
+      porteSelecionado: portePerfil,
+      escopoSelecionado: cfgPerfil.escopo,
+      modalidadeDerivada,
     })
       .then((resAuditoria) => {
+        if (cancelado) return;
         setAuditoriaPdf(resAuditoria);
+
         if (resAuditoria.valorPropostaDetectado) {
           setCadValor(resAuditoria.valorPropostaDetectado);
         }
@@ -1137,12 +1205,35 @@ export default function ModalOrganizadorPastasCliente({
         if (resAuditoria.conjugeDetectadoNosPdfs && !conjugeNome) {
           setConjugeNome(resAuditoria.conjugeDetectadoNosPdfs);
         }
+
+        const dPdf = resAuditoria.dadosProjetoParaParecer;
+        if (dPdf.imovelAvaliadoAcima600kDetectado) {
+          setImovelAvaliadoAcima600k(true);
+        }
+        if (
+          dPdf.imoveisVinculados.some((im) => im.compoeGarantia) &&
+          portePerfil !== 'PRONAF_A'
+        ) {
+          setGarantiaDerivada('LCGH_LCGA');
+        }
       })
       .catch(() => {})
-      .finally(() => setAuditandoPdfs(false));
-  };
+      .finally(() => {
+        if (!cancelado) setAuditandoPdfs(false);
+      });
 
-  // Escaneia a pasta raiz e também subpastas já estruturadas (CADASTRO, LCGH, LCGA, INVESTIMENTO, CUSTEIO)
+    return () => {
+      cancelado = true;
+    };
+  }, [
+    arquivosMapeados,
+    portePerfil,
+    cfgPerfil.escopo,
+    modalidadeDerivada,
+    paNome,
+  ]);
+
+  // Varredura recursiva tolerante a falhas de arquivos temporários do Windows/OneDrive
   const escanearHandleDaPasta = async (handle: any) => {
     setDirHandleRoot(handle);
     setNomePastaSelecionada(handle.name);
@@ -1153,43 +1244,45 @@ export default function ModalOrganizadorPastasCliente({
     let achouProcOuCasamentoNoSubCadastro = false;
     let tinhaSubpastaOrganizada = false;
 
-    const SUBPASTAS_CONHECIDAS = new Set([
+    const PASTAS_PADRAO_SISTEMA = new Set([
       'CADASTRO',
       'LCGH',
       'LCGA',
       'INVESTIMENTO',
       'CUSTEIO',
+      'CERTIFICAÇÃO SOCIOAMBIENTAL',
+      'DOCUMENTAÇÃO DO(S) IMÓVEL(IS)',
+      'OUTROS',
     ]);
 
-    for await (const [entryName, entryHandle] of handle.entries()) {
-      if (entryHandle.kind === 'file') {
-        if (
-          entryName.startsWith('.') ||
-          entryName.toLowerCase() === 'thumbs.db'
-        )
-          continue;
-        const file: File = await entryHandle.getFile();
-        entradasLidas.push({ file });
-      } else if (entryHandle.kind === 'directory') {
-        const upDir = entryName.toUpperCase();
-        if (
-          SUBPASTAS_CONHECIDAS.has(upDir) ||
-          upDir.includes('SOCIOAMBIENTAL')
-        ) {
-          tinhaSubpastaOrganizada = true;
-        }
-        if (SUBPASTAS_CONHECIDAS.has(upDir)) {
-          for await (const [subName, subHandle] of entryHandle.entries()) {
-            if (
-              subHandle.kind === 'file' &&
-              !subName.toLowerCase().endsWith('.txt') &&
-              !subName.startsWith('.') &&
-              subName.toLowerCase() !== 'thumbs.db'
-            ) {
-              const subFile: File = await subHandle.getFile();
-              entradasLidas.push({ file: subFile, origemSubpasta: upDir });
-              if (upDir === 'CADASTRO') {
-                const upSub = removerAcentos(subName).toUpperCase();
+    const varrerDiretorioRecursivo = async (
+      dirAtual: any,
+      caminhoRelativo: string,
+      profundidade = 0
+    ) => {
+      if (profundidade > 4) return;
+      try {
+        for await (const [entryName, entryHandle] of dirAtual.entries()) {
+          if (
+            !entryName ||
+            entryName.startsWith('.') ||
+            entryName.startsWith('~$') ||
+            entryName.toLowerCase() === 'thumbs.db' ||
+            entryName.toLowerCase() === 'desktop.ini'
+          ) {
+            continue;
+          }
+
+          if (entryHandle.kind === 'file') {
+            try {
+              const file: File = await entryHandle.getFile();
+              entradasLidas.push({
+                file,
+                origemSubpasta: caminhoRelativo || undefined,
+              });
+
+              if (caminhoRelativo.toUpperCase().includes('CADASTRO')) {
+                const upSub = removerAcentos(entryName).toUpperCase();
                 if (/\bSELOS?\b/.test(upSub)) achouSeloNoSubCadastro = true;
                 if (
                   upSub.includes('PROCURACAO') ||
@@ -1198,11 +1291,36 @@ export default function ModalOrganizadorPastasCliente({
                   achouProcOuCasamentoNoSubCadastro = true;
                 }
               }
+            } catch (errFile) {
+              console.warn(
+                `Arquivo ignorado durante leitura (${entryName}):`,
+                errFile
+              );
             }
+          } else if (entryHandle.kind === 'directory') {
+            const upDir = entryName.toUpperCase().trim();
+            if (PASTAS_PADRAO_SISTEMA.has(upDir)) {
+              tinhaSubpastaOrganizada = true;
+            }
+            const novoCaminho = caminhoRelativo
+              ? `${caminhoRelativo}/${entryName}`
+              : entryName;
+            await varrerDiretorioRecursivo(
+              entryHandle,
+              novoCaminho,
+              profundidade + 1
+            );
           }
         }
+      } catch (errDir) {
+        console.warn(
+          `Subpasta ignorada durante leitura (${caminhoRelativo}):`,
+          errDir
+        );
       }
-    }
+    };
+
+    await varrerDiretorioRecursivo(handle, '', 0);
 
     setPastaJaEraOrganizada(tinhaSubpastaOrganizada);
     setJaTemSeloNaSubpastaCadastro(achouSeloNoSubCadastro);
@@ -1223,7 +1341,7 @@ export default function ModalOrganizadorPastasCliente({
 
   const selecionarPastaNoComputador = async () => {
     const win = window as unknown as {
-      showDirectoryPicker?: (opts: { mode: string }) => Promise<any>;
+      showDirectoryPicker?: (opts?: { mode?: string }) => Promise<any>;
     };
     if (!win.showDirectoryPicker) {
       alert(
@@ -1231,12 +1349,33 @@ export default function ModalOrganizadorPastasCliente({
       );
       return;
     }
+
+    let handle: any = null;
     try {
-      const handle = await win.showDirectoryPicker({ mode: 'readwrite' });
+      handle = await win.showDirectoryPicker({ mode: 'readwrite' });
+    } catch (errPick: unknown) {
+      if (errPick instanceof Error && errPick.name === 'AbortError') return;
+      try {
+        handle = await win.showDirectoryPicker();
+      } catch (errFallback: unknown) {
+        if (errFallback instanceof Error && errFallback.name === 'AbortError')
+          return;
+        const detalhe =
+          errFallback instanceof Error ? errFallback.message : String(errFallback);
+        alert(`❌ O navegador bloqueou o acesso à pasta: ${detalhe}`);
+        return;
+      }
+    }
+
+    if (!handle) return;
+
+    try {
       await escanearHandleDaPasta(handle);
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') return;
-      alert('❌ Erro ao acessar a pasta selecionada.');
+    } catch (errScan: unknown) {
+      console.error('Erro detalhado ao escanear pasta:', errScan);
+      const detalhe =
+        errScan instanceof Error ? errScan.message : String(errScan);
+      alert(`❌ Erro ao processar os arquivos da pasta: ${detalhe}`);
     }
   };
 

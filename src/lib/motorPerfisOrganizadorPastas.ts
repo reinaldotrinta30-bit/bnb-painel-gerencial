@@ -1,5 +1,6 @@
 // src/lib/motorPerfisOrganizadorPastas.ts
 import { ItemConformidadePronafA } from '@/components/ferramentas/ModalConformidadePronafA';
+import { ImovelExtraidoProjetoPdf } from '@/lib/auditorInteligentePdfPasta';
 
 export type PorteOrganizador = 'PRONAF_A' | 'PRONAF_V' | 'MINI_PEQUENO';
 
@@ -26,6 +27,7 @@ export interface ConfiguracaoPerfilPasta {
   avalistaNome: string;
   projetistaNome: string;
   paOuImovelNome: string;
+  imoveisExtraidosPdf?: ImovelExtraidoProjetoPdf[];
 }
 
 export type CategoriaDocPasta =
@@ -64,9 +66,11 @@ export type CategoriaDocPasta =
   | 'ITEM_DEC_NAO_DESMATAMENTO'
   | 'ITEM_DEC_RECOMPOSICAO'
   | 'ITEM_DEC_REG_AMB_GARANTIDOR'
+  | 'ITEM_DEC_NAO_TRABALHO_INFANTIL'
   | 'ITEM_DEC_OUTRA_AMBIENTAL'
   | 'ITEM_TITULO_DOMINIO'
   | 'ITEM_INTEIRO_TEOR'
+  | 'ITEM_DOC_IMOVEL_GENERICO'
   | 'ITEM_PLANO_ATIVIDADE_RURAL'
   | 'ITEM_PARECER_TECNICO'
   | 'ITEM_PARECER_GERENCIAL'
@@ -84,7 +88,9 @@ export type CategoriaDocPasta =
   | 'CAD_5_PROPOSTA_CADASTRO'
   | 'CAD_6_PROCURACAO'
   | 'CAD_8_SELO_CARTORIO'
-  | 'CAD_9_OUTROS_CADASTRO';
+  | 'CAD_9_OUTROS_CADASTRO'
+  // Subpasta OUTROS (Item 2)
+  | 'OUTROS_NAO_IDENTIFICADO';
 
 export const CATEGORIAS_QUE_ACEITAM_VITI = new Set<CategoriaDocPasta>([
   'ITEM_PROJETO_PDF',
@@ -97,6 +103,7 @@ export const CATEGORIAS_QUE_ACEITAM_VITI = new Set<CategoriaDocPasta>([
   'ITEM_DEC_NAO_DESMATAMENTO',
   'ITEM_DEC_RECOMPOSICAO',
   'ITEM_DEC_REG_AMB_GARANTIDOR',
+  'ITEM_DEC_NAO_TRABALHO_INFANTIL',
   'ITEM_DEC_OUTRA_AMBIENTAL',
   'ITEM_PARECER_TECNICO',
   'ITEM_SOLICITACAO_LIMITE',
@@ -105,8 +112,19 @@ export const CATEGORIAS_QUE_ACEITAM_VITI = new Set<CategoriaDocPasta>([
   'CAD_5_PROPOSTA_CADASTRO',
 ]);
 
+// Categorias que também alimentam a subpasta "DOCUMENTAÇÃO DO(S) IMÓVEL(IS)" quando não é PRONAF A
+const CATEGORIAS_DOCUMENTACAO_IMOVEL = new Set<CategoriaDocPasta>([
+  'ITEM_DOC_IMOVEL_GENERICO',
+  'ITEM_INTEIRO_TEOR',
+  'ITEM_TITULO_DOMINIO',
+  'ITEM_CCIR',
+  'ITEM_CND_ITR_IMOVEL',
+  'ITEM_LAUDO_EXTERNO',
+  'ITEM_LAUDO_INTERNO',
+]);
+
 export interface DestinoArquivoCalculado {
-  pastaRelativa: string; // '' = Raiz, 'CADASTRO', 'CERTIFICAÇÃO SOCIOAMBIENTAL', 'LCGH', 'LCGH/CERTIFICAÇÃO SOCIOAMBIENTAL', 'INVESTIMENTO', etc.
+  pastaRelativa: string;
   nomeArquivoFinal: string;
   ordemExibicao: number;
 }
@@ -131,6 +149,46 @@ export function isArquivoParecerGerencialReal(nomeArquivo: string): boolean {
   if (!norm.includes('PARECER GERENCIAL')) return false;
   if (norm.includes('FALTA PARECER GERENCIAL')) return false;
   return true;
+}
+
+// Extrai o nome do imóvel (ex: FAZENDA SÃO JOSÉ, SÍTIO BOA VISTA, LOTE 12, GLEBA B) de dentro do nome do arquivo
+export function extrairNomeImovelDoNomeArquivo(
+  nomeArquivo: string,
+  imoveisConhecidos?: ImovelExtraidoProjetoPdf[]
+): string {
+  const semExt = nomeArquivo.replace(/\.[^/.]+$/, '');
+  const norm = removerAcentos(semExt)
+    .toUpperCase()
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // 1. Verifica se cita algum dos imóveis lidos do PDF do Projeto
+  if (imoveisConhecidos && imoveisConhecidos.length > 0) {
+    for (const im of imoveisConhecidos) {
+      const nIm = removerAcentos(im.nome).toUpperCase().trim();
+      if (nIm.length >= 4 && norm.includes(nIm)) {
+        return im.nome.toUpperCase().trim();
+      }
+    }
+  }
+
+  // 2. Procura padrões clássicos de nome de imóvel rural no arquivo
+  const matchImovel = norm.match(
+    /\b((?:FAZENDA|FAZ\.?|SITIO|CHACARA|LOTEAMENTO|LOTE|GLEBA|P\.?\s*A\.?|ASSENTAMENTO)\s+[A-Z0-9\s]{2,35}?)(?:\s+ASSINADO|\s+COMPRESSED|\s+MATRICULA|\s+CPF|\s*-|$)/i
+  );
+  if (matchImovel && matchImovel[1]) {
+    return matchImovel[1].trim();
+  }
+
+  const matchDocImovel = norm.match(
+    /(?:DOC(?:UMENTACAO|\.)?\s+(?:DO\s+)?IMOVEL)\s*[-–:]?\s*([A-Z0-9\s]{3,35})/i
+  );
+  if (matchDocImovel && matchDocImovel[1]) {
+    return matchDocImovel[1].replace(/\bASSINADO\b/g, '').trim();
+  }
+
+  return '';
 }
 
 export function obterNomesCurtosDesambiguados(params: {
@@ -163,17 +221,19 @@ export function obterNomesCurtosDesambiguados(params: {
 }
 
 // ============================================================================
-// RECONHECIMENTO AUTOMÁTICO UNIVERSAL DE ARQUIVOS (TODOS OS PORTES E TIPOS)
+// RECONHECIMENTO AUTOMÁTICO UNIVERSAL DE ARQUIVOS (COM ITENS 2, 2.1, 2.2 E 2.3)
 // ============================================================================
 export function classificarArquivoUniversal(
   nomeArquivo: string,
   primeiroNomeTitular: string,
   primeiroNomeConjuge: string,
-  escopoAtual: EscopoOperacaoPasta
+  escopoAtual: EscopoOperacaoPasta,
+  imoveisConhecidos?: ImovelExtraidoProjetoPdf[]
 ): {
   categoria: CategoriaDocPasta;
   isViti: boolean;
   subtipoAmbientalExtra?: string;
+  nomeImovelEspecifico?: string;
 } {
   const semExt = nomeArquivo.replace(/\.[^/.]+$/, '');
   const ext = (nomeArquivo.split('.').pop() || '').toUpperCase();
@@ -190,12 +250,10 @@ export function classificarArquivoUniversal(
     return { categoria: 'IGNORAR', isViti: false };
   }
 
-  // 1. Arquivo KML Geodésico
   if (ext === 'KML' || ext === 'KMZ') {
     return { categoria: 'ITEM_KML', isViti: false };
   }
 
-  // 2. Planilha de Coordenadas Geodésicas (Custeio)
   if (
     norm.includes('COORDENADAS') ||
     norm.includes('GEODESICA') ||
@@ -206,7 +264,6 @@ export function classificarArquivoUniversal(
     return { categoria: 'ITEM_PLANILHA_GEODESICA', isViti: false };
   }
 
-  // 3. Arquivo Eletrônico do Projeto (.PRONAF, .INVUR, .CUSTEIOPECUARIO, .INV, .CUST)
   if (
     ext.includes('PRONAF') ||
     ext.includes('INVUR') ||
@@ -240,6 +297,11 @@ export function classificarArquivoUniversal(
       ).test(miolo)
   );
 
+  const nomeImovelEsp = extrairNomeImovelDoNomeArquivo(
+    nomeArquivo,
+    imoveisConhecidos
+  );
+
   const finalizar = (
     categoria: CategoriaDocPasta,
     subtipoAmbientalExtra?: string
@@ -247,9 +309,9 @@ export function classificarArquivoUniversal(
     categoria,
     isViti: pareceVitiPeloNome && CATEGORIAS_QUE_ACEITAM_VITI.has(categoria),
     subtipoAmbientalExtra,
+    nomeImovelEspecifico: nomeImovelEsp || undefined,
   });
 
-  // 4. Itens Específicos de Cadastro
   if (
     miolo.includes('PROPOSTA DE CADASTRO') ||
     miolo.includes('FICHA CADASTRAL')
@@ -267,7 +329,6 @@ export function classificarArquivoUniversal(
     return finalizar('CAD_8_SELO_CARTORIO');
   }
 
-  // 5. Solicitação de Abertura de Limite (LCGH / LCGA)
   if (
     miolo.includes('SOLICITACAO DE ABERTURA') ||
     miolo.includes('SOLICITACAO DE LIMITE') ||
@@ -277,7 +338,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_SOLICITACAO_LIMITE');
   }
 
-  // 6. Contrato de Assessoria
   if (
     miolo.includes('CONTRATO PARTICULAR') ||
     miolo.includes('CONTRATO DE ASSESSORIA') ||
@@ -286,7 +346,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_CONTRATO_ASSESSORIA');
   }
 
-  // 7. Autorização de Alteração / Modificação do Projeto
   if (
     (miolo.includes('AUTORIZACAO') || miolo.includes('AUT ')) &&
     (miolo.includes('ALTERACAO') || miolo.includes('MODIFICACAO'))
@@ -294,7 +353,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_AUT_ALTERACAO');
   }
 
-  // 8. Embargos e Improbidade
   if (miolo.includes('EMBARGO') || miolo.includes('IBAMA')) {
     return finalizar(
       mencionaConjuge ? 'ITEM_EMBARGOS_CONJUGE' : 'ITEM_EMBARGOS_TITULAR'
@@ -306,9 +364,12 @@ export function classificarArquivoUniversal(
     );
   }
 
-  // 9. Certificação Socioambiental (Com KML vs Sem KML)
   if (miolo.includes('SOCIOAMBIENTAL') || miolo.includes('SOCIO AMBIENTAL')) {
-    if (miolo.includes('SEM KML') || miolo.includes('S KML') || miolo.includes('GARANTIA')) {
+    if (
+      miolo.includes('SEM KML') ||
+      miolo.includes('S KML') ||
+      miolo.includes('GARANTIA')
+    ) {
       return finalizar('ITEM_CERT_SOCIO_SEM_KML');
     }
     if (miolo.includes('COM KML') || miolo.includes('C KML')) {
@@ -321,7 +382,6 @@ export function classificarArquivoUniversal(
     );
   }
 
-  // 10. Regularidade do Projetista (CREA / CFTA)
   if (
     /\b(CREA|CFTA)\b/.test(miolo) ||
     miolo.includes('REGULARIDADE DO PROJETISTA')
@@ -329,12 +389,10 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_CREA');
   }
 
-  // 11. Extrato SICOR
   if (/\bSICOR\b/.test(miolo)) {
     return finalizar('ITEM_EXTRATO_SICOR');
   }
 
-  // 12. Declarações Consolidadas / Unificadas
   if (
     miolo.includes('CONSOLIDADA') ||
     miolo.includes('DECLARACOES UNIFICADAS') ||
@@ -345,7 +403,17 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_CONSOLIDADAS');
   }
 
-  // 13. Declarações Ambientais (Garantidor, Regularidade, Não Desmatamento, Recomposição, etc.)
+  // ITEM 2.1: Declarações de Não Trabalho Infantil e Não Desmatamento Irregular como Declarações Ambientais
+  if (
+    miolo.includes('TRABALHO INFANTIL') ||
+    miolo.includes('EXPLORACAO DE TRABALHO') ||
+    miolo.includes('TRABALHO ESCRAVO')
+  ) {
+    return finalizar(
+      'ITEM_DEC_NAO_TRABALHO_INFANTIL',
+      'DEC. DE NÃO TRABALHO INFANTIL'
+    );
+  }
   if (
     miolo.includes('IMOVEL GARANTIDOR') ||
     miolo.includes('GARANTIDOR') ||
@@ -356,7 +424,11 @@ export function classificarArquivoUniversal(
   if (miolo.includes('REGULARIDADE AMBIENTAL')) {
     return finalizar('ITEM_DEC_REG_AMBIENTAL');
   }
-  if (miolo.includes('NAO DESMATAMENTO') || miolo.includes('DESMATAMENTO')) {
+  if (
+    miolo.includes('NAO DESMATAMENTO') ||
+    miolo.includes('DESMATAMENTO IRREGULAR') ||
+    miolo.includes('DESMATAMENTO')
+  ) {
     return finalizar('ITEM_DEC_NAO_DESMATAMENTO');
   }
   if (miolo.includes('RECOMPOSICAO') || miolo.includes('RESERVA LEGAL')) {
@@ -371,11 +443,12 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_DEC_AMBIENTAIS');
   }
   if (
-    miolo.includes('BIOMA AMAZONIA') ||
+    miolo.includes('BIOMA') ||
     miolo.includes('SOBREPOSICAO') ||
     miolo.includes('RETIFICACAO DO CAR') ||
     miolo.includes('NAO EXPLORACAO') ||
-    miolo.includes('ACIMA DE 4 MODULOS')
+    miolo.includes('ACIMA DE 4 MODULOS') ||
+    miolo.includes('RESERVA AMBIENTAL')
   ) {
     let sub = 'DEC. AMBIENTAL COMPLEMENTAR';
     if (miolo.includes('BIOMA')) sub = 'DEC. DE BIOMA AMAZÔNIA';
@@ -383,12 +456,11 @@ export function classificarArquivoUniversal(
       sub = 'DEC. DE SOBREPOSIÇÃO DO CAR';
     else if (miolo.includes('RETIFICACAO')) sub = 'DEC. DE RETIFICAÇÃO DO CAR';
     else if (miolo.includes('NAO EXPLORACAO')) sub = 'DEC. DE NÃO EXPLORAÇÃO';
-    else if (miolo.includes('4 MODULOS'))
+    else if (miolo.includes('4 MODULOS') || miolo.includes('RESERVA AMBIENTAL'))
       sub = 'DEC. DE RESERVA AMBIENTAL (ACIMA DE 4 MÓDULOS)';
     return finalizar('ITEM_DEC_OUTRA_AMBIENTAL', sub);
   }
 
-  // 14. CCIR, ITR/CND Imóvel, CND PF e CNDT
   if (/\bCCIR\b/.test(miolo)) {
     return finalizar('ITEM_CCIR');
   }
@@ -408,7 +480,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_CND_PF');
   }
 
-  // 15. Laudos de Avaliação (Interno vs Externo / Convalidação)
   if (
     miolo.includes('LAUDO INTERNO') ||
     miolo.includes('AVALIACAO INTERNA') ||
@@ -425,7 +496,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_LAUDO_EXTERNO');
   }
 
-  // 16. Inteiro Teor e Título de Domínio / Escritura
   if (
     miolo.includes('INTEIRO TEOR') ||
     miolo.includes('CERTIDAO DE MATRICULA') ||
@@ -443,7 +513,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_TITULO_DOMINIO');
   }
 
-  // 17. Ficha Sanitária e Plano de Atividade Rural
   if (miolo.includes('FICHA SANITARIA') || miolo.includes('AGED')) {
     return finalizar('ITEM_FICHA_SANITARIA');
   }
@@ -454,7 +523,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_PLANO_ATIVIDADE_RURAL');
   }
 
-  // 18. Espelho UND, Parecer Técnico, Orçamento, Projeto PDF
   if (miolo.includes('ESPELHO') || miolo.includes('RELATORIO DA UND')) {
     return finalizar('ITEM_ESPELHO_UND');
   }
@@ -472,7 +540,6 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_PROJETO_PDF');
   }
 
-  // 19. CAR, Consulta ao CAR, CAF e Extrato da CAF
   if (
     miolo.includes('CONSULTA DO CAR') ||
     miolo.includes('CONSULTA AO CAR') ||
@@ -484,14 +551,17 @@ export function classificarArquivoUniversal(
   if (/\bCAR\b/.test(miolo)) {
     return finalizar('ITEM_CAR');
   }
-  if (miolo.includes('EXTRATO DA CAF') || miolo.includes('EXTRATO CAF') || miolo.includes('CONSULTA CAF')) {
+  if (
+    miolo.includes('EXTRATO DA CAF') ||
+    miolo.includes('EXTRATO CAF') ||
+    miolo.includes('CONSULTA CAF')
+  ) {
     return finalizar('ITEM_EXTRATO_CAF');
   }
   if (/\b(CAF|DAP)\b/.test(miolo)) {
     return finalizar('ITEM_CAF');
   }
 
-  // 20. DCAA, RB, Capa do Analisador, Parecer Gerencial, SEMA
   if (/\bDCAA\b/.test(miolo)) {
     return finalizar('ITEM_DCAA');
   }
@@ -508,7 +578,7 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_PARECER_SEMA');
   }
 
-  // 21. Documentos Cadastrais
+  // Documentos de Identificação Pessoal -> Subpasta CADASTRO
   if (
     miolo.includes('IDENTIDADE') ||
     miolo.includes('CNH') ||
@@ -549,21 +619,30 @@ export function classificarArquivoUniversal(
     return finalizar('CAD_6_PROCURACAO');
   }
 
-  return finalizar('CAD_9_OUTROS_CADASTRO');
+  // ITEM 2.2: Se não caiu nos itens acima, mas tem nome de Imóvel (Fazenda, Sítio, Lote, Gleba, Doc do Imóvel)
+  if (
+    nomeImovelEsp ||
+    /\b(IMOVEL|FAZENDA|SITIO|CHACARA|GLEBA|LOTE|INCRA|CARTORIO|REGISTRO)\b/.test(
+      miolo
+    )
+  ) {
+    return finalizar('ITEM_DOC_IMOVEL_GENERICO');
+  }
+
+  // ITEM 2: Qualquer outro documento não identificado vai para a subpasta "OUTROS" na raiz!
+  return finalizar('OUTROS_NAO_IDENTIFICADO');
 }
 
-// ============================================================================
-// TABELAS DE NUMERAÇÃO E DESTINOS POR PERFIL DE OPERAÇÃO
-// ============================================================================
 interface RegraItemPerfil {
-  numeroPrefixo: string; // Ex: "1.", "10.1.", "17 -"
+  numeroPrefixo: string;
   rotuloBase: string;
   usaNomeProj?: boolean;
   usaNomePa?: boolean;
   usaNomeConjuge?: boolean;
+  usaNomeImovelQuandoDisponivel?: boolean;
   semSufixoNome?: boolean;
-  copiarParaSocioambientalComPrefixo?: string; // Ex: "1.", "6.1."
-  copiarParaCadastroComPrefixo?: string; // Ex: "5." (para a CAF)
+  copiarParaSocioambientalComPrefixo?: string;
+  copiarParaCadastroComPrefixo?: string;
 }
 
 function obterMapaRegrasDerivadaPronafA(): Partial<
@@ -632,10 +711,15 @@ function obterMapaRegrasDerivadaPronafA(): Partial<
       rotuloBase: 'DEC. DE RECOMPOSIÇÃO',
       copiarParaSocioambientalComPrefixo: '6.3.',
     },
-    ITEM_DEC_OUTRA_AMBIENTAL: {
+    ITEM_DEC_NAO_TRABALHO_INFANTIL: {
       numeroPrefixo: '10.4.',
-      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      rotuloBase: 'DEC. DE NÃO TRABALHO INFANTIL',
       copiarParaSocioambientalComPrefixo: '6.4.',
+    },
+    ITEM_DEC_OUTRA_AMBIENTAL: {
+      numeroPrefixo: '10.5.',
+      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      copiarParaSocioambientalComPrefixo: '6.5.',
     },
     ITEM_ESPELHO_UND: {
       numeroPrefixo: '11.',
@@ -688,10 +772,14 @@ function obterMapaRegrasDerivadaPronafA(): Partial<
       semSufixoNome: true,
       copiarParaSocioambientalComPrefixo: '5.',
     },
+    ITEM_DOC_IMOVEL_GENERICO: {
+      numeroPrefixo: '13.1.',
+      rotuloBase: 'DOC. DO IMÓVEL',
+      usaNomeImovelQuandoDisponivel: true,
+    },
   };
 }
 
-// EXIGÊNCIAS 1: PRONAF V (COMUM) — OPERAÇÕES DERIVADAS (INVESTIMENTO / CUSTEIO)
 function obterMapaRegrasDerivadaPronafV(): Partial<
   Record<CategoriaDocPasta, RegraItemPerfil>
 > {
@@ -705,6 +793,7 @@ function obterMapaRegrasDerivadaPronafV(): Partial<
     ITEM_KML: {
       numeroPrefixo: '4.',
       rotuloBase: 'KML',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '3.',
     },
     ITEM_PLANILHA_GEODESICA: {
@@ -723,11 +812,13 @@ function obterMapaRegrasDerivadaPronafV(): Partial<
     ITEM_CAR: {
       numeroPrefixo: '7.',
       rotuloBase: 'CAR',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '1.',
     },
     ITEM_CONSULTA_CAR: {
       numeroPrefixo: '8.',
       rotuloBase: 'CONSULTA AO CAR',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '2.',
     },
     ITEM_AUT_ALTERACAO: {
@@ -759,6 +850,7 @@ function obterMapaRegrasDerivadaPronafV(): Partial<
     ITEM_CERT_SOCIO_COM_KML: {
       numeroPrefixo: '14.',
       rotuloBase: 'CERT. SOCIOAMBIENTAL COM KML',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '4.',
     },
     ITEM_CREA: { numeroPrefixo: '15.', rotuloBase: 'CREA', usaNomeProj: true },
@@ -766,15 +858,25 @@ function obterMapaRegrasDerivadaPronafV(): Partial<
       numeroPrefixo: '16.',
       rotuloBase: 'CONTRATO DE ASSESSORIA',
     },
-    ITEM_CCIR: { numeroPrefixo: '17.', rotuloBase: 'CCIR' },
+    ITEM_CCIR: {
+      numeroPrefixo: '17.',
+      rotuloBase: 'CCIR',
+      usaNomeImovelQuandoDisponivel: true,
+    },
     ITEM_LAUDO_EXTERNO: {
       numeroPrefixo: '18.',
       rotuloBase: 'LAUDO DE AVALIAÇÃO EXTERNO',
+      usaNomeImovelQuandoDisponivel: true,
     },
-    ITEM_CND_ITR_IMOVEL: { numeroPrefixo: '19.', rotuloBase: 'CND ITR' },
+    ITEM_CND_ITR_IMOVEL: {
+      numeroPrefixo: '19.',
+      rotuloBase: 'CND ITR',
+      usaNomeImovelQuandoDisponivel: true,
+    },
     ITEM_LAUDO_INTERNO: {
       numeroPrefixo: '20.',
       rotuloBase: 'LAUDO DE AVALIAÇÃO INTERNO',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_DCAA: {
       numeroPrefixo: '21.',
@@ -815,18 +917,31 @@ function obterMapaRegrasDerivadaPronafV(): Partial<
       rotuloBase: 'DEC. REG. AMB. IMÓVEL GARANTIDOR',
       copiarParaSocioambientalComPrefixo: '7.4.',
     },
-    ITEM_DEC_OUTRA_AMBIENTAL: {
+    ITEM_DEC_NAO_TRABALHO_INFANTIL: {
       numeroPrefixo: '25.5.',
-      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      rotuloBase: 'DEC. DE NÃO TRABALHO INFANTIL',
       copiarParaSocioambientalComPrefixo: '7.5.',
+    },
+    ITEM_DEC_OUTRA_AMBIENTAL: {
+      numeroPrefixo: '25.6.',
+      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      copiarParaSocioambientalComPrefixo: '7.6.',
     },
     ITEM_TITULO_DOMINIO: {
       numeroPrefixo: '26.',
       rotuloBase: 'TÍTULO DE DOMÍNIO',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_INTEIRO_TEOR: {
       numeroPrefixo: '27.',
       rotuloBase: 'INTEIRO TEOR DO IMÓVEL',
+      usaNomeImovelQuandoDisponivel: true,
+    },
+    // ITEM 2.2: Mesma numeração da Inteiro Teor (27.) com nome "DOC. DO IMÓVEL - XXXXX"
+    ITEM_DOC_IMOVEL_GENERICO: {
+      numeroPrefixo: '27.',
+      rotuloBase: 'DOC. DO IMÓVEL',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_PARECER_GERENCIAL: {
       numeroPrefixo: '28.',
@@ -835,7 +950,6 @@ function obterMapaRegrasDerivadaPronafV(): Partial<
   };
 }
 
-// EXIGÊNCIAS 2: MINI OU PEQUENO — OPERAÇÕES DERIVADAS (INVESTIMENTO / CUSTEIO)
 function obterMapaRegrasDerivadaMiniPequeno(): Partial<
   Record<CategoriaDocPasta, RegraItemPerfil>
 > {
@@ -849,6 +963,7 @@ function obterMapaRegrasDerivadaMiniPequeno(): Partial<
     ITEM_KML: {
       numeroPrefixo: '4.',
       rotuloBase: 'KML',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '3.',
     },
     ITEM_PLANILHA_GEODESICA: {
@@ -858,11 +973,13 @@ function obterMapaRegrasDerivadaMiniPequeno(): Partial<
     ITEM_CAR: {
       numeroPrefixo: '5.',
       rotuloBase: 'CAR',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '1.',
     },
     ITEM_CONSULTA_CAR: {
       numeroPrefixo: '6.',
       rotuloBase: 'CONSULTA AO CAR',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '2.',
     },
     ITEM_AUT_ALTERACAO: {
@@ -895,6 +1012,7 @@ function obterMapaRegrasDerivadaMiniPequeno(): Partial<
     ITEM_CERT_SOCIO_COM_KML: {
       numeroPrefixo: '13.',
       rotuloBase: 'CERT. SOCIOAMBIENTAL COM KML',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '4.',
     },
     ITEM_CREA: { numeroPrefixo: '14.', rotuloBase: 'CREA', usaNomeProj: true },
@@ -902,15 +1020,25 @@ function obterMapaRegrasDerivadaMiniPequeno(): Partial<
       numeroPrefixo: '15.',
       rotuloBase: 'CONTRATO DE ASSESSORIA',
     },
-    ITEM_CCIR: { numeroPrefixo: '16.', rotuloBase: 'CCIR' },
-    ITEM_CND_ITR_IMOVEL: { numeroPrefixo: '17.', rotuloBase: 'CND ITR' },
+    ITEM_CCIR: {
+      numeroPrefixo: '16.',
+      rotuloBase: 'CCIR',
+      usaNomeImovelQuandoDisponivel: true,
+    },
+    ITEM_CND_ITR_IMOVEL: {
+      numeroPrefixo: '17.',
+      rotuloBase: 'CND ITR',
+      usaNomeImovelQuandoDisponivel: true,
+    },
     ITEM_LAUDO_EXTERNO: {
       numeroPrefixo: '18.',
       rotuloBase: 'LAUDO DE AVALIAÇÃO EXTERNO',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_LAUDO_INTERNO: {
       numeroPrefixo: '19.',
       rotuloBase: 'LAUDO DE AVALIAÇÃO INTERNO',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_DCAA: {
       numeroPrefixo: '20.',
@@ -951,18 +1079,31 @@ function obterMapaRegrasDerivadaMiniPequeno(): Partial<
       rotuloBase: 'DEC. REG. AMB. IMÓVEL GARANTIDOR',
       copiarParaSocioambientalComPrefixo: '7.4.',
     },
-    ITEM_DEC_OUTRA_AMBIENTAL: {
+    ITEM_DEC_NAO_TRABALHO_INFANTIL: {
       numeroPrefixo: '24.5.',
-      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      rotuloBase: 'DEC. DE NÃO TRABALHO INFANTIL',
       copiarParaSocioambientalComPrefixo: '7.5.',
+    },
+    ITEM_DEC_OUTRA_AMBIENTAL: {
+      numeroPrefixo: '24.6.',
+      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      copiarParaSocioambientalComPrefixo: '7.6.',
     },
     ITEM_TITULO_DOMINIO: {
       numeroPrefixo: '25.',
       rotuloBase: 'TÍTULO DE DOMÍNIO',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_INTEIRO_TEOR: {
       numeroPrefixo: '26.',
       rotuloBase: 'INTEIRO TEOR DO IMÓVEL',
+      usaNomeImovelQuandoDisponivel: true,
+    },
+    // ITEM 2.2: Mesma numeração da Inteiro Teor (26.) com nome "DOC. DO IMÓVEL - XXXXX"
+    ITEM_DOC_IMOVEL_GENERICO: {
+      numeroPrefixo: '26.',
+      rotuloBase: 'DOC. DO IMÓVEL',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_PLANO_ATIVIDADE_RURAL: {
       numeroPrefixo: '27.',
@@ -979,7 +1120,6 @@ function obterMapaRegrasDerivadaMiniPequeno(): Partial<
   };
 }
 
-// EXIGÊNCIAS 3: GARANTIA POR LCGH / LCGA (QUALQUER PORTE — ITENS 1 A 19)
 function obterMapaRegrasLimiteLcg(): Partial<
   Record<CategoriaDocPasta, RegraItemPerfil>
 > {
@@ -991,35 +1131,56 @@ function obterMapaRegrasLimiteLcg(): Partial<
     ITEM_CAR: {
       numeroPrefixo: '2.',
       rotuloBase: 'CAR',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '1.',
     },
     ITEM_CONSULTA_CAR: {
       numeroPrefixo: '3.',
       rotuloBase: 'CONSULTA AO CAR',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '2.',
     },
     ITEM_CERT_SOCIO_SEM_KML: {
       numeroPrefixo: '4.',
       rotuloBase: 'CERT. SOCIOAMBIENTAL',
+      usaNomeImovelQuandoDisponivel: true,
       copiarParaSocioambientalComPrefixo: '3.',
     },
-    ITEM_CCIR: { numeroPrefixo: '5.', rotuloBase: 'CCIR' },
-    ITEM_CND_ITR_IMOVEL: { numeroPrefixo: '6.', rotuloBase: 'CND ITR' },
+    ITEM_CCIR: {
+      numeroPrefixo: '5.',
+      rotuloBase: 'CCIR',
+      usaNomeImovelQuandoDisponivel: true,
+    },
+    ITEM_CND_ITR_IMOVEL: {
+      numeroPrefixo: '6.',
+      rotuloBase: 'CND ITR',
+      usaNomeImovelQuandoDisponivel: true,
+    },
     ITEM_LAUDO_INTERNO: {
       numeroPrefixo: '7.',
       rotuloBase: 'LAUDO INTERNO DO BANCO',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_LAUDO_EXTERNO: {
       numeroPrefixo: '8.',
       rotuloBase: 'LAUDO EXTERNO DO BANCO',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_INTEIRO_TEOR: {
       numeroPrefixo: '9.',
       rotuloBase: 'INTEIRO TEOR 15 ANOS',
+      usaNomeImovelQuandoDisponivel: true,
+    },
+    // ITEM 2.2: Mesma numeração da Inteiro Teor (9.) no Limite LCGH/LCGA
+    ITEM_DOC_IMOVEL_GENERICO: {
+      numeroPrefixo: '9.',
+      rotuloBase: 'DOC. DO IMÓVEL',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_TITULO_DOMINIO: {
       numeroPrefixo: '10.',
       rotuloBase: 'TÍTULO DE DOMÍNIO OU ESCRITURA',
+      usaNomeImovelQuandoDisponivel: true,
     },
     ITEM_CND_PF: { numeroPrefixo: '11.', rotuloBase: 'CND PF' },
     ITEM_CNDT_PF: { numeroPrefixo: '12.', rotuloBase: 'CNDT PF' },
@@ -1074,10 +1235,15 @@ function obterMapaRegrasLimiteLcg(): Partial<
       rotuloBase: 'DEC. REG. AMB. IMÓVEL GARANTIDOR',
       copiarParaSocioambientalComPrefixo: '6.4.',
     },
-    ITEM_DEC_OUTRA_AMBIENTAL: {
+    ITEM_DEC_NAO_TRABALHO_INFANTIL: {
       numeroPrefixo: '17.5.',
-      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      rotuloBase: 'DEC. DE NÃO TRABALHO INFANTIL',
       copiarParaSocioambientalComPrefixo: '6.5.',
+    },
+    ITEM_DEC_OUTRA_AMBIENTAL: {
+      numeroPrefixo: '17.6.',
+      rotuloBase: 'DEC. AMBIENTAL COMPLEMENTAR',
+      copiarParaSocioambientalComPrefixo: '6.6.',
     },
     ITEM_CONSOLIDADAS: {
       numeroPrefixo: '18.',
@@ -1098,6 +1264,7 @@ function formatarNomePadronizado(
     categoria: CategoriaDocPasta;
     isViti: boolean;
     subtipoAmbientalExtra?: string;
+    nomeImovelEspecifico?: string;
   },
   nomes: {
     titular: string;
@@ -1116,7 +1283,9 @@ function formatarNomePadronizado(
     const mExt = item.nomeOriginal.match(
       /(\.(?:PRONAF|INVUR|CUSTEIO)[A-Za-z0-9_]*|\.[A-Za-z0-9_]+)$/i
     );
-    const sufixoArq = mExt ? mExt[1].toUpperCase() : `.${item.extensao || 'PRONAF'}`;
+    const sufixoArq = mExt
+      ? mExt[1].toUpperCase()
+      : `.${item.extensao || 'PRONAF'}`;
     return `${prefNum} PROJETO - ${nomes.titular}${sufixoArq}`;
   }
 
@@ -1141,6 +1310,22 @@ function formatarNomePadronizado(
     const proj = (cfg.projetistaNome || 'PROJETISTA').toUpperCase().trim();
     return `${prefNum} ${prefViti}${rotulo} - ${proj}${ext}`;
   }
+
+  // Se for um documento vinculado a Imóvel (ou DOC. DO IMÓVEL - XXXXX), usa o nome do imóvel identificado!
+  const nomeImovelArq =
+    item.nomeImovelEspecifico ||
+    extrairNomeImovelDoNomeArquivo(item.nomeOriginal, cfg.imoveisExtraidosPdf);
+
+  if (
+    item.categoria === 'ITEM_DOC_IMOVEL_GENERICO' ||
+    (regra.usaNomeImovelQuandoDisponivel && nomeImovelArq)
+  ) {
+    const sufixoImovel =
+      nomeImovelArq ||
+      (cfg.paOuImovelNome || nomes.titular).toUpperCase().trim();
+    return `${prefNum} ${prefViti}${rotulo} - ${sufixoImovel}${ext}`;
+  }
+
   if (regra.usaNomePa) {
     const pa = (cfg.paOuImovelNome || nomes.titular).toUpperCase().trim();
     const sep = prefNum.endsWith('-') ? ' ' : ' - ';
@@ -1154,9 +1339,6 @@ function formatarNomePadronizado(
   return `${prefNum} ${prefViti}${rotulo} - ${nomes.titular}${ext}`;
 }
 
-// ============================================================================
-// CÁLCULO MULTI-PASTA DOS DESTINOS DE CADA ARQUIVO
-// ============================================================================
 export function calcularTodosDestinosDoArquivo(
   item: {
     nomeOriginal: string;
@@ -1164,6 +1346,7 @@ export function calcularTodosDestinosDoArquivo(
     categoria: CategoriaDocPasta;
     isViti: boolean;
     subtipoAmbientalExtra?: string;
+    nomeImovelEspecifico?: string;
   },
   cfg: ConfiguracaoPerfilPasta
 ): DestinoArquivoCalculado[] {
@@ -1182,7 +1365,18 @@ export function calcularTodosDestinosDoArquivo(
   const tit = nomes.titular || 'CLIENTE';
   const conj = nomes.conjuge || 'CÔNJUGE';
 
-  // 1. Verifica se é um documento exclusivo da Subpasta CADASTRO
+  // ITEM 2: Documentos não identificados vão para a pasta "OUTROS" na raiz da pasta do cliente
+  if (item.categoria === 'OUTROS_NAO_IDENTIFICADO') {
+    return [
+      {
+        pastaRelativa: 'OUTROS',
+        nomeArquivoFinal: item.nomeOriginal,
+        ordemExibicao: 850,
+      },
+    ];
+  }
+
+  // Subpasta CADASTRO
   if (item.categoria.startsWith('CAD_')) {
     let nomeCad = '';
     let ordem = 300;
@@ -1243,11 +1437,10 @@ export function calcularTodosDestinosDoArquivo(
 
   const aplicarMapaEmPasta = (
     mapa: Partial<Record<CategoriaDocPasta, RegraItemPerfil>>,
-    pastaBase: string, // '' para Raiz ou 'LCGH', 'INVESTIMENTO', etc.
+    pastaBase: string,
     offsetOrdem = 0
   ) => {
     let catAlvo = item.categoria;
-    // Se na pasta Limite veio apenas uma Cert. Socioambiental classificada como COM_KML (ou vice-versa na Derivada), aproveita!
     if (!mapa[catAlvo]) {
       if (
         catAlvo === 'ITEM_CERT_SOCIO_COM_KML' &&
@@ -1277,7 +1470,6 @@ export function calcularTodosDestinosDoArquivo(
       ordemExibicao: ordemCalculada,
     });
 
-    // Copia para a subpasta CADASTRO se exigido (ex: CAF)
     if (
       regra.copiarParaCadastroComPrefixo &&
       !destinos.some((d) => d.pastaRelativa === 'CADASTRO')
@@ -1289,7 +1481,6 @@ export function calcularTodosDestinosDoArquivo(
       });
     }
 
-    // Copia para a respectiva subpasta CERTIFICAÇÃO SOCIOAMBIENTAL com a numeração própria dela!
     if (regra.copiarParaSocioambientalComPrefixo) {
       const pastaSocio = pastaBase
         ? `${pastaBase}/CERTIFICAÇÃO SOCIOAMBIENTAL`
@@ -1307,6 +1498,23 @@ export function calcularTodosDestinosDoArquivo(
         ordemExibicao: ordemCalculada + 0.1,
       });
     }
+
+    // ITEM 2.2: Se for "DOC. DO IMÓVEL - XXXXX" (ou documentação de imóvel em portes fora do PRONAF A),
+    // copia também para a subpasta "DOCUMENTAÇÃO DO(S) IMÓVEL(IS)" na raiz!
+    if (
+      (item.categoria === 'ITEM_DOC_IMOVEL_GENERICO' ||
+        (cfg.porte !== 'PRONAF_A' &&
+          CATEGORIAS_DOCUMENTACAO_IMOVEL.has(item.categoria))) &&
+      !destinos.some(
+        (d) => d.pastaRelativa === 'DOCUMENTAÇÃO DO(S) IMÓVEL(IS)'
+      )
+    ) {
+      destinos.push({
+        pastaRelativa: 'DOCUMENTAÇÃO DO(S) IMÓVEL(IS)',
+        nomeArquivoFinal: nomePrincipal,
+        ordemExibicao: ordemCalculada + 0.2,
+      });
+    }
   };
 
   if (cfg.escopo === 'PRONAF_A_PADRAO' || cfg.porte === 'PRONAF_A') {
@@ -1320,9 +1528,8 @@ export function calcularTodosDestinosDoArquivo(
         : obterMapaRegrasDerivadaMiniPequeno();
     aplicarMapaEmPasta(mapaDeriv, '');
   } else if (cfg.escopo === 'COMBO_DERIVADA_E_LIMITE') {
-    // MODO COMBO: Cria e abastece simultaneamente a subpasta LCGH/LCGA e a subpasta INVESTIMENTO/CUSTEIO!
-    const nomePastaLim = cfg.modalidadeLimite; // 'LCGH' ou 'LCGA'
-    const nomePastaDeriv = cfg.modalidadeDerivada; // 'INVESTIMENTO' ou 'CUSTEIO'
+    const nomePastaLim = cfg.modalidadeLimite;
+    const nomePastaDeriv = cfg.modalidadeDerivada;
     const mapaDeriv =
       cfg.porte === 'PRONAF_V'
         ? obterMapaRegrasDerivadaPronafV()
@@ -1335,9 +1542,6 @@ export function calcularTodosDestinosDoArquivo(
   return destinos;
 }
 
-// ============================================================================
-// GERADOR INTELIGENTE DE LEMBRETES .TXT PARA TODOS OS PERFIS E SUBPASTAS
-// ============================================================================
 export function gerarLembretesTxtPorPerfil(params: {
   categoriasPresentes: Set<CategoriaDocPasta>;
   cfg: ConfiguracaoPerfilPasta;
@@ -1368,7 +1572,11 @@ export function gerarLembretesTxtPorPerfil(params: {
   const proj = (cfg.projetistaNome || 'PROJETISTA').toUpperCase().trim();
   const pa = (cfg.paOuImovelNome || 'IMÓVEL').toUpperCase().trim();
 
-  // 1. Regra de Selos na Subpasta CADASTRO
+  // Imóveis extraídos do Projeto PDF (Item 2.3 e 2.3.1)
+  const imoveisLidos = cfg.imoveisExtraidosPdf || [];
+  const imoveisGarantia = imoveisLidos.filter((i) => i.compoeGarantia);
+  const imoveisInversao = imoveisLidos.filter((i) => i.realizaInversao);
+
   const temProcOuCasamento =
     categoriasPresentes.has('CAD_6_PROCURACAO') ||
     categoriasPresentes.has('CAD_2_CERTIDAO_CASAMENTO') ||
@@ -1387,8 +1595,8 @@ export function gerarLembretesTxtPorPerfil(params: {
     });
   }
 
-  // 2. Alertas "0." da Conformidade PRONAF A (se aplicável)
-  if (registroConformidadePronafA) {
+  // Alertas "0." da Conformidade PRONAF A (exclusivo quando o porte selecionado é PRONAF A!)
+  if (cfg.porte === 'PRONAF_A' && registroConformidadePronafA) {
     const temConjConf = Boolean(
       registroConformidadePronafA.conjugeNome.trim() ||
         registroConformidadePronafA.conjugeCpf.trim()
@@ -1470,30 +1678,33 @@ export function gerarLembretesTxtPorPerfil(params: {
     }
   }
 
-  // Função interna para gerar os .TXT de uma pasta Derivada (PRONAF V ou MINI/PEQUENO)
   const gerarTxtsPastaDerivada = (pastaAlvo: string) => {
     const isPronafV = cfg.porte === 'PRONAF_V';
     const isCusteio = cfg.modalidadeDerivada === 'CUSTEIO';
     const temGarantiaImovel =
       cfg.garantiaDerivada === 'LCGH_LCGA' ||
-      cfg.escopo === 'COMBO_DERIVADA_E_LIMITE';
+      cfg.escopo === 'COMBO_DERIVADA_E_LIMITE' ||
+      imoveisGarantia.length > 0;
+
+    // ITEM 2.3.1: Na pasta da Derivada, entram todos os imóveis de Inversão (Benfeitoria) + todos os imóveis de Garantia!
+    const todosImoveisDerivada =
+      imoveisLidos.length > 0 ? imoveisLidos.map((i) => i.nome) : [pa];
 
     const add = (nomeTxt: string) =>
       lembretes.push({ pastaRelativa: pastaAlvo, nomeArquivoTxt: nomeTxt });
 
     if (!categoriasPresentes.has('ITEM_ARQ_ELETRONICO_PROJETO')) {
-      add(`1. PROJETO (${isCusteio ? 'ARQ. CUSTEIO' : isPronafV ? '.PRONAF' : '.INVUR'}) - ${tit}.txt`);
+      add(
+        `1. PROJETO (${
+          isCusteio ? 'ARQ. CUSTEIO' : isPronafV ? '.PRONAF' : '.INVUR'
+        }) - ${tit}.txt`
+      );
     }
-    if (!categoriasPresentes.has('ITEM_PROJETO_PDF')) {
+    if (!categoriasPresentes.has('ITEM_PROJETO_PDF'))
       add(`2. PROJETO - ${tit}.txt`);
-    }
-    if (!categoriasPresentes.has('ITEM_CAPA_ANALISADOR')) {
+    if (!categoriasPresentes.has('ITEM_CAPA_ANALISADOR'))
       add(`3. CAPA DO ANALISADOR - ${tit}.txt`);
-    }
-    if (!categoriasPresentes.has('ITEM_KML')) {
-      add(`4. KML - ${tit}.txt`);
-    }
-    // Peculiaridade Custeio: Exige Planilha de Coordenadas Geodésicas além do KML!
+    if (!categoriasPresentes.has('ITEM_KML')) add(`4. KML - ${tit}.txt`);
     if (isCusteio && !categoriasPresentes.has('ITEM_PLANILHA_GEODESICA')) {
       add(`4.1. PLANILHA DE COORDENADAS GEODÉSICAS - ${tit}.txt`);
     }
@@ -1503,9 +1714,14 @@ export function gerarLembretesTxtPorPerfil(params: {
       if (!categoriasPresentes.has('ITEM_EXTRATO_CAF')) {
         add(`6. CONSULTAR EXTRATO DA CAF NO DIA - ${tit}.txt`);
       }
-      if (!categoriasPresentes.has('ITEM_CAR')) add(`7. CAR - ${tit}.txt`);
-      if (!categoriasPresentes.has('ITEM_CONSULTA_CAR'))
-        add(`8. CONSULTA AO CAR - ${tit}.txt`);
+      if (!categoriasPresentes.has('ITEM_CAR')) {
+        todosImoveisDerivada.forEach((nIm) => add(`7. CAR - ${nIm}.txt`));
+      }
+      if (!categoriasPresentes.has('ITEM_CONSULTA_CAR')) {
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`8. CONSULTA AO CAR - ${nIm}.txt`)
+        );
+      }
       if (!categoriasPresentes.has('ITEM_AUT_ALTERACAO'))
         add(`9. AUTORIZAÇÃO DE MODIFICAÇÃO DO PROJETO - ${tit}.txt`);
       if (!categoriasPresentes.has('ITEM_EMBARGOS_TITULAR'))
@@ -1525,40 +1741,49 @@ export function gerarLembretesTxtPorPerfil(params: {
       if (!categoriasPresentes.has('ITEM_CREA')) add(`15. CREA - ${proj}.txt`);
       if (!categoriasPresentes.has('ITEM_CONTRATO_ASSESSORIA'))
         add(`16. CONTRATO DE ASSESSORIA - ${tit}.txt`);
-      if (!categoriasPresentes.has('ITEM_CCIR'))
-        add(`17. CCIR (ANO VIGENTE) - ${tit}.txt`);
+      if (!categoriasPresentes.has('ITEM_CCIR')) {
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`17. CCIR (ANO VIGENTE) - ${nIm}.txt`)
+        );
+      }
 
-      // Laudo Externo (18) e Interno (20): Somente quando houver imóvel dado em garantia!
-      // O Laudo Interno substitui o Externo quando este estiver ausente.
       if (temGarantiaImovel) {
+        const alvosGar =
+          imoveisGarantia.length > 0
+            ? imoveisGarantia.map((g) => g.nome)
+            : [pa];
         if (
           !categoriasPresentes.has('ITEM_LAUDO_EXTERNO') &&
           !categoriasPresentes.has('ITEM_LAUDO_INTERNO')
         ) {
-          add(`18. LAUDO DE AVALIAÇÃO EXTERNO DO IMÓVEL - ${tit}.txt`);
+          alvosGar.forEach((nIm) =>
+            add(`18. LAUDO DE AVALIAÇÃO EXTERNO - ${nIm}.txt`)
+          );
         }
         if (
           cfg.imovelAvaliadoAcima600k &&
           !categoriasPresentes.has('ITEM_LAUDO_INTERNO')
         ) {
-          add(`20. LAUDO DE AVALIAÇÃO INTERNO (ACIMA DE 600 MIL) - ${tit}.txt`);
+          alvosGar.forEach((nIm) =>
+            add(`20. LAUDO DE AVALIAÇÃO INTERNO (ACIMA DE 600 MIL) - ${nIm}.txt`)
+          );
         }
       }
 
-      if (!categoriasPresentes.has('ITEM_CND_ITR_IMOVEL'))
-        add(`19. CND OU ITR DO IMÓVEL - ${tit}.txt`);
+      if (!categoriasPresentes.has('ITEM_CND_ITR_IMOVEL')) {
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`19. CND OU ITR DO IMÓVEL - ${nIm}.txt`)
+        );
+      }
       if (!categoriasPresentes.has('ITEM_DCAA')) add(`21. DCAA - ${tit}.txt`);
       if (!categoriasPresentes.has('ITEM_FICHA_SANITARIA'))
         add(`22. FICHA SANITÁRIA - ${tit}.txt`);
-
-      // Peculiaridade Custeio: Orçamento pode ser substituído pelo próprio Projeto em PDF!
       if (
         !categoriasPresentes.has('ITEM_ORCAMENTO') &&
         !(isCusteio && categoriasPresentes.has('ITEM_PROJETO_PDF'))
       ) {
         add(`23. CARTA-PROPOSTA - ORÇAMENTO - ${tit}.txt`);
       }
-
       if (!categoriasPresentes.has('ITEM_CONSOLIDADAS'))
         add(`24. DECLARAÇÃO CONSOLIDADA PRONAF - ${tit}.txt`);
       add('24. VERIFICAR C-C NA CONSOLIDADA.txt');
@@ -1572,19 +1797,20 @@ export function gerarLembretesTxtPorPerfil(params: {
         add(`25.4. DEC. REG. AMB. IMÓVEL GARANTIDOR - ${tit}.txt`);
       }
 
-      // Regra de Título de Domínio (26) vs Inteiro Teor (27):
-      // Quando há imóvel em garantia: Inteiro Teor (15 anos) é sempre exigido.
-      // Quando não há imóvel em garantia: Título de Domínio pode substituir Inteiro Teor (e vice-versa).
       if (temGarantiaImovel) {
         if (!categoriasPresentes.has('ITEM_INTEIRO_TEOR')) {
-          add(`27. INTEIRO TEOR DO IMÓVEL (HISTÓRICO 15 ANOS) - ${tit}.txt`);
+          todosImoveisDerivada.forEach((nIm) =>
+            add(`27. INTEIRO TEOR DO IMÓVEL (15 ANOS) - ${nIm}.txt`)
+          );
         }
       } else {
         if (
           !categoriasPresentes.has('ITEM_TITULO_DOMINIO') &&
           !categoriasPresentes.has('ITEM_INTEIRO_TEOR')
         ) {
-          add(`26. TÍTULO DE DOMÍNIO OU INTEIRO TEOR DO IMÓVEL - ${tit}.txt`);
+          todosImoveisDerivada.forEach((nIm) =>
+            add(`26. TÍTULO DE DOMÍNIO OU INTEIRO TEOR - ${nIm}.txt`)
+          );
         }
       }
 
@@ -1596,9 +1822,14 @@ export function gerarLembretesTxtPorPerfil(params: {
       }
     } else {
       // MINI OU PEQUENO (Itens 5 a 29)
-      if (!categoriasPresentes.has('ITEM_CAR')) add(`5. CAR - ${tit}.txt`);
-      if (!categoriasPresentes.has('ITEM_CONSULTA_CAR'))
-        add(`6. CONSULTA AO CAR - ${tit}.txt`);
+      if (!categoriasPresentes.has('ITEM_CAR')) {
+        todosImoveisDerivada.forEach((nIm) => add(`5. CAR - ${nIm}.txt`));
+      }
+      if (!categoriasPresentes.has('ITEM_CONSULTA_CAR')) {
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`6. CONSULTA AO CAR - ${nIm}.txt`)
+        );
+      }
       if (!categoriasPresentes.has('ITEM_AUT_ALTERACAO'))
         add(`7. AUTORIZAÇÃO DE MODIFICAÇÃO DO PROJETO - ${tit}.txt`);
       if (!categoriasPresentes.has('ITEM_EMBARGOS_TITULAR'))
@@ -1620,35 +1851,43 @@ export function gerarLembretesTxtPorPerfil(params: {
       if (!categoriasPresentes.has('ITEM_CREA')) add(`14. CREA - ${proj}.txt`);
       if (!categoriasPresentes.has('ITEM_CONTRATO_ASSESSORIA'))
         add(`15. CONTRATO DE ASSESSORIA - ${tit}.txt`);
-      if (!categoriasPresentes.has('ITEM_CCIR'))
-        add(`16. CCIR (ANO VIGENTE) - ${tit}.txt`);
-      if (!categoriasPresentes.has('ITEM_CND_ITR_IMOVEL'))
-        add(`17. CND OU ITR DO IMÓVEL - ${tit}.txt`);
+      if (!categoriasPresentes.has('ITEM_CCIR')) {
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`16. CCIR (ANO VIGENTE) - ${nIm}.txt`)
+        );
+      }
+      if (!categoriasPresentes.has('ITEM_CND_ITR_IMOVEL')) {
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`17. CND OU ITR DO IMÓVEL - ${nIm}.txt`)
+        );
+      }
 
       if (
         !categoriasPresentes.has('ITEM_LAUDO_EXTERNO') &&
         !categoriasPresentes.has('ITEM_LAUDO_INTERNO')
       ) {
-        add(`18. LAUDO DE AVALIAÇÃO EXTERNO DO IMÓVEL - ${tit}.txt`);
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`18. LAUDO DE AVALIAÇÃO EXTERNO - ${nIm}.txt`)
+        );
       }
       if (
         cfg.imovelAvaliadoAcima600k &&
         !categoriasPresentes.has('ITEM_LAUDO_INTERNO')
       ) {
-        add(`19. LAUDO DE AVALIAÇÃO INTERNO (ACIMA DE 600 MIL) - ${tit}.txt`);
+        todosImoveisDerivada.forEach((nIm) =>
+          add(`19. LAUDO DE AVALIAÇÃO INTERNO (ACIMA DE 600 MIL) - ${nIm}.txt`)
+        );
       }
 
       if (!categoriasPresentes.has('ITEM_DCAA')) add(`20. DCAA - ${tit}.txt`);
       if (!categoriasPresentes.has('ITEM_FICHA_SANITARIA'))
         add(`21. FICHA SANITÁRIA - ${tit}.txt`);
-
       if (
         !categoriasPresentes.has('ITEM_ORCAMENTO') &&
         !(isCusteio && categoriasPresentes.has('ITEM_PROJETO_PDF'))
       ) {
         add(`22. CARTA-PROPOSTA - ORÇAMENTO - ${tit}.txt`);
       }
-
       if (!categoriasPresentes.has('ITEM_CONSOLIDADAS'))
         add(`23. DECLARAÇÃO CONSOLIDADA RURAL PF - ${tit}.txt`);
       add('23. VERIFICAR C-C NA CONSOLIDADA.txt');
@@ -1664,14 +1903,18 @@ export function gerarLembretesTxtPorPerfil(params: {
 
       if (temGarantiaImovel) {
         if (!categoriasPresentes.has('ITEM_INTEIRO_TEOR')) {
-          add(`26. INTEIRO TEOR DO IMÓVEL (HISTÓRICO 15 ANOS) - ${tit}.txt`);
+          todosImoveisDerivada.forEach((nIm) =>
+            add(`26. INTEIRO TEOR DO IMÓVEL (15 ANOS) - ${nIm}.txt`)
+          );
         }
       } else {
         if (
           !categoriasPresentes.has('ITEM_TITULO_DOMINIO') &&
           !categoriasPresentes.has('ITEM_INTEIRO_TEOR')
         ) {
-          add(`25. TÍTULO DE DOMÍNIO OU INTEIRO TEOR DO IMÓVEL - ${tit}.txt`);
+          todosImoveisDerivada.forEach((nIm) =>
+            add(`25. TÍTULO DE DOMÍNIO OU INTEIRO TEOR - ${nIm}.txt`)
+          );
         }
       }
 
@@ -1686,39 +1929,74 @@ export function gerarLembretesTxtPorPerfil(params: {
         add('29. FALTA PARECER GERENCIAL.txt');
       }
     }
+
+    // Se ainda não veio a informação exata dos imóveis, deixa lembrete de conferência caso existam múltiplos imóveis
+    if (imoveisInversao.length === 0 && imoveisGarantia.length === 0) {
+      // Nenhum imóvel extraído automaticamente do PDF
+    }
   };
 
-  // Função interna para gerar os .TXT de uma pasta Limite LCGH/LCGA (Itens 1 a 19)
   const gerarTxtsPastaLimite = (pastaAlvo: string) => {
     const add = (nomeTxt: string) =>
       lembretes.push({ pastaRelativa: pastaAlvo, nomeArquivoTxt: nomeTxt });
 
+    // ITEM 2.3: Verifica quais imóveis são da Garantia para cobrar a documentação de cada um deles!
+    const alvosImoveisLimite =
+      imoveisGarantia.length > 0
+        ? imoveisGarantia.map((i) => i.nome)
+        : imoveisLidos.length > 0
+        ? imoveisLidos.map((i) => i.nome)
+        : [pa];
+
     if (!categoriasPresentes.has('ITEM_SOLICITACAO_LIMITE'))
       add(`1. SOLICITAÇÃO DE ABERTURA DE LIMITE - ${tit}.txt`);
-    if (!categoriasPresentes.has('ITEM_CAR')) add(`2. CAR - ${tit}.txt`);
-    if (!categoriasPresentes.has('ITEM_CONSULTA_CAR'))
-      add(`3. CONSULTA AO CAR - ${tit}.txt`);
+    if (!categoriasPresentes.has('ITEM_CAR')) {
+      alvosImoveisLimite.forEach((nIm) => add(`2. CAR - ${nIm}.txt`));
+    }
+    if (!categoriasPresentes.has('ITEM_CONSULTA_CAR')) {
+      alvosImoveisLimite.forEach((nIm) =>
+        add(`3. CONSULTA AO CAR - ${nIm}.txt`)
+      );
+    }
     if (
       !categoriasPresentes.has('ITEM_CERT_SOCIO_SEM_KML') &&
       !categoriasPresentes.has('ITEM_CERT_SOCIO_COM_KML')
     ) {
-      add(`4. CERT. SOCIOAMBIENTAL (SEM KML) - ${tit}.txt`);
+      alvosImoveisLimite.forEach((nIm) =>
+        add(`4. CERT. SOCIOAMBIENTAL (SEM KML) - ${nIm}.txt`)
+      );
     }
-    if (!categoriasPresentes.has('ITEM_CCIR')) add(`5. CCIR - ${tit}.txt`);
-    if (!categoriasPresentes.has('ITEM_CND_ITR_IMOVEL'))
-      add(`6. ITR OU CND DO IMÓVEL - ${tit}.txt`);
+    if (!categoriasPresentes.has('ITEM_CCIR')) {
+      alvosImoveisLimite.forEach((nIm) => add(`5. CCIR - ${nIm}.txt`));
+    }
+    if (!categoriasPresentes.has('ITEM_CND_ITR_IMOVEL')) {
+      alvosImoveisLimite.forEach((nIm) =>
+        add(`6. ITR OU CND DO IMÓVEL - ${nIm}.txt`)
+      );
+    }
     if (
       cfg.imovelAvaliadoAcima600k &&
       !categoriasPresentes.has('ITEM_LAUDO_INTERNO')
     ) {
-      add(`7. LAUDO INTERNO DO BANCO (ACIMA DE 600 MIL) - ${tit}.txt`);
+      alvosImoveisLimite.forEach((nIm) =>
+        add(`7. LAUDO INTERNO DO BANCO (ACIMA DE 600 MIL) - ${nIm}.txt`)
+      );
     }
-    if (!categoriasPresentes.has('ITEM_LAUDO_EXTERNO'))
-      add(`8. LAUDO EXTERNO DO BANCO - ${tit}.txt`);
-    if (!categoriasPresentes.has('ITEM_INTEIRO_TEOR'))
-      add(`9. INTEIRO TEOR DAS MATRÍCULAS (15 ANOS) - ${tit}.txt`);
-    if (!categoriasPresentes.has('ITEM_TITULO_DOMINIO'))
-      add(`10. TÍTULO DE DOMÍNIO OU ESCRITURA PÚBLICA - ${tit}.txt`);
+    if (!categoriasPresentes.has('ITEM_LAUDO_EXTERNO')) {
+      alvosImoveisLimite.forEach((nIm) =>
+        add(`8. LAUDO EXTERNO DO BANCO - ${nIm}.txt`)
+      );
+    }
+    if (!categoriasPresentes.has('ITEM_INTEIRO_TEOR')) {
+      alvosImoveisLimite.forEach((nIm) =>
+        add(`9. INTEIRO TEOR DAS MATRÍCULAS (15 ANOS) - ${nIm}.txt`)
+      );
+    }
+    if (!categoriasPresentes.has('ITEM_TITULO_DOMINIO')) {
+      alvosImoveisLimite.forEach((nIm) =>
+        add(`10. TÍTULO DE DOMÍNIO OU ESCRITURA PÚBLICA - ${nIm}.txt`)
+      );
+    }
     if (!categoriasPresentes.has('ITEM_CND_PF'))
       add(`11. CND PESSOA FÍSICA - ${tit}.txt`);
     if (!categoriasPresentes.has('ITEM_CNDT_PF'))
@@ -1746,7 +2024,6 @@ export function gerarLembretesTxtPorPerfil(params: {
     }
   };
 
-  // Roteamento conforme o escopo selecionado
   if (cfg.escopo === 'PRONAF_A_PADRAO' || cfg.porte === 'PRONAF_A') {
     const add = (nomeTxt: string) =>
       lembretes.push({ pastaRelativa: '', nomeArquivoTxt: nomeTxt });
