@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import ModalOrganizadorPastasCliente from '@/components/ferramentas/ModalOrganizadorPastasCliente';
+import ModalVerificadorKmlGeodesico from '@/components/ferramentas/ModalVerificadorKmlGeodesico';
+import ModalVerificarConformidadeSocioambiental from '@/components/ferramentas/ModalVerificarConformidadeSocioambiental';
 import {
   salvarFerramentasSync,
   carregarFerramentasSync,
@@ -74,6 +76,12 @@ export default function ModuloFerramentas({
   const [projCpf, setProjCpf] = useState('');
   const [projFone, setProjFone] = useState('');
   const [editandoProjIdx, setEditandoProjIdx] = useState<number | null>(null);
+
+  const [modalKmlGeodesicoAberto, setModalKmlGeodesicoAberto] = useState(false);
+  const [
+    modalConformidadeSocioambientalAberto,
+    setModalConformidadeSocioambientalAberto,
+  ] = useState(false);
 
   const [modalConformidadePronafAberto, setModalConformidadePronafAberto] =
     useState(false); 
@@ -632,6 +640,50 @@ export default function ModuloFerramentas({
           </button>
         </div>
 
+        <button
+          type="button"
+          onClick={() => setModalKmlGeodesicoAberto(true)}
+          style={{
+            width: 'auto',
+            padding: '10px 16px',
+            background: '#004C27',
+            color: '#ffffff',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '12.5px',
+            fontWeight: 800,
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            boxShadow: '0 2px 6px rgba(0, 76, 39, 0.25)',
+          }}
+        >
+          🗺️ FERRAMENTA KML
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setModalConformidadeSocioambientalAberto(true)}
+          style={{
+            width: 'auto',
+            padding: '10px 16px',
+            background: '#15803d',
+            color: '#ffffff',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '12.5px',
+            fontWeight: 800,
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            boxShadow: '0 2px 6px rgba(21, 128, 61, 0.25)',
+          }}
+        >
+          🌿 VERIFICAR CONFORMIDADE SOCIOAMBIENTAL
+        </button>
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '20px' }}>
           {/* COLUNA 1: GESTÃO DE PROGRAMAS DE CRÉDITO */}
           <div className="person-card" style={{ background: '#fff', marginBottom: 0 }}>
@@ -888,6 +940,17 @@ export default function ModuloFerramentas({
         tipo={modalDeclGeral}
         onFechar={() => setModalDeclGeral(null)}
         contratacoes={contratacoes}
+      />
+
+      <ModalVerificadorKmlGeodesico
+        aberto={modalKmlGeodesicoAberto}
+        onFechar={() => setModalKmlGeodesicoAberto(false)}
+      />
+
+      <ModalVerificarConformidadeSocioambiental
+        aberto={modalConformidadeSocioambientalAberto}
+        onFechar={() => setModalConformidadeSocioambientalAberto(false)}
+        onAbrirFerramentaKml={() => setModalKmlGeodesicoAberto(true)}
       />
 
       <ModalRenovacaoPlanta
