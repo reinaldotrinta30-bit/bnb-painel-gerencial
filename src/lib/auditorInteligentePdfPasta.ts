@@ -4,6 +4,11 @@ import {
   parseMoeda,
   obterListaProjetistas,
 } from '@/lib/utils';
+import {
+  processarArquivoKmlSocioambiental,
+  extrairDadosPdfCertificacaoSocioambiental,
+  avaliarConformidadeSocioambientalV98,
+} from '@/lib/analisadorSocioambientalKml';
 
 export type NivelStatusAuditoria = 'OK' | 'ALERTA' | 'ERRO' | 'INFO';
 
@@ -80,6 +85,15 @@ export interface ResultadoAuditoriaPastaPdf {
   conjugeDetectadoNosPdfs: string;
   arquivosComAssinaturaDigital: string[];
   arquivosSemAssinaturaDigital: string[];
+  reclassificacoesSocioambiental?: Record<
+    string,
+    'ITEM_CERT_SOCIO_COM_KML' | 'ITEM_CERT_SOCIO_SEM_KML'
+  >;
+  kmlCorrigidoAutomaticamente?: {
+    nomeArquivo: string;
+    conteudoKml: string;
+  } | null;
+  exigenciasSocioambientaisDetectadas?: string[];
   itensDiagnostico: ItemDiagnosticoPdf[];
 }
 
@@ -191,7 +205,10 @@ function textoContemTermoFlexivel(
 ): boolean {
   const textoNorm = normalizarSemAcento(textoAlvoBruto);
   const termoNorm = normalizarSemAcento(termoBuscaBruto)
-    .replace(/^(P\s*A|ASSENTAMENTO|PROJETO DE ASSENTAMENTO|FAZENDA|SITIO)\s+/i, '')
+    .replace(
+      /^(P\s*A|ASSENTAMENTO|PROJETO DE ASSENTAMENTO|FAZENDA|SITIO)\s+/i,
+      ''
+    )
     .trim();
 
   if (!termoNorm || termoNorm.length < 3) return true;
@@ -347,7 +364,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
   const textoLimpo = textoProjeto.replace(/\s+/g, ' ');
   const normSemAcento = removerAcentos(textoLimpo).toUpperCase();
 
-  // 1. Detecção Automática de Porte pelo Programa (368 / 699 / 673 = PRONAF A | 433 / 406 / 407 = PRONAF V | 226 = MINI/PEQUENO)
   const matchProg = textoLimpo.match(
     /(?:Programa|Fonte de Recursos)\s*:?\s*(FNE\s*\/?\s*[A-ZÀ-Ú0-9\s."'\-()]{4,55}?\(\d{3}\))/i
   );
@@ -383,7 +399,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     resultado.porteSugeridoPeloPdf = 'MINI_PEQUENO';
   }
 
-  // 2. Detecção Automática de Modalidade (Investimento vs Custeio)
   if (
     normSemAcento.includes('CUSTEIO PECUARIO') ||
     normSemAcento.includes('CUSTEIO AGRICOLA') ||
@@ -399,7 +414,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     resultado.modalidadeSugeridaPeloPdf = 'INVESTIMENTO';
   }
 
-  // 3. Elaborador / Projetista
   const matchElab =
     textoLimpo.match(
       /(?:Elaborador|Avaliador):\s*([A-ZÀ-Ú\s]{5,65}?)(?:\s+Proposta|\s+C\.?P\.?F|\s+Registro|\s+Data|\s+\[PÁG|$)/i
@@ -445,7 +459,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
       resultado.elaboradorNomeCompleto.split(/\s+/)[0];
   }
 
-  // 4. Estado Civil e Cônjuge
   const matchEstCivil = textoLimpo.match(
     /Estado\s+Civil:\s*(Solteiro\(a\)|Casado\(a\)|Uni[ãa]o\s+Est[áa]vel|Vi[úu]vo\(a\)|Divorciado\(a\))/i
   );
@@ -464,7 +477,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     }
   }
 
-  // 5. Denominação do Imóvel Principal e Tabela "Imóveis Vinculados ao Plano" (Itens 2.3 e 2.3.1)
   const matchDenom = textoLimpo.match(
     /Denomina[çc][ãa]o\s+do\s+im[óo]vel:\s*([A-ZÀ-Ú0-9\s.\-]{3,50}?)\s+[ÁA]rea\s+do\s+im[óo]vel\s*\(ha\):\s*([0-9.,]+)/i
   );
@@ -473,7 +485,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     resultado.areaImovelHa = matchDenom[2].trim();
   }
 
-  // Extrai todas as linhas da tabela "Imóveis Vinculados ao Plano" (ex: "PA LAGO DA CARNAUBA PIO XII-MA P.Fisica ISMAEL... 932526763-20 22,78 Sim Não")
   const regexImoveisVinculados =
     /([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s.\-]{3,45}?)\s+([A-ZÀ-Ú\s]+-[A-Z]{2})\s+P\.?\s*F[ií]sica\s+[A-ZÀ-Ú\s]{4,50}?\s+\d{3}\.?\d{3}\.?\d{3}-?\d{2}\s+(\d+(?:[.,]\d+)?)\s+(Sim|N[ãa]o)\s+(Sim|N[ãa]o)/gi;
 
@@ -515,7 +526,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     });
   }
 
-  // Verifica se a Avaliação do Imóvel no Projeto é >= R$ 600.000,00 (para exigir Laudo Interno)
   const matchSubtotalAval = textoLimpo.match(
     /Subtotal\s+Avalia[çc][ãa]o\s+do\s+Im[óo]vel[^0-9]{1,40}(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi
   );
@@ -530,7 +540,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     }
   }
 
-  // 6. Prazo, Carência, Periodicidade e Juros
   const idxCalcFin = normSemAcento.indexOf('CALCULO DO FINANCIAMENTO');
   const trechoFin =
     idxCalcFin !== -1
@@ -558,7 +567,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     if (mCarencia && mCarencia[1]) resultado.carenciaMeses = mCarencia[1];
   }
 
-  // 7. Objetivo e Justificativa
   const matchObjCurto = textoLimpo.match(
     /Objetivo\s+do\s+Cr[ée]dito:\s*(?:\d{2}\/\d{2}\/\d{4}\s+)?(Amplia[çc][ãa]o|Implanta[çc][ãa]o|Moderniza[çc][ãa]o|Reforma|Custeio|Manuten[çc][ãa]o|Expans[ãa]o)/i
   );
@@ -576,7 +584,6 @@ export function extrairDadosDetalhadosDoPdfProjeto(
       .trim();
   }
 
-  // 8. Itens de Inversão Financiados
   const regexItensPag4 =
     /([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s.,\/\-º°]{5,85}?)\s+(?:N[ãa]o|Sim)\s+(\d+(?:[.,]\d+)?)\s+(Ha|Unidade|unid|m|m2|m³|km|vb|Verba|Conjunto|Cabe[çc]a)\s+(?:Cobertura\s+do\s+Solo|Semovente\s*s?|Edifica[çc][õo]es|M[áa]quinas|Instala[çc][õo]es| Outros|[A-Za-zÀ-ú\s]+?)\s+\d+\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+)?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi;
 
@@ -663,9 +670,6 @@ function extrairCodigosReciboCar(texto: string): string[] {
   );
 }
 
-// ============================================================================
-// AUDITORIA ADAPTATIVA AO PORTE, ESCOPO E MODALIDADE SELECIONADOS (ITEM 1)
-// ============================================================================
 export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   arquivos: Array<{
     fileObj: File;
@@ -751,7 +755,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
 
   const itensDiagnostico: ItemDiagnosticoPdf[] = [];
 
-  // 1. CONTA CORRENTE NA CONSOLIDADA (Comum a todos os perfis)
+  // 1. CONTA CORRENTE NA CONSOLIDADA
   let contaCorrenteConsolidada = '';
   if (!pdfConsolidada) {
     itensDiagnostico.push({
@@ -804,7 +808,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     }
   }
 
-  // 2 E 8. VALOR, PRAZO, CARÊNCIA, ELABORADOR E ORÇAMENTO (Adaptado ao Escopo)
+  // 2 E 8. VALOR, PRAZO, CARÊNCIA, ELABORADOR E ORÇAMENTO
   const valProjeto = pdfProjeto
     ? extrairValorMonetarioPrincipal(pdfProjeto.textoCompleto)
     : pdfSolicitacaoLim
@@ -990,9 +994,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     ],
   });
 
-  // 5. ITEM ADAPTATIVO POR PORTE:
-  // - Se PRONAF A: Audita Espelho da UND + P.A. e CAR
-  // - Se PRONAF V ou MINI/PEQUENO ou LIMITE: Audita Imóveis de Benfeitoria (Inversão) vs Imóveis de Garantia (Itens 2.3 e 2.3.1)!
+  // 5. ESPELHO DA UND (PRONAF A) OU MAPEAMENTO DE IMÓVEIS DE INVERSÃO VS GARANTIA (DEMAIS PORTES)
   const paDetectadoNoProjeto =
     dadosProjetoParaParecer.denominacaoImovelPa || paEsperado;
   const recibosCarNoProjeto = extrairCodigosReciboCar(
@@ -1032,7 +1034,6 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       });
     }
   } else {
-    // Portes PRONAF V e MINI/PEQUENO: Mostra o mapeamento dos Imóveis de Inversão (Benfeitoria) e Imóveis de Garantia (Itens 2.3 e 2.3.1)
     const ims = dadosProjetoParaParecer.imoveisVinculados;
     const imsInversao = ims.filter((i) => i.realizaInversao);
     const imsGarantia = ims.filter((i) => i.compoeGarantia);
@@ -1059,7 +1060,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     });
   }
 
-  // 6. VALIDADE DA CAF (Apenas para PRONAF A e PRONAF V — Não exibido para MINI/PEQUENO!)
+  // 6. VALIDADE DA CAF (PRONAF A / PRONAF V) OU REGULARIDADE FISCAL/FUNDIÁRIA (MINI / PEQUENO)
   if ((isPronafA || isPronafV) && !isSomenteLimite) {
     if (!pdfCaf) {
       itensDiagnostico.push({
@@ -1227,6 +1228,216 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     }
   }
 
+  // =========================================================================
+  // 13. PASSO 3: AUDITORIA GEODÉSICA DO .KML & CRUZAMENTO AUTOMÁTICO COM
+  //     A CERTIFICAÇÃO SOCIOAMBIENTAL (COM KML vs SEM KML)
+  // =========================================================================
+  const reclassificacoesSocioambiental: Record<
+    string,
+    'ITEM_CERT_SOCIO_COM_KML' | 'ITEM_CERT_SOCIO_SEM_KML'
+  > = {};
+  let kmlCorrigidoAutomaticamente: {
+    nomeArquivo: string;
+    conteudoKml: string;
+  } | null = null;
+  const exigenciasSocioambientaisDetectadas: string[] = [];
+
+  // 13.1. Procura arquivo .KML na pasta
+  const arqKmlItem = arquivos.find(
+    (a) =>
+      a.categoria === 'ITEM_KML' ||
+      /\.(kml|kmz)$/i.test(a.fileObj.name.toLowerCase())
+  );
+
+  let itensKmlExtraidos: string[] = [];
+  let logsKmlExtraidos: string[] = [];
+
+  if (arqKmlItem) {
+    try {
+      const resKml = await processarArquivoKmlSocioambiental(
+        arqKmlItem.fileObj
+      );
+      itensKmlExtraidos = resKml.itensEncontrados;
+      logsKmlExtraidos = resKml.logs;
+      if (resKml.kmlCorrigidoTexto) {
+        kmlCorrigidoAutomaticamente = {
+          nomeArquivo: arqKmlItem.nomeOriginal,
+          conteudoKml: resKml.kmlCorrigidoTexto,
+        };
+      }
+    } catch {
+      // Ignora erro de parse KML
+    }
+  }
+
+  // 13.2. Analisa todos os PDFs de Certificação Socioambiental presentes na pasta
+  // e distingue pelo conteúdo ("Glebas") qual é COM KML e qual é SEM KML!
+  const arquivosSocioPdf = arquivos.filter(
+    (a) =>
+      !a.isViti &&
+      a.fileObj.name.toLowerCase().endsWith('.pdf') &&
+      (a.categoria === 'ITEM_5_CERT_SOCIOAMBIENTAL' ||
+        a.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
+        a.categoria === 'ITEM_CERT_SOCIO_SEM_KML')
+  );
+
+  const analisesSocioPorArquivo: Array<{
+    nomeOriginal: string;
+    possuiGlebas: boolean;
+    dadosSocio: Awaited<
+      ReturnType<typeof extrairDadosPdfCertificacaoSocioambiental>
+    >;
+  }> = [];
+
+  for (const arqS of arquivosSocioPdf) {
+    try {
+      const dadosS = await extrairDadosPdfCertificacaoSocioambiental(
+        arqS.fileObj,
+        itensKmlExtraidos
+      );
+      analisesSocioPorArquivo.push({
+        nomeOriginal: arqS.nomeOriginal,
+        possuiGlebas: dadosS.possuiBlocoGlebasNoPdf,
+        dadosSocio: dadosS,
+      });
+
+      reclassificacoesSocioambiental[arqS.nomeOriginal] =
+        dadosS.possuiBlocoGlebasNoPdf
+          ? 'ITEM_CERT_SOCIO_COM_KML'
+          : 'ITEM_CERT_SOCIO_SEM_KML';
+    } catch {
+      // Ignora falha de leitura individual
+    }
+  }
+
+  const exigeKmlNaDerivada = !isPronafA && !isSomenteLimite;
+  const certComKml = analisesSocioPorArquivo.find((x) => x.possuiGlebas);
+  const certSemKml = analisesSocioPorArquivo.find((x) => !x.possuiGlebas);
+
+  if (exigeKmlNaDerivada) {
+    const detalhesSocioKml: string[] = [];
+    let statusItem13: NivelStatusAuditoria = 'OK';
+    let resumoItem13 = '';
+
+    if (!arqKmlItem) {
+      statusItem13 = 'ERRO';
+      detalhesSocioKml.push(
+        '🚨 Arquivo .KML do projeto NÃO foi encontrado na pasta!'
+      );
+    } else {
+      const temPoligonoAberto = Boolean(kmlCorrigidoAutomaticamente);
+      if (temPoligonoAberto) {
+        statusItem13 = 'ALERTA';
+        detalhesSocioKml.push(
+          `⚠️ O arquivo "${arqKmlItem.nomeOriginal}" possuía polígono(s) aberto(s)! Clique no botão "🔧 Corrigir .KML na Pasta" abaixo para fechar automaticamente.`
+        );
+      }
+      logsKmlExtraidos.forEach((lg) => detalhesSocioKml.push(lg));
+    }
+
+    if (analisesSocioPorArquivo.length === 0) {
+      statusItem13 = 'ERRO';
+      resumoItem13 =
+        'Falta anexar a Certificação Socioambiental com KML na pasta.';
+    } else if (!certComKml && certSemKml) {
+      statusItem13 = 'ERRO';
+      resumoItem13 =
+        '🚨 ATENÇÃO: A Certificação Socioambiental na pasta NÃO possui o quadro de Glebas (foi emitida SEM o KML, padrão LCGH/LCGA)! Para Operação Derivada é obrigatória a Certificação COM KML.';
+    } else if (certComKml) {
+      const diagV98 = avaliarConformidadeSocioambientalV98({
+        dados: certComKml.dadosSocio,
+        areaImovelHa:
+          dadosProjetoParaParecer.areaImovelHa ||
+          certComKml.dadosSocio.areaCarHa,
+        forcarAte4ModulosAntes2008: isPronafA || isPronafV,
+      });
+
+      diagV98.exigenciasDocumentais.forEach((ex) => {
+        if (!exigenciasSocioambientaisDetectadas.includes(ex)) {
+          exigenciasSocioambientaisDetectadas.push(ex);
+        }
+      });
+
+      if (diagV98.errosCriticos.length > 0) {
+        statusItem13 = 'ERRO';
+        resumoItem13 = `🚨 IMPEDIMENTO SOCIOAMBIENTAL / KML: ${diagV98.errosCriticos[0]}`;
+      } else if (statusItem13 !== 'ERRO') {
+        resumoItem13 = `✅ Cruzamento KML (${itensKmlExtraidos.length} itens) × Certificação Socioambiental (${certComKml.dadosSocio.glebas.length} glebas) APROVADO! Reserva Legal: ${certComKml.dadosSocio.reservaLegalPerc || 'OK'}.`;
+      }
+
+      diagV98.errosCriticos.forEach((er) =>
+        detalhesSocioKml.push(`🚨 [IMPEDIMENTO] ${er}`)
+      );
+      diagV98.justificativasERessalvas.forEach((ju) =>
+        detalhesSocioKml.push(`✅ [CONFORMIDADE] ${ju}`)
+      );
+    }
+
+    // Se for COMBO_DERIVADA_E_LIMITE e também tiver a Certificação SEM KML na pasta, audita-a também!
+    if (escopoSelecionado === 'COMBO_DERIVADA_E_LIMITE') {
+      if (!certSemKml) {
+        detalhesSocioKml.push(
+          '⚠️ Modo Combo (Derivada + Limite): Falta na pasta a Certificação Socioambiental SEM KML (exclusiva do imóvel da garantia LCGH/LCGA).'
+        );
+        if (statusItem13 === 'OK') statusItem13 = 'ALERTA';
+      } else {
+        const diagLim = avaliarConformidadeSocioambientalV98({
+          dados: certSemKml.dadosSocio,
+          areaImovelHa: certSemKml.dadosSocio.areaCarHa,
+        });
+        if (diagLim.errosCriticos.length > 0) {
+          statusItem13 = 'ERRO';
+          diagLim.errosCriticos.forEach((er) =>
+            detalhesSocioKml.push(`🚨 [CERT. SEM KML / LIMITE] ${er}`)
+          );
+        } else {
+          detalhesSocioKml.push(
+            `✅ [CERT. SEM KML / LIMITE]: "${certSemKml.nomeOriginal}" auditada e aprovada (RL: ${certSemKml.dadosSocio.reservaLegalPerc || 'OK'}).`
+          );
+        }
+      }
+    }
+
+    itensDiagnostico.push({
+      numero: 13,
+      titulo:
+        '13. Cruzamento Automático: KML Geodésico × Certificação Socioambiental (V98)',
+      status: statusItem13,
+      resumo:
+        resumoItem13 ||
+        'Verificação do KML e da Certificação Socioambiental concluída.',
+      detalhes: detalhesSocioKml,
+    });
+  } else if (analisesSocioPorArquivo.length > 0) {
+    // Caso seja LIMITE_PURO (LCGH/LCGA) ou PRONAF A: audita a Certificação SEM KML (PRODES, Escravo, Embargos, RL 16%)
+    const alvoCert = certSemKml || analisesSocioPorArquivo[0];
+    const diagSemKml = avaliarConformidadeSocioambientalV98({
+      dados: alvoCert.dadosSocio,
+      areaImovelHa:
+        dadosProjetoParaParecer.areaImovelHa || alvoCert.dadosSocio.areaCarHa,
+      forcarAte4ModulosAntes2008: isPronafA,
+    });
+
+    itensDiagnostico.push({
+      numero: 13,
+      titulo:
+        '13. Auditoria da Certificação Socioambiental (PRODES, Embargos, Trabalho Escravo e RL)',
+      status: diagSemKml.errosCriticos.length > 0 ? 'ERRO' : 'OK',
+      resumo:
+        diagSemKml.errosCriticos.length > 0
+          ? `🚨 Impedimento na Certificação Socioambiental: ${diagSemKml.errosCriticos[0]}`
+          : `✅ Certificação Socioambiental aprovada (Área CAR: ${
+              alvoCert.dadosSocio.areaCarHa || '?'
+            } ha • Reserva Legal: ${
+              alvoCert.dadosSocio.reservaLegalPerc || 'OK'
+            }).`,
+      detalhes: [
+        ...diagSemKml.errosCriticos.map((er) => `🚨 ${er}`),
+        ...diagSemKml.justificativasERessalvas.map((ju) => `✅ ${ju}`),
+      ],
+    });
+  }
+
   return {
     valorPropostaDetectado,
     prazoMesesDetectado: dadosProjetoParaParecer.prazoMeses,
@@ -1250,6 +1461,9 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     conjugeDetectadoNosPdfs: conjugeEfetivo,
     arquivosComAssinaturaDigital,
     arquivosSemAssinaturaDigital,
+    reclassificacoesSocioambiental,
+    kmlCorrigidoAutomaticamente,
+    exigenciasSocioambientaisDetectadas,
     itensDiagnostico: itensDiagnostico.sort((a, b) => a.numero - b.numero),
   };
 }

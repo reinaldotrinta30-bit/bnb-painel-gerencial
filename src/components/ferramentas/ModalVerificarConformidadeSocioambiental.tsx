@@ -1257,44 +1257,141 @@ export default function ModalVerificarConformidadeSocioambiental({
                         </button>
                       </div>
 
-                      {gl.sobreposicoesDetalhe.length > 0 && (
+                      {(gl.possuiSobreposicao === 'SIM' ||
+                        gl.sobreposicoesDetalhe.length > 0) && (
                         <div
                           style={{
-                            marginTop: '6px',
+                            marginTop: '8px',
                             paddingLeft: '10px',
                             borderLeft: '3px solid #f59e0b',
                             display: 'flex',
                             flexDirection: 'column',
-                            gap: '4px',
+                            gap: '6px',
                           }}
                         >
-                          {gl.sobreposicoesDetalhe.map((sobTxt, idxS) => (
-                            <textarea
-                              key={idxS}
-                              rows={2}
-                              value={sobTxt}
-                              onChange={(e) => {
+                          {gl.sobreposicoesDetalhe.map((sobTxt, idxS) => {
+                            const qtdLinhas = Math.max(
+                              2,
+                              sobTxt.split('\n').length
+                            );
+                            return (
+                              <div
+                                key={idxS}
+                                style={{
+                                  display: 'flex',
+                                  gap: '6px',
+                                  alignItems: 'flex-start',
+                                }}
+                              >
+                                <textarea
+                                  rows={qtdLinhas}
+                                  value={sobTxt}
+                                  ref={(el) => {
+                                    if (el) {
+                                      el.style.height = 'auto';
+                                      el.style.height = `${el.scrollHeight}px`;
+                                    }
+                                  }}
+                                  onChange={(e) => {
+                                    e.target.style.height = 'auto';
+                                    e.target.style.height = `${e.target.scrollHeight}px`;
+                                    const novas = [...dados.glebas];
+                                    const dets = [
+                                      ...novas[idxG].sobreposicoesDetalhe,
+                                    ];
+                                    dets[idxS] = e.target.value;
+                                    novas[idxG] = {
+                                      ...novas[idxG],
+                                      sobreposicoesDetalhe: dets,
+                                    };
+                                    setDados({ ...dados, glebas: novas });
+                                  }}
+                                  placeholder="Descreva a sobreposição (Área sobreposta, ha e %)"
+                                  style={{
+                                    flex: 1,
+                                    width: '100%',
+                                    minHeight: '38px',
+                                    height: 'auto',
+                                    overflow: 'hidden',
+                                    resize: 'none',
+                                    lineHeight: '1.45',
+                                    fontSize: '11.5px',
+                                    fontFamily: 'inherit',
+                                    padding: '6px 10px',
+                                    borderRadius: '5px',
+                                    border: '1px solid #f59e0b',
+                                    background: '#fffbeb',
+                                    color: '#78350f',
+                                    fontWeight: 600,
+                                    boxSizing: 'border-box',
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const novas = [...dados.glebas];
+                                    const dets = novas[
+                                      idxG
+                                    ].sobreposicoesDetalhe.filter(
+                                      (_, i) => i !== idxS
+                                    );
+                                    novas[idxG] = {
+                                      ...novas[idxG],
+                                      sobreposicoesDetalhe: dets,
+                                      possuiSobreposicao:
+                                        dets.length === 0 ? 'NÃO' : 'SIM',
+                                    };
+                                    setDados({ ...dados, glebas: novas });
+                                  }}
+                                  title="Remover este detalhe de sobreposição"
+                                  style={{
+                                    width: 'auto',
+                                    height: '28px',
+                                    padding: '0 8px',
+                                    fontSize: '11px',
+                                    background: '#fee2e2',
+                                    color: '#b91c1c',
+                                    border: '1px solid #fecaca',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  ✖
+                                </button>
+                              </div>
+                            );
+                          })}
+
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => {
                                 const novas = [...dados.glebas];
-                                const dets = [
-                                  ...novas[idxG].sobreposicoesDetalhe,
-                                ];
-                                dets[idxS] = e.target.value;
                                 novas[idxG] = {
                                   ...novas[idxG],
-                                  sobreposicoesDetalhe: dets,
+                                  possuiSobreposicao: 'SIM',
+                                  sobreposicoesDetalhe: [
+                                    ...novas[idxG].sobreposicoesDetalhe,
+                                    '',
+                                  ],
                                 };
                                 setDados({ ...dados, glebas: novas });
                               }}
                               style={{
-                                width: '100%',
-                                fontSize: '11px',
-                                padding: '5px 8px',
+                                width: 'auto',
+                                padding: '3px 10px',
+                                fontSize: '10.5px',
+                                fontWeight: 700,
+                                background: 'transparent',
+                                color: '#b45309',
+                                border: '1px dashed #f59e0b',
                                 borderRadius: '4px',
-                                border: '1px solid #fde68a',
-                                background: '#fffbeb',
+                                cursor: 'pointer',
                               }}
-                            />
-                          ))}
+                            >
+                              + Adicionar Detalhe de Sobreposição / Restrição
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>

@@ -640,49 +640,76 @@ export default function ModuloFerramentas({
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setModalKmlGeodesicoAberto(true)}
+        {/* BLOCO DE DESTAQUE: GEOPROCESSAMENTO KML & CONFORMIDADE SOCIOAMBIENTAL */}
+        <div
+          className="person-card"
           style={{
-            width: 'auto',
-            padding: '10px 16px',
-            background: '#004C27',
-            color: '#ffffff',
-            border: 'none',
-            borderRadius: '8px',
-            fontSize: '12.5px',
-            fontWeight: 800,
-            cursor: 'pointer',
-            display: 'inline-flex',
+            borderLeftColor: '#004C27',
+            background: 'linear-gradient(90deg, #f0fdf4 0%, #ffffff 100%)',
+            display: 'flex',
+            justifyContent: 'space-between',
             alignItems: 'center',
-            gap: '8px',
-            boxShadow: '0 2px 6px rgba(0, 76, 39, 0.25)',
+            flexWrap: 'wrap',
+            gap: '14px',
+            marginBottom: 0,
+            padding: '16px 20px',
           }}
         >
-          🗺️ FERRAMENTA KML
-        </button>
+          <div>
+            <strong style={{ color: '#004C27', fontSize: '15px', display: 'block' }}>
+              🗺️ GEOPROCESSAMENTO GEODÉSICO (.KML) & AUDITORIA SOCIOAMBIENTAL
+            </strong>
+            <span style={{ fontSize: '12px', color: '#475569' }}>
+              Edite polígonos no mapa satélite (recorte de APP/Reserva Legal e enquadramento no CAR) ou cruze o .KML com o PDF da Certificação Socioambiental.
+            </span>
+          </div>
 
-        <button
-          type="button"
-          onClick={() => setModalConformidadeSocioambientalAberto(true)}
-          style={{
-            width: 'auto',
-            padding: '10px 16px',
-            background: '#15803d',
-            color: '#ffffff',
-            border: 'none',
-            borderRadius: '8px',
-            fontSize: '12.5px',
-            fontWeight: 800,
-            cursor: 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            boxShadow: '0 2px 6px rgba(21, 128, 61, 0.25)',
-          }}
-        >
-          🌿 VERIFICAR CONFORMIDADE SOCIOAMBIENTAL
-        </button>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setModalKmlGeodesicoAberto(true)}
+              style={{
+                width: 'auto',
+                padding: '10px 18px',
+                background: '#004C27',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '12.5px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                boxShadow: '0 4px 12px rgba(0, 76, 39, 0.25)',
+              }}
+            >
+              🗺️ FERRAMENTA KML
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setModalConformidadeSocioambientalAberto(true)}
+              style={{
+                width: 'auto',
+                padding: '10px 18px',
+                background: '#15803d',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '12.5px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                boxShadow: '0 4px 12px rgba(21, 128, 61, 0.25)',
+              }}
+            >
+              🌿 VERIFICAR CONFORMIDADE SOCIOAMBIENTAL
+            </button>
+          </div>
+        </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '20px' }}>
           {/* COLUNA 1: GESTÃO DE PROGRAMAS DE CRÉDITO */}

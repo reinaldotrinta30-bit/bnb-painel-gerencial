@@ -618,6 +618,29 @@ export default function ModalOrganizadorPastasCliente({
     }
   };
 
+  // PASSO 3: Salva o arquivo .KML com os polígonos matematicamente fechados direto na pasta do cliente!
+  const salvarKmlCorrigidoDiretoNaPasta = async () => {
+    const infoKml = auditoriaPdf?.kmlCorrigidoAutomaticamente;
+    if (!dirHandleRoot || !infoKml) return;
+
+    try {
+      const fh = await dirHandleRoot.getFileHandle(infoKml.nomeArquivo, {
+        create: true,
+      });
+      const wr = await fh.createWritable();
+      await wr.write(infoKml.conteudoKml);
+      await wr.close();
+
+      alert(
+        `✅ Polígonos abertos do arquivo "${infoKml.nomeArquivo}" foram fechados e salvos diretamente na pasta do cliente!`
+      );
+      await escanearHandleDaPasta(dirHandleRoot);
+    } catch (e) {
+      console.error('Erro ao gravar KML corrigido na pasta:', e);
+      alert('❌ Não foi possível gravar o KML corrigido na pasta.');
+    }
+  };
+
   // Se o utilizador fechar/saltar a etapa do Parecer sem extrair, grava o "<Nº>. FALTA PARECER GERENCIAL.txt"
   const handleFecharOverlayParecer = async () => {
     const jaTinhaParecerNaPasta = arquivosMapeados.some(
@@ -1194,6 +1217,29 @@ export default function ModalOrganizadorPastasCliente({
       .then((resAuditoria) => {
         if (cancelado) return;
         setAuditoriaPdf(resAuditoria);
+
+        // PASSO 3: Se o leitor de PDF detectou pelo quadro "Glebas" qual Certificação é COM KML e qual é SEM KML,
+        // atualiza automaticamente a categoria do arquivo na tabela (só dispara se houver mudança real)!
+        if (resAuditoria.reclassificacoesSocioambiental) {
+          const mapaReclass = resAuditoria.reclassificacoesSocioambiental;
+          setArquivosMapeados((prev) => {
+            let mudouAlgum = false;
+            const novaLista = prev.map((item) => {
+              const novaCat = mapaReclass[item.nomeOriginal];
+              if (
+                novaCat &&
+                (item.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
+                  item.categoria === 'ITEM_CERT_SOCIO_SEM_KML') &&
+                item.categoria !== novaCat
+              ) {
+                mudouAlgum = true;
+                return { ...item, categoria: novaCat };
+              }
+              return item;
+            });
+            return mudouAlgum ? novaLista : prev;
+          });
+        }
 
         if (resAuditoria.valorPropostaDetectado) {
           setCadValor(resAuditoria.valorPropostaDetectado);
@@ -2908,6 +2954,52 @@ export default function ModalOrganizadorPastasCliente({
                       </span>
                     )}
                   </div>
+
+                  {auditoriaPdf?.kmlCorrigidoAutomaticamente && (
+                    <div
+                      style={{
+                        marginBottom: '8px',
+                        padding: '8px 10px',
+                        background: '#fffbeb',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '6px',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          color: '#b45309',
+                        }}
+                      >
+                        ⚠️ Polígono(s) aberto(s) em &ldquo;
+                        {auditoriaPdf.kmlCorrigidoAutomaticamente.nomeArquivo}
+                        &rdquo;!
+                      </span>
+                      <button
+                        type="button"
+                        onClick={salvarKmlCorrigidoDiretoNaPasta}
+                        style={{
+                          width: 'auto',
+                          padding: '4px 10px',
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          background: '#004C27',
+                          color: '#ffffff',
+                          border: 'none',
+                          borderRadius: '5px',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        🔧 Corrigir .KML na Pasta
+                      </button>
+                    </div>
+                  )}
 
                   {!auditoriaPdf ? (
                     <span style={{ fontSize: '11px', color: '#64748b' }}>
