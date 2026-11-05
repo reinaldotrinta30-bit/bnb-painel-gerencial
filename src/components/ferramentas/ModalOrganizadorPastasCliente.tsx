@@ -2,13 +2,29 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import PizZip from 'pizzip';
+import { saveAs } from 'file-saver';
+import ModuloKanban from '@/components/ModuloKanban';
 import {
   executarAuditoriaCompletaDosPdfsDaPasta,
   ResultadoAuditoriaPastaPdf,
 } from '@/lib/auditorInteligentePdfPasta';
-import PizZip from 'pizzip';
-import { saveAs } from 'file-saver';
-import ModuloKanban from '@/components/ModuloKanban';
+import {
+  PorteOrganizador,
+  EscopoOperacaoPasta,
+  ModalidadeDerivada,
+  ModalidadeLimite,
+  GarantiaDerivada,
+  ConfiguracaoPerfilPasta,
+  CategoriaDocPasta,
+  CATEGORIAS_QUE_ACEITAM_VITI,
+  classificarArquivoUniversal,
+  calcularTodosDestinosDoArquivo,
+  gerarLembretesTxtPorPerfil,
+  obterNomesCurtosDesambiguados,
+  extrairPrimeiroNome,
+  isArquivoParecerGerencialReal,
+} from '@/lib/motorPerfisOrganizadorPastas';
 import {
   RegistroContratacao,
   CardKanban,
@@ -58,124 +74,6 @@ interface ModalOrganizadorPastasClienteProps {
   ) => void;
 }
 
-export type CategoriaDocPasta =
-  | 'IGNORAR'
-  | 'ITEM_1_PROJETO_ARQ'
-  | 'ITEM_2_AUT_ALTERACAO'
-  | 'ITEM_3_EMBARGOS_TITULAR'
-  | 'ITEM_3_EMBARGOS_CONJUGE'
-  | 'ITEM_4_IMPROBIDADE_TITULAR'
-  | 'ITEM_4_IMPROBIDADE_CONJUGE'
-  | 'ITEM_5_CERT_SOCIOAMBIENTAL'
-  | 'ITEM_6_CREA'
-  | 'ITEM_7_EXTRATO_SICOR'
-  | 'ITEM_8_CONTRATO_ASSESSORIA'
-  | 'ITEM_9_CONSOLIDADAS'
-  | 'ITEM_10_DEC_AMBIENTAIS'
-  | 'ITEM_10_1_REG_AMBIENTAL'
-  | 'ITEM_10_2_NAO_DESMATAMENTO'
-  | 'ITEM_10_3_RECOMPOSICAO'
-  | 'ITEM_10_4_OUTRA_DEC_AMBIENTAL'
-  | 'ITEM_11_ESPELHO_UND'
-  | 'ITEM_12_PROJETO_PDF'
-  | 'ITEM_13_CAR'
-  | 'ITEM_13_CONSULTA_CAR'
-  | 'ITEM_14_CAF'
-  | 'ITEM_15_DCAA'
-  | 'ITEM_16_PARECER_TECNICO'
-  | 'ITEM_17_RB_PA'
-  | 'ITEM_18_ORCAMENTO'
-  | 'ITEM_19_CAPA_ANALISADOR'
-  | 'ITEM_20_PARECER_GERENCIAL'
-  | 'ITEM_21_PARECER_SEMA'
-  | 'CAD_1_IDENTIDADE_TITULAR'
-  | 'CAD_1_IDENTIDADE_CONJUGE'
-  | 'CAD_1_IDENTIDADE_OUTRO'
-  | 'CAD_2_CERTIDAO_CASAMENTO'
-  | 'CAD_3_COMP_ENDERECO'
-  | 'CAD_4_COMP_RENDA'
-  | 'CAD_5_PROPOSTA_CADASTRO'
-  | 'CAD_6_PROCURACAO'
-  | 'CAD_8_SELO_CARTORIO'
-  | 'CAD_9_OUTROS_CADASTRO';
-
-const CATEGORIAS_QUE_ACEITAM_VITI = new Set<CategoriaDocPasta>([
-  'ITEM_2_AUT_ALTERACAO',
-  'ITEM_8_CONTRATO_ASSESSORIA',
-  'ITEM_9_CONSOLIDADAS',
-  'ITEM_10_DEC_AMBIENTAIS',
-  'ITEM_10_1_REG_AMBIENTAL',
-  'ITEM_10_2_NAO_DESMATAMENTO',
-  'ITEM_10_3_RECOMPOSICAO',
-  'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
-  'ITEM_12_PROJETO_PDF',
-  'ITEM_16_PARECER_TECNICO',
-  'ITEM_18_ORCAMENTO',
-  'CAD_5_PROPOSTA_CADASTRO',
-]);
-
-// Ordem rigorosa de exibição na tabela: Itens 1 a 21 da Raiz (com VITI logo abaixo do principal) ➔ Itens 1 a 9 de CADASTRO
-const PESO_ORDEM_CATEGORIA: Record<CategoriaDocPasta, number> = {
-  ITEM_1_PROJETO_ARQ: 10,
-  ITEM_2_AUT_ALTERACAO: 20,
-  ITEM_3_EMBARGOS_TITULAR: 30,
-  ITEM_3_EMBARGOS_CONJUGE: 31,
-  ITEM_4_IMPROBIDADE_TITULAR: 40,
-  ITEM_4_IMPROBIDADE_CONJUGE: 41,
-  ITEM_5_CERT_SOCIOAMBIENTAL: 50,
-  ITEM_6_CREA: 60,
-  ITEM_7_EXTRATO_SICOR: 70,
-  ITEM_8_CONTRATO_ASSESSORIA: 80,
-  ITEM_9_CONSOLIDADAS: 90,
-  ITEM_10_DEC_AMBIENTAIS: 100,
-  ITEM_10_1_REG_AMBIENTAL: 101,
-  ITEM_10_2_NAO_DESMATAMENTO: 102,
-  ITEM_10_3_RECOMPOSICAO: 103,
-  ITEM_10_4_OUTRA_DEC_AMBIENTAL: 104,
-  ITEM_11_ESPELHO_UND: 110,
-  ITEM_12_PROJETO_PDF: 120,
-  ITEM_13_CAR: 130,
-  ITEM_13_CONSULTA_CAR: 131,
-  ITEM_14_CAF: 140,
-  ITEM_15_DCAA: 150,
-  ITEM_16_PARECER_TECNICO: 160,
-  ITEM_17_RB_PA: 170,
-  ITEM_18_ORCAMENTO: 180,
-  ITEM_19_CAPA_ANALISADOR: 190,
-  ITEM_20_PARECER_GERENCIAL: 200,
-  ITEM_21_PARECER_SEMA: 210,
-  // Subpasta CADASTRO (Exibida logo após o item 21, na ordem 1 a 9)
-  CAD_1_IDENTIDADE_TITULAR: 301,
-  CAD_1_IDENTIDADE_CONJUGE: 302,
-  CAD_1_IDENTIDADE_OUTRO: 303,
-  CAD_2_CERTIDAO_CASAMENTO: 304,
-  CAD_3_COMP_ENDERECO: 305,
-  CAD_4_COMP_RENDA: 306,
-  CAD_5_PROPOSTA_CADASTRO: 307,
-  CAD_6_PROCURACAO: 308,
-  CAD_8_SELO_CARTORIO: 309,
-  CAD_9_OUTROS_CADASTRO: 310,
-  IGNORAR: 999,
-};
-
-function ordenarArquivosPorSequenciaNumerica(
-  lista: ArquivoMapeadoItem[]
-): ArquivoMapeadoItem[] {
-  return [...lista].sort((a, b) => {
-    const pesoBaseA = PESO_ORDEM_CATEGORIA[a.categoria] ?? 900;
-    const pesoBaseB = PESO_ORDEM_CATEGORIA[b.categoria] ?? 900;
-
-    // Soma +0.5 quando for VITI para que o relatório VITI fique colado imediatamente abaixo do seu documento principal
-    const pesoFinalA = pesoBaseA + (a.isViti ? 0.5 : 0);
-    const pesoFinalB = pesoBaseB + (b.isViti ? 0.5 : 0);
-
-    if (pesoFinalA !== pesoFinalB) {
-      return pesoFinalA - pesoFinalB;
-    }
-    return a.nomeOriginal.localeCompare(b.nomeOriginal);
-  });
-}
-
 interface ArquivoMapeadoItem {
   id: string;
   nomeOriginal: string;
@@ -184,7 +82,7 @@ interface ArquivoMapeadoItem {
   categoria: CategoriaDocPasta;
   isViti: boolean;
   origemGaveta?: boolean;
-  origemSubpastaCadastro?: boolean;
+  origemSubpasta?: string;
   subtipoAmbientalExtra?: string;
 }
 
@@ -267,636 +165,187 @@ function removerAcentos(str: string): string {
   return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
-function extrairPrimeiroNome(nomeCompleto: string): string {
-  const limpo = (nomeCompleto || '').trim().toUpperCase();
-  if (!limpo) return '';
-  return limpo.split(/\s+/)[0];
-}
-
-// Distingue o Parecer Gerencial real (mesmo quando está como "20. PARECER GERENCIAL - FALTA AJUSTAR.txt")
-// do lembrete vazio "20. FALTA PARECER GERENCIAL.txt"
-function isArquivoParecerGerencialReal(nomeArquivo: string): boolean {
-  const norm = removerAcentos(nomeArquivo).toUpperCase().trim();
-  if (!norm.includes('PARECER GERENCIAL')) return false;
-  if (norm.includes('FALTA PARECER GERENCIAL')) return false;
-  return true;
-}
-
-function obterNomesCurtosDesambiguados(params: {
-  titularCompleto: string;
-  conjugeCompleto: string;
-  procuradorCompleto: string;
-  avalistaCompleto: string;
-}) {
-  const pTit = extrairPrimeiroNome(params.titularCompleto) || 'CLIENTE';
-  const pConj = extrairPrimeiroNome(params.conjugeCompleto);
-  const pProc = extrairPrimeiroNome(params.procuradorCompleto);
-  const pAval = extrairPrimeiroNome(params.avalistaCompleto);
-
-  const todos = [pTit, pConj, pProc, pAval].filter(Boolean);
-  const contagem: Record<string, number> = {};
-  todos.forEach((n) => {
-    contagem[n] = (contagem[n] || 0) + 1;
-  });
-
-  return {
-    titular: contagem[pTit] > 1 ? `${pTit} (TITULAR)` : pTit,
-    conjuge: pConj ? (contagem[pConj] > 1 ? `${pConj} (CÔNJUGE)` : pConj) : '',
-    procurador: pProc
-      ? contagem[pProc] > 1
-        ? `${pProc} (PROCURADOR)`
-        : pProc
-      : '',
-    avalista: pAval ? (contagem[pAval] > 1 ? `${pAval} (AVALISTA)` : pAval) : '',
+// Converte a categoria universal para os códigos esperados pelo auditorInteligentePdfPasta.ts
+function converterCategoriaParaAuditorPdf(cat: CategoriaDocPasta): string {
+  const mapa: Partial<Record<CategoriaDocPasta, string>> = {
+    ITEM_ARQ_ELETRONICO_PROJETO: 'ITEM_1_PROJETO_ARQ',
+    ITEM_AUT_ALTERACAO: 'ITEM_2_AUT_ALTERACAO',
+    ITEM_EMBARGOS_TITULAR: 'ITEM_3_EMBARGOS_TITULAR',
+    ITEM_EMBARGOS_CONJUGE: 'ITEM_3_EMBARGOS_CONJUGE',
+    ITEM_IMPROBIDADE_TITULAR: 'ITEM_4_IMPROBIDADE_TITULAR',
+    ITEM_IMPROBIDADE_CONJUGE: 'ITEM_4_IMPROBIDADE_CONJUGE',
+    ITEM_CERT_SOCIO_COM_KML: 'ITEM_5_CERT_SOCIOAMBIENTAL',
+    ITEM_CERT_SOCIO_SEM_KML: 'ITEM_5_CERT_SOCIOAMBIENTAL',
+    ITEM_CREA: 'ITEM_6_CREA',
+    ITEM_EXTRATO_SICOR: 'ITEM_7_EXTRATO_SICOR',
+    ITEM_CONTRATO_ASSESSORIA: 'ITEM_8_CONTRATO_ASSESSORIA',
+    ITEM_CONSOLIDADAS: 'ITEM_9_CONSOLIDADAS',
+    ITEM_DEC_AMBIENTAIS: 'ITEM_10_DEC_AMBIENTAIS',
+    ITEM_DEC_REG_AMBIENTAL: 'ITEM_10_1_REG_AMBIENTAL',
+    ITEM_DEC_NAO_DESMATAMENTO: 'ITEM_10_2_NAO_DESMATAMENTO',
+    ITEM_DEC_RECOMPOSICAO: 'ITEM_10_3_RECOMPOSICAO',
+    ITEM_DEC_REG_AMB_GARANTIDOR: 'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
+    ITEM_DEC_OUTRA_AMBIENTAL: 'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
+    ITEM_ESPELHO_UND: 'ITEM_11_ESPELHO_UND',
+    ITEM_PROJETO_PDF: 'ITEM_12_PROJETO_PDF',
+    ITEM_CAR: 'ITEM_13_CAR',
+    ITEM_CONSULTA_CAR: 'ITEM_13_CONSULTA_CAR',
+    ITEM_CAF: 'ITEM_14_CAF',
+    ITEM_DCAA: 'ITEM_15_DCAA',
+    ITEM_PARECER_TECNICO: 'ITEM_16_PARECER_TECNICO',
+    ITEM_RB_PA: 'ITEM_17_RB_PA',
+    ITEM_ORCAMENTO: 'ITEM_18_ORCAMENTO',
+    ITEM_CAPA_ANALISADOR: 'ITEM_19_CAPA_ANALISADOR',
+    ITEM_PARECER_GERENCIAL: 'ITEM_20_PARECER_GERENCIAL',
+    ITEM_PARECER_SEMA: 'ITEM_21_PARECER_SEMA',
   };
+  return mapa[cat] || cat;
 }
 
-function gerarTxtsZeroDaConformidadePronafA(
-  itemConf: ItemConformidadePronafA | null
-): string[] {
-  if (!itemConf) return [];
-  const alertasZero: string[] = [];
-
-  const temConj = Boolean(itemConf.conjugeNome.trim() || itemConf.conjugeCpf.trim());
-  const temProc = Boolean(
-    itemConf.procuradorNome.trim() || itemConf.procuradorCpf.trim()
-  );
-
-  const elab: string[] = [];
-  if (itemConf.cadastroClienteOk === 'A_ELABORAR') elab.push('DO TITULAR');
-  if (temConj && itemConf.cadastroConjugeOk === 'A_ELABORAR')
-    elab.push('DO CÔNJUGE');
-  if (temProc && itemConf.cadastroProcuradorOk === 'A_ELABORAR')
-    elab.push('DO PROCURADOR');
-
-  if (elab.length === 3) {
-    alertasZero.push(
-      '0. ELABORAR CADASTRO DO TITULAR, CÔNJUGE E PROCURADOR.txt'
-    );
-  } else if (elab.length === 2) {
-    alertasZero.push(`0. ELABORAR CADASTRO ${elab[0]} E ${elab[1]}.txt`);
-  } else if (elab.length === 1) {
-    alertasZero.push(`0. ELABORAR CADASTRO ${elab[0]}.txt`);
-  }
-
-  const renov: string[] = [];
-  if (itemConf.cadastroClienteOk === 'A_RENOVAR') renov.push('DO TITULAR');
-  if (temConj && itemConf.cadastroConjugeOk === 'A_RENOVAR')
-    renov.push('DO CÔNJUGE');
-  if (temProc && itemConf.cadastroProcuradorOk === 'A_RENOVAR')
-    renov.push('DO PROCURADOR');
-
-  if (renov.length === 3) {
-    alertasZero.push(
-      '0. RENOVAR CADASTRO DO TITULAR, CÔNJUGE E PROCURADOR.txt'
-    );
-  } else if (renov.length === 2) {
-    alertasZero.push(`0. RENOVAR CADASTRO ${renov[0]} E ${renov[1]}.txt`);
-  } else if (renov.length === 1) {
-    alertasZero.push(`0. RENOVAR CADASTRO ${renov[0]}.txt`);
-  }
-
-  if (itemConf.restricaoClienteNivel === 'GRAVE') {
-    alertasZero.push('0. CLIENTE COM RESTRIÇÃO GRAVE.txt');
-  }
-  if (temConj && itemConf.restricaoConjugeNivel === 'GRAVE') {
-    alertasZero.push('0. CÔNJUGE COM RESTRIÇÃO GRAVE.txt');
-  }
-  if (temProc && itemConf.restricaoProcuradorNivel === 'GRAVE') {
-    alertasZero.push('0. PROCURADOR COM RESTRIÇÃO GRAVE.txt');
-  }
-
-  if (
-    itemConf.restricaoClienteNivel === 'LEVE' ||
-    (temConj && itemConf.restricaoConjugeNivel === 'LEVE') ||
-    (temProc && itemConf.restricaoProcuradorNivel === 'LEVE')
-  ) {
-    alertasZero.push('0. VERIFICAR RESTRIÇÃO COMERCIAL LEVE.txt');
-  }
-
-  const cc = (itemConf.contaCorrente || '').trim().toUpperCase();
-  if (!cc || cc === 'NÃO' || cc === 'NAO' || cc === '-') {
-    alertasZero.push('0. ABRIR CONTA CORRENTE DO CLIENTE.txt');
-  }
-
-  return alertasZero;
-}
-
-function classificarArquivoAutomaticamente(
-  nomeArquivo: string,
-  primeiroNomeTitular: string,
-  primeiroNomeConjuge: string
-): {
-  categoria: CategoriaDocPasta;
-  isViti: boolean;
-  subtipoAmbientalExtra?: string;
-} {
-  const semExt = nomeArquivo.replace(/\.[^/.]+$/, '');
-  const ext = (nomeArquivo.split('.').pop() || '').toUpperCase();
-  const norm = removerAcentos(semExt)
-    .toUpperCase()
-    .replace(/_/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (ext === 'TXT') {
-    if (isArquivoParecerGerencialReal(nomeArquivo)) {
-      return { categoria: 'ITEM_20_PARECER_GERENCIAL', isViti: false };
-    }
-    return { categoria: 'IGNORAR', isViti: false };
-  }
-
-  if (
-    ext.includes('PRONAF') ||
-    ext === 'INV' ||
-    ext === 'CUST' ||
-    nomeArquivo.toUpperCase().includes('.PRONAF')
-  ) {
-    return { categoria: 'ITEM_1_PROJETO_ARQ', isViti: false };
-  }
-
-  const pareceVitiPeloNome =
-    /^(RELATORIO|VITI)\b/.test(norm) ||
-    /^\d+(\.\d+)?\.?\s*VITI\b/.test(norm) ||
-    norm.includes('VALIDACAO ITI');
-
-  // Remove numerações iniciais ("1. ", "10.1. ", "17 - ") e prefixos "Relatorio -" / "VITI -"
-  // para reconhecer tanto arquivos novos quanto arquivos de uma pasta já organizada!
-  const miolo = norm
-    .replace(/^RELATORIO\s*[-–]?\s*/, '')
-    .replace(/^\d+(\.\d+)?\s*[.\-–]\s*VITI\s*[-–]?\s*/, '')
-    .replace(/^VITI\s*[-–]?\s*/, '')
-    .replace(/^\d+(\.\d+)?\s*[.\-–]\s*/, '')
-    .trim();
-
-  const mencionaConjuge = Boolean(
-    primeiroNomeConjuge &&
-      primeiroNomeConjuge.length > 2 &&
-      new RegExp(
-        `\\b${removerAcentos(primeiroNomeConjuge).toUpperCase()}\\b`
-      ).test(miolo)
-  );
-
-  const finalizar = (
-    categoria: CategoriaDocPasta,
-    subtipoAmbientalExtra?: string
-  ) => ({
-    categoria,
-    isViti: pareceVitiPeloNome && CATEGORIAS_QUE_ACEITAM_VITI.has(categoria),
-    subtipoAmbientalExtra,
-  });
-
-  if (miolo.includes('PROPOSTA DE CADASTRO') || miolo.includes('FICHA CADASTRAL')) {
-    return finalizar('CAD_5_PROPOSTA_CADASTRO');
-  }
-
-  if (/\bSELOS?\b/.test(miolo)) {
-    return finalizar('CAD_8_SELO_CARTORIO');
-  }
-
-  if (
-    miolo.includes('CONTRATO PARTICULAR') ||
-    miolo.includes('CONTRATO DE ASSESSORIA') ||
-    miolo.includes('ASSESSORIA')
-  ) {
-    return finalizar('ITEM_8_CONTRATO_ASSESSORIA');
-  }
-
-  if (miolo.includes('AUTORIZACAO') && miolo.includes('ALTERACAO')) {
-    return finalizar('ITEM_2_AUT_ALTERACAO');
-  }
-
-  if (miolo.includes('EMBARGO') || miolo.includes('IBAMA')) {
-    return finalizar(
-      mencionaConjuge ? 'ITEM_3_EMBARGOS_CONJUGE' : 'ITEM_3_EMBARGOS_TITULAR'
-    );
-  }
-  if (miolo.includes('IMPROBIDADE') || miolo.includes('CNJ')) {
-    return finalizar(
-      mencionaConjuge
-        ? 'ITEM_4_IMPROBIDADE_CONJUGE'
-        : 'ITEM_4_IMPROBIDADE_TITULAR'
-    );
-  }
-
-  if (miolo.includes('SOCIOAMBIENTAL') || miolo.includes('SOCIO AMBIENTAL')) {
-    return finalizar('ITEM_5_CERT_SOCIOAMBIENTAL');
-  }
-
-  if (/\b(CREA|CFTA)\b/.test(miolo)) {
-    return finalizar('ITEM_6_CREA');
-  }
-
-  if (/\bSICOR\b/.test(miolo)) {
-    return finalizar('ITEM_7_EXTRATO_SICOR');
-  }
-
-  if (miolo.includes('CONSOLIDADA')) {
-    return finalizar('ITEM_9_CONSOLIDADAS');
-  }
-
-  if (miolo.includes('REGULARIDADE AMBIENTAL')) {
-    return finalizar('ITEM_10_1_REG_AMBIENTAL');
-  }
-  if (miolo.includes('NAO DESMATAMENTO') || miolo.includes('DESMATAMENTO')) {
-    return finalizar('ITEM_10_2_NAO_DESMATAMENTO');
-  }
-  if (miolo.includes('RECOMPOSICAO') || miolo.includes('RESERVA LEGAL')) {
-    return finalizar('ITEM_10_3_RECOMPOSICAO');
-  }
-  if (
-    miolo.includes('DECLARACAO AMBIENTAL') ||
-    miolo.includes('DEC. AMBIENTAIS') ||
-    miolo.includes('DEC AMBIENTAIS')
-  ) {
-    return finalizar('ITEM_10_DEC_AMBIENTAIS');
-  }
-  if (
-    miolo.includes('BIOMA AMAZONIA') ||
-    miolo.includes('SOBREPOSICAO') ||
-    miolo.includes('RETIFICACAO DO CAR') ||
-    miolo.includes('NAO EXPLORACAO')
-  ) {
-    let sub = 'DEC. AMBIENTAL COMPLEMENTAR';
-    if (miolo.includes('BIOMA')) sub = 'DEC. DE BIOMA AMAZÔNIA';
-    else if (miolo.includes('SOBREPOSICAO')) sub = 'DEC. DE SOBREPOSIÇÃO DO CAR';
-    else if (miolo.includes('RETIFICACAO')) sub = 'DEC. DE RETIFICAÇÃO DO CAR';
-    else if (miolo.includes('NAO EXPLORACAO')) sub = 'DEC. DE NÃO EXPLORAÇÃO';
-    return finalizar('ITEM_10_4_OUTRA_DEC_AMBIENTAL', sub);
-  }
-
-  if (miolo.includes('ESPELHO') || miolo.includes('RELATORIO DA UND')) {
-    return finalizar('ITEM_11_ESPELHO_UND');
-  }
-
-  if (miolo.includes('PARECER TECNICO')) {
-    return finalizar('ITEM_16_PARECER_TECNICO');
-  }
-
-  if (miolo.includes('ORCAMENTO')) {
-    return finalizar('ITEM_18_ORCAMENTO');
-  }
-
-  if (/\bPROJETO\b/.test(miolo)) {
-    return finalizar('ITEM_12_PROJETO_PDF');
-  }
-
-  if (
-    miolo.includes('CONSULTA DO CAR') ||
-    miolo.includes('CONSULTA AO CAR') ||
-    miolo.includes('DEMONSTRATIVO CAR') ||
-    miolo.includes('CONSULTA CAR')
-  ) {
-    return finalizar('ITEM_13_CONSULTA_CAR');
-  }
-  if (/\bCAR\b/.test(miolo)) {
-    return finalizar('ITEM_13_CAR');
-  }
-
-  if (/\bCAF\b/.test(miolo)) {
-    return finalizar('ITEM_14_CAF');
-  }
-
-  if (/\bDCAA\b/.test(miolo)) {
-    return finalizar('ITEM_15_DCAA');
-  }
-
-  if (/\bRB\b/.test(miolo) || miolo.includes('RELACAO DE BENEFICIARIOS')) {
-    return finalizar('ITEM_17_RB_PA');
-  }
-
-  if (miolo.includes('CAPA DO ANALISADOR') || miolo.includes('ANALISADOR')) {
-    return finalizar('ITEM_19_CAPA_ANALISADOR');
-  }
-  if (isArquivoParecerGerencialReal(nomeArquivo)) {
-    return finalizar('ITEM_20_PARECER_GERENCIAL');
-  }
-  if (/\bSEMA\b/.test(miolo) || miolo.includes('DISPENSA AMBIENTAL')) {
-    return finalizar('ITEM_21_PARECER_SEMA');
-  }
-
-  if (
-    miolo.includes('IDENTIDADE') ||
-    miolo.includes('CNH') ||
-    /\b(RG|CPF)\b/.test(miolo)
-  ) {
-    if (mencionaConjuge) {
-      return finalizar('CAD_1_IDENTIDADE_CONJUGE');
-    }
-    const titNorm = removerAcentos(primeiroNomeTitular).toUpperCase();
-    if (titNorm && miolo.includes(titNorm)) {
-      return finalizar('CAD_1_IDENTIDADE_TITULAR');
-    }
-    return finalizar('CAD_1_IDENTIDADE_OUTRO');
-  }
-  if (
-    miolo.includes('CASAMENTO') ||
-    miolo.includes('NASCIMENTO') ||
-    miolo.includes('UNIAO ESTAVEL')
-  ) {
-    return finalizar('CAD_2_CERTIDAO_CASAMENTO');
-  }
-  if (
-    miolo.includes('ENDERECO') ||
-    miolo.includes('RESIDENCIA') ||
-    miolo.includes('EQUATORIAL') ||
-    miolo.includes('CAEMA')
-  ) {
-    return finalizar('CAD_3_COMP_ENDERECO');
-  }
-  if (
-    miolo.includes('RENDA') ||
-    miolo.includes('IRPF') ||
-    miolo.includes('CONTRACHEQUE')
-  ) {
-    return finalizar('CAD_4_COMP_RENDA');
-  }
-  if (miolo.includes('PROCURACAO')) {
-    return finalizar('CAD_6_PROCURACAO');
-  }
-
-  return finalizar('CAD_9_OUTROS_CADASTRO');
-}
-
-function calcularDestinosDoArquivo(
-  item: ArquivoMapeadoItem,
-  nomes: {
-    titular: string;
-    conjuge: string;
-    procurador: string;
-    avalista: string;
+const OPCOES_SELECT_CATEGORIA: Array<{
+  grupo: string;
+  itens: Array<{ valor: CategoriaDocPasta; label: string }>;
+}> = [
+  {
+    grupo: '📂 Documentos do Projeto, Limite, Imóvel e Ambientais',
+    itens: [
+      {
+        valor: 'ITEM_ARQ_ELETRONICO_PROJETO',
+        label: 'ARQUIVO ELETRÔNICO (.PRONAF / .INVUR / .CUSTEIO)',
+      },
+      { valor: 'ITEM_PROJETO_PDF', label: 'PLANO / PROPOSTA / PROJETO (PDF)' },
+      { valor: 'ITEM_CAPA_ANALISADOR', label: 'CAPA DO ANALISADOR' },
+      { valor: 'ITEM_KML', label: 'ARQUIVO GEODÉSICO (.KML)' },
+      {
+        valor: 'ITEM_PLANILHA_GEODESICA',
+        label: 'PLANILHA DE COORDENADAS GEODÉSICAS (CUSTEIO)',
+      },
+      {
+        valor: 'ITEM_SOLICITACAO_LIMITE',
+        label: 'SOLICITAÇÃO DE ABERTURA DE LIMITE (LCGH/LCGA)',
+      },
+      { valor: 'ITEM_CAF', label: 'DAP / CAF (RAIZ + CADASTRO)' },
+      { valor: 'ITEM_EXTRATO_CAF', label: 'EXTRATO DA CAF (CONSULTA DO DIA)' },
+      { valor: 'ITEM_CAR', label: 'CAR (CADASTRO AMBIENTAL RURAL)' },
+      { valor: 'ITEM_CONSULTA_CAR', label: 'CONSULTA AO CAR / DEMONSTRATIVO' },
+      {
+        valor: 'ITEM_AUT_ALTERACAO',
+        label: 'AUTORIZAÇÃO DE MODIFICAÇÃO / ALTERAÇÃO DO PROJETO',
+      },
+      {
+        valor: 'ITEM_EMBARGOS_TITULAR',
+        label: 'CERTIDÃO DE EMBARGOS (TITULAR)',
+      },
+      {
+        valor: 'ITEM_EMBARGOS_CONJUGE',
+        label: 'CERTIDÃO DE EMBARGOS (CÔNJUGE)',
+      },
+      { valor: 'ITEM_IMPROBIDADE_TITULAR', label: 'IMPROBIDADE CNJ (TITULAR)' },
+      { valor: 'ITEM_IMPROBIDADE_CONJUGE', label: 'IMPROBIDADE CNJ (CÔNJUGE)' },
+      { valor: 'ITEM_CND_PF', label: 'CND PESSOA FÍSICA (RECEITA FEDERAL)' },
+      { valor: 'ITEM_CNDT_PF', label: 'CNDT (DÉBITOS TRABALHISTAS)' },
+      { valor: 'ITEM_EXTRATO_SICOR', label: 'EXTRATO SICOR' },
+      {
+        valor: 'ITEM_CERT_SOCIO_COM_KML',
+        label: 'CERTIFICAÇÃO SOCIOAMBIENTAL (COM KML)',
+      },
+      {
+        valor: 'ITEM_CERT_SOCIO_SEM_KML',
+        label: 'CERTIFICAÇÃO SOCIOAMBIENTAL (SEM KML / GARANTIA)',
+      },
+      { valor: 'ITEM_CREA', label: 'REGULARIDADE DO PROJETISTA (CREA / CFTA)' },
+      { valor: 'ITEM_CONTRATO_ASSESSORIA', label: 'CONTRATO DE ASSESSORIA' },
+      { valor: 'ITEM_CCIR', label: 'CCIR (ANO VIGENTE)' },
+      { valor: 'ITEM_CND_ITR_IMOVEL', label: 'CND / ITR DO IMÓVEL' },
+      {
+        valor: 'ITEM_LAUDO_EXTERNO',
+        label: 'LAUDO DE AVALIAÇÃO EXTERNO (PROJETISTA / CONVALIDAÇÃO)',
+      },
+      {
+        valor: 'ITEM_LAUDO_INTERNO',
+        label: 'LAUDO DE AVALIAÇÃO INTERNO DO BANCO (> R$ 600 MIL)',
+      },
+      { valor: 'ITEM_DCAA', label: 'DCAA (DISPENSA AMBIENTAL)' },
+      { valor: 'ITEM_FICHA_SANITARIA', label: 'FICHA SANITÁRIA (AGED)' },
+      { valor: 'ITEM_ORCAMENTO', label: 'CARTA-PROPOSTA / ORÇAMENTO' },
+      {
+        valor: 'ITEM_CONSOLIDADAS',
+        label: 'DECLARAÇÕES CONSOLIDADAS (PRONAF OU PF)',
+      },
+      { valor: 'ITEM_DEC_AMBIENTAIS', label: 'DECLARAÇÕES AMBIENTAIS (GERAL)' },
+      {
+        valor: 'ITEM_DEC_REG_AMBIENTAL',
+        label: 'DEC. DE REGULARIDADE AMBIENTAL',
+      },
+      {
+        valor: 'ITEM_DEC_NAO_DESMATAMENTO',
+        label: 'DEC. DE NÃO DESMATAMENTO APÓS 2008',
+      },
+      { valor: 'ITEM_DEC_RECOMPOSICAO', label: 'DEC. DE RECOMPOSIÇÃO DE RL' },
+      {
+        valor: 'ITEM_DEC_REG_AMB_GARANTIDOR',
+        label: 'DEC. REG. AMB. DO IMÓVEL GARANTIDOR',
+      },
+      {
+        valor: 'ITEM_DEC_OUTRA_AMBIENTAL',
+        label: 'OUTRA DECLARAÇÃO AMBIENTAL / CAR',
+      },
+      {
+        valor: 'ITEM_TITULO_DOMINIO',
+        label: 'TÍTULO DE DOMÍNIO / ESCRITURA PÚBLICA',
+      },
+      {
+        valor: 'ITEM_INTEIRO_TEOR',
+        label: 'INTEIRO TEOR DA MATRÍCULA (HISTÓRICO 15 ANOS)',
+      },
+      {
+        valor: 'ITEM_PLANO_ATIVIDADE_RURAL',
+        label: 'PLANO DE ATIVIDADE RURAL (PDF)',
+      },
+      { valor: 'ITEM_ESPELHO_UND', label: 'ESPELHO - RELATÓRIO DA UND' },
+      { valor: 'ITEM_PARECER_TECNICO', label: 'PARECER TÉCNICO' },
+      { valor: 'ITEM_RB_PA', label: 'RELAÇÃO DE BENEFICIÁRIOS (RB DO P.A.)' },
+      { valor: 'ITEM_PARECER_GERENCIAL', label: 'PARECER GERENCIAL' },
+      { valor: 'ITEM_PARECER_SEMA', label: 'PARECER DA SEMA' },
+    ],
   },
-  projetista: string,
-  nomePa: string
-): {
-  nomeNaRaiz: string | null;
-  nomeNoCadastro: string | null;
-  nomeNaSocioambiental: string | null;
-} {
-  const ext = item.extensao ? `.${item.extensao}` : '.pdf';
-  const aceitaViti = CATEGORIAS_QUE_ACEITAM_VITI.has(item.categoria);
-  const prefViti = item.isViti && aceitaViti ? 'VITI - ' : '';
-  const tit = nomes.titular || 'CLIENTE';
-  const conj = nomes.conjuge || 'CÔNJUGE';
-  const proj = (projetista || 'PROJETISTA').toUpperCase().trim();
-  const pa = (nomePa || 'P.A LAGO DA CARNAÚBA').toUpperCase().trim();
-
-  switch (item.categoria) {
-    case 'IGNORAR':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-
-    case 'ITEM_1_PROJETO_ARQ': {
-      const mExt = item.nomeOriginal.match(
-        /(\.PRONAF[A-Za-z0-9_]*|\.[A-Za-z0-9_]+)$/i
-      );
-      const sufixoArq = mExt ? mExt[1].toUpperCase() : '.PRONAF_A2';
-      return {
-        nomeNaRaiz: `1. PROJETO - ${tit}${sufixoArq}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    }
-    case 'ITEM_2_AUT_ALTERACAO':
-      return {
-        nomeNaRaiz: `2. ${prefViti}AUTORIZAÇÃO DE ALTERAÇÃO - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_3_EMBARGOS_TITULAR':
-      return {
-        nomeNaRaiz: `3. EMBARGOS - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `3. EMBARGOS - ${tit}${ext}`,
-      };
-    case 'ITEM_3_EMBARGOS_CONJUGE':
-      return {
-        nomeNaRaiz: `3. EMBARGOS - ${conj}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `3. EMBARGOS - ${conj}${ext}`,
-      };
-    case 'ITEM_4_IMPROBIDADE_TITULAR':
-      return {
-        nomeNaRaiz: `4. IMPROBIDADE - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_4_IMPROBIDADE_CONJUGE':
-      return {
-        nomeNaRaiz: `4. IMPROBIDADE - ${conj}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_5_CERT_SOCIOAMBIENTAL':
-      return {
-        nomeNaRaiz: `5. CERT. SOCIOAMBIENTAL - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `1. CERTIFICAÇÃO SOCIOAMBIENTAL - ${tit}${ext}`,
-      };
-    case 'ITEM_6_CREA':
-      return {
-        nomeNaRaiz: `6. CREA - ${proj}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_7_EXTRATO_SICOR':
-      return {
-        nomeNaRaiz: `7. EXTRATO SICOR - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_8_CONTRATO_ASSESSORIA':
-      return {
-        nomeNaRaiz: `8. ${prefViti}CONTRATO DE ASSESSORIA - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_9_CONSOLIDADAS':
-      return {
-        nomeNaRaiz: `9. ${prefViti}DECLARAÇÕES CONSOLIDADAS - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_10_DEC_AMBIENTAIS':
-      return {
-        nomeNaRaiz: `10. ${prefViti}DEC. AMBIENTAIS - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `6. ${prefViti}DEC. AMBIENTAIS - ${tit}${ext}`,
-      };
-    case 'ITEM_10_1_REG_AMBIENTAL':
-      return {
-        nomeNaRaiz: `10.1. ${prefViti}DEC. DE REGULARIDADE AMBIENTAL - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `6.1. ${prefViti}DEC. DE REGULARIDADE AMBIENTAL - ${tit}${ext}`,
-      };
-    case 'ITEM_10_2_NAO_DESMATAMENTO':
-      return {
-        nomeNaRaiz: `10.2. ${prefViti}DEC. DE NÃO DESMATAMENTO - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `6.2. ${prefViti}DEC. DE NÃO DESMATAMENTO - ${tit}${ext}`,
-      };
-    case 'ITEM_10_3_RECOMPOSICAO':
-      return {
-        nomeNaRaiz: `10.3. ${prefViti}DEC. DE RECOMPOSIÇÃO - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `6.3. ${prefViti}DEC. DE RECOMPOSIÇÃO - ${tit}${ext}`,
-      };
-    case 'ITEM_10_4_OUTRA_DEC_AMBIENTAL': {
-      const rotulo = item.subtipoAmbientalExtra || 'DEC. AMBIENTAL COMPLEMENTAR';
-      return {
-        nomeNaRaiz: `10.4. ${prefViti}${rotulo} - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `6.4. ${prefViti}${rotulo} - ${tit}${ext}`,
-      };
-    }
-    case 'ITEM_11_ESPELHO_UND':
-      return {
-        nomeNaRaiz: `11. ESPELHO - RELATÓRIO DA UND - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_12_PROJETO_PDF':
-      return {
-        nomeNaRaiz: `12. ${prefViti}PROJETO - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_13_CAR':
-      return {
-        nomeNaRaiz: `13. CAR${pa ? ` - ${pa}` : ` - ${tit}`}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `2. CAR${pa ? ` - ${pa}` : ` - ${tit}`}${ext}`,
-      };
-    case 'ITEM_13_CONSULTA_CAR':
-      return {
-        nomeNaRaiz: `13. CONSULTA DO CAR${pa ? ` - ${pa}` : ` - ${tit}`}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `2. CONSULTA AO CAR${pa ? ` - ${pa}` : ` - ${tit}`}${ext}`,
-      };
-    case 'ITEM_14_CAF':
-      return {
-        nomeNaRaiz: `14. CAF - ${tit}${ext}`,
-        nomeNoCadastro: `5. CAF - ${tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_15_DCAA':
-      return {
-        nomeNaRaiz: `15. DCAA - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `4. DCAA - ${tit}${ext}`,
-      };
-    case 'ITEM_16_PARECER_TECNICO':
-      return {
-        nomeNaRaiz: `16. ${prefViti}PARECER TÉCNICO - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_17_RB_PA':
-      return {
-        nomeNaRaiz: `17 - RB ${pa}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_18_ORCAMENTO':
-      return {
-        nomeNaRaiz: `18. ${prefViti}ORÇAMENTO - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_19_CAPA_ANALISADOR':
-      return {
-        nomeNaRaiz: `19. CAPA DO ANALISADOR - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    case 'ITEM_20_PARECER_GERENCIAL': {
-      // Se o arquivo ainda estiver com o nome "FALTA AJUSTAR", preserva esse nome até o usuário inserir os IDs!
-      const aindaFaltaAjustar = item.nomeOriginal
-        .toUpperCase()
-        .includes('FALTA AJUSTAR');
-      return {
-        nomeNaRaiz: aindaFaltaAjustar
-          ? `20. PARECER GERENCIAL - FALTA AJUSTAR${ext}`
-          : `20. PARECER GERENCIAL - ${tit}${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: null,
-      };
-    }
-    case 'ITEM_21_PARECER_SEMA':
-      return {
-        nomeNaRaiz: `21. PARECER DA SEMA${ext}`,
-        nomeNoCadastro: null,
-        nomeNaSocioambiental: `5. PARECER DA SEMA${ext}`,
-      };
-
-    case 'CAD_1_IDENTIDADE_TITULAR':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `1. IDENTIDADE - ${tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_1_IDENTIDADE_CONJUGE':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `1. IDENTIDADE - ${conj}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_1_IDENTIDADE_OUTRO': {
-      const outNome = nomes.procurador || nomes.avalista || 'ENVOLVIDO';
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `1. IDENTIDADE - ${outNome}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    }
-    case 'CAD_2_CERTIDAO_CASAMENTO':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `2. CERTIDÃO DE CASAMENTO - ${tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_3_COMP_ENDERECO':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `3. COMPROVANTE DE ENDEREÇO - ${tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_4_COMP_RENDA':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `4. COMPROVANTE DE RENDA - ${tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_5_PROPOSTA_CADASTRO':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `6. ${prefViti}PROPOSTA DE CADASTRO - ${tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_6_PROCURACAO':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `7. PROCURAÇÃO - ${nomes.procurador || tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_8_SELO_CARTORIO':
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `8. SELO DE FISCALIZAÇÃO - ${tit}${ext}`,
-        nomeNaSocioambiental: null,
-      };
-    case 'CAD_9_OUTROS_CADASTRO':
-    default:
-      return {
-        nomeNaRaiz: null,
-        nomeNoCadastro: `9. DOC. CADASTRAL - ${item.nomeOriginal}`,
-        nomeNaSocioambiental: null,
-      };
-  }
-}
+  {
+    grupo: '🪪 Subpasta CADASTRO (1 a 9)',
+    itens: [
+      {
+        valor: 'CAD_1_IDENTIDADE_TITULAR',
+        label: 'CAD 1. IDENTIDADE (TITULAR)',
+      },
+      {
+        valor: 'CAD_1_IDENTIDADE_CONJUGE',
+        label: 'CAD 1. IDENTIDADE (CÔNJUGE)',
+      },
+      {
+        valor: 'CAD_1_IDENTIDADE_OUTRO',
+        label: 'CAD 1. IDENTIDADE (PROCURADOR / AVALISTA)',
+      },
+      {
+        valor: 'CAD_2_CERTIDAO_CASAMENTO',
+        label: 'CAD 2. CERTIDÃO DE CASAMENTO',
+      },
+      {
+        valor: 'CAD_3_COMP_ENDERECO',
+        label: 'CAD 3. COMPROVANTE DE ENDEREÇO',
+      },
+      { valor: 'CAD_4_COMP_RENDA', label: 'CAD 4. COMPROVANTE DE RENDA' },
+      {
+        valor: 'CAD_5_PROPOSTA_CADASTRO',
+        label: 'CAD 6. PROPOSTA DE CADASTRO (ACEITA VITI)',
+      },
+      { valor: 'CAD_6_PROCURACAO', label: 'CAD 7. PROCURAÇÃO' },
+      {
+        valor: 'CAD_8_SELO_CARTORIO',
+        label: 'CAD 8. SELO DE FISCALIZAÇÃO CARTORÁRIA',
+      },
+      { valor: 'CAD_9_OUTROS_CADASTRO', label: 'CAD 9. OUTROS CADASTRAIS' },
+    ],
+  },
+];
 
 export default function ModalOrganizadorPastasCliente({
   aberto,
@@ -905,8 +354,23 @@ export default function ModalOrganizadorPastasCliente({
   cardsKanban,
   onCadastrarPropostaNoPainel,
 }: ModalOrganizadorPastasClienteProps) {
-  const [abaAtiva, setAbaAtiva] = useState<'ORGANIZADOR' | 'COFRE'>('ORGANIZADOR');
+  const [abaAtiva, setAbaAtiva] = useState<'ORGANIZADOR' | 'COFRE'>(
+    'ORGANIZADOR'
+  );
 
+  // Configuração do Perfil da Pasta (Porte, Escopo, Modalidade e Garantia)
+  const [portePerfil, setPortePerfil] = useState<PorteOrganizador>('PRONAF_A');
+  const [escopoPasta, setEscopoPasta] =
+    useState<EscopoOperacaoPasta>('PRONAF_A_PADRAO');
+  const [modalidadeDerivada, setModalidadeDerivada] =
+    useState<ModalidadeDerivada>('INVESTIMENTO');
+  const [modalidadeLimite, setModalidadeLimite] =
+    useState<ModalidadeLimite>('LCGH');
+  const [garantiaDerivada, setGarantiaDerivada] =
+    useState<GarantiaDerivada>('SEM_GARANTIA');
+  const [imovelAvaliadoAcima600k, setImovelAvaliadoAcima600k] = useState(false);
+
+  // Dados dos Envolvidos
   const [buscaClienteRapida, setBuscaClienteRapida] = useState('');
   const [titularNome, setTitularNome] = useState('');
   const [conjugeNome, setConjugeNome] = useState('');
@@ -914,17 +378,16 @@ export default function ModalOrganizadorPastasCliente({
   const [avalistaNome, setAvalistaNome] = useState('');
   const [projetistaNome, setProjetistaNome] = useState('ZEZÃO');
   const [paNome, setPaNome] = useState('P.A LAGO DA CARNAÚBA');
-  const [isPronafA, setIsPronafA] = useState(true);
-  const [gerarDuplicataCertSocioSemNumero] = useState(true);
   const [gerarTxtsLembretesFaltantes, setGerarTxtsLembretesFaltantes] =
     useState(true);
 
+  // Estados de leitura da pasta local
   const [dirHandleRoot, setDirHandleRoot] = useState<any>(null);
   const [nomePastaSelecionada, setNomePastaSelecionada] = useState('');
   const [pastaJaEraOrganizada, setPastaJaEraOrganizada] = useState(false);
-  const [arquivosMapeados, setArquivosMapeados] = useState<ArquivoMapeadoItem[]>(
-    []
-  );
+  const [arquivosMapeados, setArquivosMapeados] = useState<
+    ArquivoMapeadoItem[]
+  >([]);
   const [jaTemSeloNaSubpastaCadastro, setJaTemSeloNaSubpastaCadastro] =
     useState(false);
   const [
@@ -933,13 +396,15 @@ export default function ModalOrganizadorPastasCliente({
   ] = useState(false);
   const [processando, setProcessando] = useState(false);
 
+  // Auditoria de PDFs
   const [auditoriaPdf, setAuditoriaPdf] =
     useState<ResultadoAuditoriaPastaPdf | null>(null);
   const [auditandoPdfs, setAuditandoPdfs] = useState(false);
 
-  const [coringasSalvos, setCoringasSalvos] = useState<CoringaGavetaNuvemItem[]>(
-    []
-  );
+  // Gaveta de Coringas na Nuvem
+  const [coringasSalvos, setCoringasSalvos] = useState<
+    CoringaGavetaNuvemItem[]
+  >([]);
   const [statusSyncCofre, setStatusSyncCofre] = useState<
     'SINCRONIZADO' | 'SINCRONIZANDO'
   >('SINCRONIZADO');
@@ -949,6 +414,7 @@ export default function ModalOrganizadorPastasCliente({
     'P.A LAGO DA CARNAÚBA'
   );
 
+  // Listas vivas p/ integração com Kanban e Parecer Gerencial
   const [listaContratacoes, setListaContratacoes] = useState<
     RegistroContratacao[]
   >(() => contratacoes || []);
@@ -958,7 +424,7 @@ export default function ModalOrganizadorPastasCliente({
   const [listaOpBase, setListaOpBase] = useState<OperacaoBaseDesembolso[]>([]);
   const [listaEventos, setListaEventos] = useState<EventoDesembolso[]>([]);
 
-  const [modalIniciarPronafA, setModalIniciarPronafA] =
+  const [modalIniciarProposta, setModalIniciarProposta] =
     useState<ResultadoClassificacaoPronafA | null>(null);
   const [cadCpf, setCadCpf] = useState('');
   const [cadValor, setCadValor] = useState('');
@@ -1006,16 +472,13 @@ export default function ModalOrganizadorPastasCliente({
       setStatusSyncCofre('SINCRONIZANDO');
       const locais = await listarCoringasDoCofreLocal();
       setCoringasSalvos(locais);
-
       try {
         const nuvem = await carregarCoringasGavetaSync();
         const mapa = new Map<string, CoringaGavetaNuvemItem>();
         locais.forEach((item) => mapa.set(item.id, item));
         nuvem.forEach((item) => mapa.set(item.id, item));
-
         const unificados = Array.from(mapa.values());
         setCoringasSalvos(unificados);
-
         for (const it of unificados) {
           await salvarCoringaNoCofreLocal(it);
           if (!nuvem.some((n) => n.id === it.id)) {
@@ -1028,9 +491,43 @@ export default function ModalOrganizadorPastasCliente({
         setStatusSyncCofre('SINCRONIZADO');
       }
     };
-
     sincronizarCofre();
   }, [aberto]);
+
+  const cfgPerfil: ConfiguracaoPerfilPasta = useMemo(
+    () => ({
+      porte: portePerfil,
+      escopo:
+        portePerfil === 'PRONAF_A' && escopoPasta !== 'LIMITE_PURO'
+          ? 'PRONAF_A_PADRAO'
+          : escopoPasta,
+      modalidadeDerivada,
+      modalidadeLimite,
+      garantiaDerivada:
+        portePerfil === 'PRONAF_A' ? 'SEM_GARANTIA' : garantiaDerivada,
+      imovelAvaliadoAcima600k,
+      titularNome,
+      conjugeNome,
+      procuradorNome,
+      avalistaNome,
+      projetistaNome,
+      paOuImovelNome: paNome,
+    }),
+    [
+      portePerfil,
+      escopoPasta,
+      modalidadeDerivada,
+      modalidadeLimite,
+      garantiaDerivada,
+      imovelAvaliadoAcima600k,
+      titularNome,
+      conjugeNome,
+      procuradorNome,
+      avalistaNome,
+      projetistaNome,
+      paNome,
+    ]
+  );
 
   const nomesCurtos = useMemo(
     () =>
@@ -1043,43 +540,73 @@ export default function ModalOrganizadorPastasCliente({
     [titularNome, conjugeNome, procuradorNome, avalistaNome]
   );
 
-  const arquivosMapeadosOrdenados = useMemo(
-    () => ordenarArquivosPorSequenciaNumerica(arquivosMapeados),
-    [arquivosMapeados]
-  );
+  // Obtém (ou cria recursivamente) qualquer subpasta como "LCGH/CERTIFICAÇÃO SOCIOAMBIENTAL"
+  const obterSubpastaHandle = async (
+    rootHandle: any,
+    caminhoRelativo: string
+  ) => {
+    if (!caminhoRelativo) return rootHandle;
+    const partes = caminhoRelativo.split('/').filter(Boolean);
+    let atual = rootHandle;
+    for (const p of partes) {
+      atual = await atual.getDirectoryHandle(p, { create: true });
+    }
+    return atual;
+  };
 
-  // Salva o parecer extraído com o nome "20. PARECER GERENCIAL - FALTA AJUSTAR.txt"
+  // Grava o Parecer Gerencial extraído com o número exato do perfil ativo (20, 28, 29 ou 19)
   const gravarParecerGerencialRealNaPasta = async (conteudoTexto: string) => {
     if (!dirHandleRoot || !conteudoTexto.trim()) return;
     try {
-      const nomeArqFaltaAjustar = '20. PARECER GERENCIAL - FALTA AJUSTAR.txt';
-
-      const fileHandle = await dirHandleRoot.getFileHandle(
-        nomeArqFaltaAjustar,
-        { create: true }
+      const destinosParecer = calcularTodosDestinosDoArquivo(
+        {
+          nomeOriginal: 'PARECER GERENCIAL - FALTA AJUSTAR.txt',
+          extensao: 'txt',
+          categoria: 'ITEM_PARECER_GERENCIAL',
+          isViti: false,
+        },
+        cfgPerfil
       );
-      const writable = await fileHandle.createWritable();
-      await writable.write(conteudoTexto);
-      await writable.close();
 
-      try {
-        await dirHandleRoot.removeEntry('20. FALTA PARECER GERENCIAL.txt');
-      } catch {
-        // Ignora
+      for (const dest of destinosParecer) {
+        const pastaAlvo = await obterSubpastaHandle(
+          dirHandleRoot,
+          dest.pastaRelativa
+        );
+        const nomeSeguro = dest.nomeArquivoFinal.replace(/[/:*?"<>|]/g, '-');
+        const fh = await pastaAlvo.getFileHandle(nomeSeguro, { create: true });
+        const wr = await fh.createWritable();
+        await wr.write(conteudoTexto);
+        await wr.close();
+
+        // Remove eventual ".txt" de "FALTA PARECER GERENCIAL" daquela pasta
+        for (const numP of ['19', '20', '28', '29']) {
+          try {
+            await pastaAlvo.removeEntry(
+              `${numP}. FALTA PARECER GERENCIAL.txt`
+            );
+          } catch {
+            // Ignora
+          }
+        }
       }
 
       setParecerGerencialExtraidoNaPasta(true);
+      const exemploNome =
+        destinosParecer[0]?.nomeArquivoFinal ||
+        '20. PARECER GERENCIAL - FALTA AJUSTAR.txt';
       alert(
-        `✅ Parecer completo salvo diretamente na pasta do cliente como:\n"${nomeArqFaltaAjustar}"\n\nQuando inserir os 2 IDs do banco posteriormente, basta renomeá-lo para "20. PARECER GERENCIAL".`
+        `✅ Parecer completo salvo diretamente na pasta do cliente como:\n"${exemploNome}"!`
       );
     } catch (e) {
       console.error('Erro ao gravar parecer na pasta:', e);
     }
   };
 
+  // Se o utilizador fechar/saltar a etapa do Parecer sem extrair, grava o "<Nº>. FALTA PARECER GERENCIAL.txt"
   const handleFecharOverlayParecer = async () => {
     const jaTinhaParecerNaPasta = arquivosMapeados.some(
-      (a) => a.categoria === 'ITEM_20_PARECER_GERENCIAL'
+      (a) => a.categoria === 'ITEM_PARECER_GERENCIAL'
     );
 
     if (
@@ -1088,83 +615,50 @@ export default function ModalOrganizadorPastasCliente({
       gerarTxtsLembretesFaltantes &&
       dirHandleRoot
     ) {
-      try {
-        const fh = await dirHandleRoot.getFileHandle(
-          '20. FALTA PARECER GERENCIAL.txt',
-          { create: true }
-        );
-        const wr = await fh.createWritable();
-        await wr.write('');
-        await wr.close();
-      } catch {
-        // Ignora
+      for (const lemb of planoLembretesTxt) {
+        if (lemb.nomeArquivoTxt.includes('FALTA PARECER GERENCIAL')) {
+          try {
+            const pastaAlvo = await obterSubpastaHandle(
+              dirHandleRoot,
+              lemb.pastaRelativa
+            );
+            const fh = await pastaAlvo.getFileHandle(lemb.nomeArquivoTxt, {
+              create: true,
+            });
+            const wr = await fh.createWritable();
+            await wr.write('');
+            await wr.close();
+          } catch {
+            // Ignora
+          }
+        }
       }
     }
-
     setCardOverlayParecerId(null);
   };
 
   useEffect(() => {
-    if (!cardOverlayParecerId || !dirHandleRoot) return;
-
-    const win = window as any;
-    const origShowSaveFilePicker = win.showSaveFilePicker;
-    const origCreateObjectURL = URL.createObjectURL;
-
-    if (origShowSaveFilePicker) {
-      win.showSaveFilePicker = async function (opts: any) {
-        const sugName = String(opts?.suggestedName || '').toLowerCase();
-        if (sugName.endsWith('.txt') || JSON.stringify(opts || {}).includes('.txt')) {
-          let textoAcumulado = '';
-          return {
-            createWritable: async () => ({
-              write: async (chunk: any) => {
-                if (typeof chunk === 'string') {
-                  textoAcumulado += chunk;
-                } else if (chunk instanceof Blob) {
-                  textoAcumulado += await chunk.text();
-                } else if (chunk && typeof chunk === 'object') {
-                  textoAcumulado += new TextDecoder().decode(chunk);
-                }
-              },
-              close: async () => {
-                if (textoAcumulado.trim()) {
-                  await gravarParecerGerencialRealNaPasta(textoAcumulado);
-                }
-              },
-            }),
-          };
-        }
-        return origShowSaveFilePicker.call(win, opts);
-      };
+    if (
+      !cardOverlayParecerId ||
+      !dirHandleRoot ||
+      typeof window === 'undefined'
+    ) {
+      return;
     }
-
-    URL.createObjectURL = function (obj: Blob | MediaSource) {
-      if (
-        obj instanceof Blob &&
-        (obj.type.includes('text/plain') || obj.type === '') &&
-        obj.size > 30 &&
-        obj.size < 800000
-      ) {
-        obj
-          .text()
-          .then((textoCompleto) => {
-            if (textoCompleto && textoCompleto.trim().length > 30) {
-              gravarParecerGerencialRealNaPasta(textoCompleto);
-            }
-          })
-          .catch(() => {});
-      }
-      return origCreateObjectURL.call(URL, obj);
+    const win = window as unknown as {
+      __salvarParecerDiretoNaPastaOrganizador?: (
+        conteudo: string
+      ) => Promise<void>;
     };
-
+    win.__salvarParecerDiretoNaPastaOrganizador = async (
+      conteudoTexto: string
+    ) => {
+      await gravarParecerGerencialRealNaPasta(conteudoTexto);
+    };
     return () => {
-      if (origShowSaveFilePicker) {
-        win.showSaveFilePicker = origShowSaveFilePicker;
-      }
-      URL.createObjectURL = origCreateObjectURL;
+      delete win.__salvarParecerDiretoNaPastaOrganizador;
     };
-  }, [cardOverlayParecerId, dirHandleRoot]);
+  }, [cardOverlayParecerId, dirHandleRoot, cfgPerfil]);
 
   const todosItensConformidadePronafA = useMemo(() => {
     if (typeof window === 'undefined') return [];
@@ -1212,7 +706,11 @@ export default function ModalOrganizadorPastasCliente({
       procurador: string;
       avalista: string;
       projetista: string;
-      pronafA: boolean;
+      porte: PorteOrganizador;
+      escopoSugerido: EscopoOperacaoPasta;
+      modDerivada: ModalidadeDerivada;
+      modLimite: ModalidadeLimite;
+      garDerivada: GarantiaDerivada;
     }> = [];
 
     todosItensConformidadePronafA.forEach((it) => {
@@ -1223,71 +721,151 @@ export default function ModalOrganizadorPastasCliente({
         procurador: it.procuradorNome.toUpperCase(),
         avalista: '',
         projetista: '',
-        pronafA: true,
+        porte: 'PRONAF_A',
+        escopoSugerido: 'PRONAF_A_PADRAO',
+        modDerivada: 'INVESTIMENTO',
+        modLimite: 'LCGH',
+        garDerivada: 'SEM_GARANTIA',
       });
     });
 
+    // Agrupa operações por cliente na aba Contratações para detectar automaticamente se tem Derivada + Limite (Combo)!
+    const porCliente = new Map<string, RegistroContratacao[]>();
     listaContratacoes.forEach((c) => {
-      if (c.cliente.trim()) {
-        lista.push({
-          label: `${c.cliente.toUpperCase()} (${c.porte || 'Carteira'})`,
-          titular: c.cliente.toUpperCase(),
-          conjuge: '',
-          procurador: '',
-          avalista: c.avalistaNome || '',
-          projetista: c.projetista || '',
-          pronafA: (c.porte || '').toUpperCase().includes('PRONAF A'),
-        });
+      const ch = c.cliente.toUpperCase().trim();
+      if (!ch) return;
+      if (!porCliente.has(ch)) porCliente.set(ch, []);
+      porCliente.get(ch)!.push(c);
+    });
+
+    porCliente.forEach((ops, nomeCli) => {
+      const prim = ops[0];
+      const prtUp = (prim.porte || '').toUpperCase();
+      const porteDet: PorteOrganizador = prtUp.includes('PRONAF A')
+        ? 'PRONAF_A'
+        : prtUp.includes('PRONAF')
+        ? 'PRONAF_V'
+        : 'MINI_PEQUENO';
+
+      const opLim = ops.find((o) =>
+        ['LCGH', 'LCGA'].includes((o.tipo || '').toUpperCase().trim())
+      );
+      const opDer = ops.find(
+        (o) => !['LCGH', 'LCGA'].includes((o.tipo || '').toUpperCase().trim())
+      );
+
+      let escopoSug: EscopoOperacaoPasta =
+        porteDet === 'PRONAF_A' ? 'PRONAF_A_PADRAO' : 'DERIVADA_PURA';
+      if (opLim && opDer && porteDet !== 'PRONAF_A') {
+        escopoSug = 'COMBO_DERIVADA_E_LIMITE';
+      } else if (opLim && !opDer) {
+        escopoSug = 'LIMITE_PURO';
       }
+
+      const modDer: ModalidadeDerivada = (opDer?.tipo || '')
+        .toUpperCase()
+        .includes('CUSTEIO')
+        ? 'CUSTEIO'
+        : 'INVESTIMENTO';
+      const modLim: ModalidadeLimite =
+        (opLim?.tipo || '').toUpperCase().trim() === 'LCGA' ? 'LCGA' : 'LCGH';
+      const garDer: GarantiaDerivada =
+        opLim ||
+        ['LCGH', 'LCGA'].includes(
+          (opDer?.tipoGarantiaKanban || '').toUpperCase()
+        )
+          ? 'LCGH_LCGA'
+          : opDer?.avalistaNome || opDer?.tipoGarantiaKanban === 'AVAL'
+          ? 'AVAL'
+          : 'SEM_GARANTIA';
+
+      lista.push({
+        label: `${nomeCli} (${prim.porte || 'Carteira'} • ${ops
+          .map((o) => o.tipo)
+          .join(' + ')})`,
+        titular: nomeCli,
+        conjuge: '',
+        procurador: '',
+        avalista: prim.avalistaNome || '',
+        projetista: prim.projetista || '',
+        porte: porteDet,
+        escopoSugerido: escopoSug,
+        modDerivada: modDer,
+        modLimite: modLim,
+        garDerivada: garDer,
+      });
     });
 
     return lista;
   }, [todosItensConformidadePronafA, listaContratacoes]);
 
-  // Autodetecta Titular, Cônjuge, Projetista e P.A. tanto em pastas brutas quanto em pastas JÁ ORGANIZADAS!
   const autodetectarDadosPelosArquivos = (
     files: File[],
     nomeDaPastaRaiz?: string
   ) => {
-    let titDetectado = '';
-    let conjDetectado = '';
-    let procDetectado = '';
+    let titDetectado = titularNome;
+    let conjDetectado = conjugeNome;
+    let procDetectado = procuradorNome;
     let paDetectado = paNome;
     let projDetectado = projetistaNome;
+    let porteSugerido: PorteOrganizador | null = null;
+    let modDerivSugerida: ModalidadeDerivada | null = null;
+    let achouDocLimite = false;
+    let achouDocDerivada = false;
 
     files.forEach((f) => {
       const up = f.name.toUpperCase();
-      // 1. Arquivo .PRONAF_A2 (Bruto ou já numerado "1. PROJETO - ISMAEL.PRONAF_A2")
-      if (up.includes('.PRONAF')) {
+      if (up.includes('.PRONAF_A')) {
+        porteSugerido = 'PRONAF_A';
+        achouDocDerivada = true;
+      } else if (up.includes('.PRONAF')) {
+        if (!porteSugerido) porteSugerido = 'PRONAF_V';
+        achouDocDerivada = true;
+      } else if (up.includes('.INVUR')) {
+        porteSugerido = 'MINI_PEQUENO';
+        achouDocDerivada = true;
+      }
+      if (up.includes('.CUSTEIO')) {
+        modDerivSugerida = 'CUSTEIO';
+        achouDocDerivada = true;
+      }
+      if (
+        up.includes('SOLICITACAO DE ABERTURA') ||
+        up.includes('SOLICITACAO DE LIMITE') ||
+        up.includes('SOLICITACAO DO LIMITE')
+      ) {
+        achouDocLimite = true;
+      }
+
+      if (
+        up.includes('.PRONAF') ||
+        up.includes('.INVUR') ||
+        up.includes('.CUSTEIO')
+      ) {
         const limpo = up
-          .split('.PRONAF')[0]
+          .split(/\.(?:PRONAF|INVUR|CUSTEIO)/)[0]
           .replace(/^\d+\.\s*PROJETO\s*[-–]\s*/, '')
           .trim();
         if (limpo && !titDetectado) titDetectado = limpo;
       }
-      // 2. Padrão Bruto "_-_ISMAEL_ANDRADE_DA_SILVA_assinado.pdf"
       const matchTraco = up.match(
         /_-_\s*([A-ZÀ-Ú_ ]+?)(?:_ASSINADO|\.PDF|\s*\()/i
       );
       if (matchTraco && matchTraco[1] && !titDetectado) {
         titDetectado = matchTraco[1].replace(/_/g, ' ').trim();
       }
-      // 3. Padrão Já Organizado ("9. DECLARAÇÕES CONSOLIDADAS - ISMAEL.pdf" ou "12. PROJETO - ISMAEL.pdf")
       const matchJaOrg = up.match(
-        /^\d+(?:\.\d+)?\.\s*(?:PROJETO|DECLARA[ÇC][ÕO]ES CONSOLIDADAS|CONTRATO DE ASSESSORIA|CAF|DCAA)\s*[-–]\s*([A-ZÀ-Ú ]+?)\.(?:PDF|PRONAF)/i
+        /^\d+(?:\.\d+)?\.\s*(?:PROJETO|DECLARA[ÇC][ÕO]ES CONSOLIDADAS|CONTRATO DE ASSESSORIA|CAF|DCAA)\s*[-–]\s*([A-ZÀ-Ú ]+?)\.(?:PDF|PRONAF|INVUR)/i
       );
       if (matchJaOrg && matchJaOrg[1] && !titDetectado) {
         titDetectado = matchJaOrg[1].trim();
       }
-      // 4. Assentamento P.A.
       const matchPa = up.match(
         /(P\.?A\.?\s+[A-ZÀ-Ú0-9 ]+?)(?:_COMPRESSED|_ASSINADO|\.PDF|$)/i
       );
       if (matchPa && matchPa[1]) {
-        const pStr = matchPa[1].replace(/^PA\s+/i, 'P.A ').trim();
-        paDetectado = pStr;
+        paDetectado = matchPa[1].replace(/^PA\s+/i, 'P.A ').trim();
       }
-      // 5. Projetista em "6. CREA - ZEZÃO.pdf"
       const matchCrea = up.match(
         /CREA\s*[-–]\s*([A-ZÀ-Ú0-9_ ]+?)(?:\.PDF|$)/i
       );
@@ -1296,7 +874,6 @@ export default function ModalOrganizadorPastasCliente({
       }
     });
 
-    // Se ainda não achou pelo arquivo, tenta pelo nome da própria pasta selecionada
     if (!titDetectado && nomeDaPastaRaiz) {
       const limpoPasta = nomeDaPastaRaiz
         .replace(/^\d+\s*[-–.]\s*/, '')
@@ -1305,32 +882,27 @@ export default function ModalOrganizadorPastasCliente({
       if (limpoPasta.length >= 3) titDetectado = limpoPasta;
     }
 
-    // Procura na lista de Conformidade PRONAF A (mesmo que na pasta organizada só tenha o 1º nome "ISMAEL")
     if (titDetectado) {
       const normTit = removerAcentos(titDetectado).toUpperCase().trim();
-      const primTitBusca = extrairPrimeiroNome(normTit);
       const encConf = todosItensConformidadePronafA.find((it) => {
         const nIt = removerAcentos(it.nomeCliente).toUpperCase().trim();
         return (
           nIt === normTit ||
           (normTit.split(/\s+/).length === 1 &&
-            extrairPrimeiroNome(nIt) === primTitBusca)
+            extrairPrimeiroNome(nIt) === extrairPrimeiroNome(normTit))
         );
       });
       if (encConf) {
         titDetectado = encConf.nomeCliente.toUpperCase().trim();
-        if (encConf.conjugeNome) {
+        if (encConf.conjugeNome)
           conjDetectado = encConf.conjugeNome.toUpperCase().trim();
-        }
-        if (encConf.procuradorNome) {
+        if (encConf.procuradorNome)
           procDetectado = encConf.procuradorNome.toUpperCase().trim();
-        }
+        porteSugerido = 'PRONAF_A';
       }
     }
 
     const primTit = extrairPrimeiroNome(titDetectado || titularNome);
-
-    // Procura segunda identidade ou Embargos/Improbidade do Cônjuge (tanto na raiz quanto na subpasta CADASTRO!)
     files.forEach((f) => {
       const up = removerAcentos(f.name)
         .toUpperCase()
@@ -1351,8 +923,8 @@ export default function ModalOrganizadorPastasCliente({
     });
 
     const titFinal = titDetectado || titularNome;
-    const conjFinal = conjDetectado || conjugeNome;
-    const procFinal = procDetectado || procuradorNome;
+    const conjFinal = conjugeNome || conjDetectado;
+    const procFinal = procuradorNome || procDetectado;
 
     if (titFinal) setTitularNome(titFinal);
     setConjugeNome(conjFinal);
@@ -1360,41 +932,63 @@ export default function ModalOrganizadorPastasCliente({
     if (paDetectado) setPaNome(paDetectado);
     if (projDetectado) setProjetistaNome(projDetectado);
 
+    let escopoFinal = escopoPasta;
+    if (porteSugerido) {
+      setPortePerfil(porteSugerido);
+      if (porteSugerido === 'PRONAF_A') {
+        escopoFinal = 'PRONAF_A_PADRAO';
+        setEscopoPasta('PRONAF_A_PADRAO');
+      } else if (achouDocLimite && achouDocDerivada) {
+        escopoFinal = 'COMBO_DERIVADA_E_LIMITE';
+        setEscopoPasta('COMBO_DERIVADA_E_LIMITE');
+      } else if (achouDocLimite && !achouDocDerivada) {
+        escopoFinal = 'LIMITE_PURO';
+        setEscopoPasta('LIMITE_PURO');
+      } else if (escopoPasta === 'PRONAF_A_PADRAO') {
+        escopoFinal = 'DERIVADA_PURA';
+        setEscopoPasta('DERIVADA_PURA');
+      }
+    }
+    if (modDerivSugerida) setModalidadeDerivada(modDerivSugerida);
+
     return {
       primTit: extrairPrimeiroNome(titFinal),
       primConj: extrairPrimeiroNome(conjFinal),
       paDetectado,
       projDetectado,
+      escopoFinal,
+      porteFinal: porteSugerido || portePerfil,
     };
   };
 
   const processarArquivosLidos = (
-    entradas: Array<{ file: File; origemSubpastaCadastro: boolean }>,
+    entradas: Array<{ file: File; origemSubpasta?: string }>,
     primTit: string,
     primConj: string,
     projAtual: string,
-    paAtual: string
+    paAtual: string,
+    escopoAtivo: EscopoOperacaoPasta,
+    porteAtivo: PorteOrganizador
   ) => {
     const entradasFiltradas = entradas.filter(({ file }) => {
       const nomeUp = file.name.toUpperCase().trim();
-      // Ignora a cópia extra sem número "- CERT. SOCIOAMBIENTAL..." para não duplicar o Item 5 na tabela
       if (nomeUp.startsWith('- CERT') || nomeUp.startsWith('-CERT')) {
         return false;
       }
       const isTxt = nomeUp.endsWith('.TXT');
       if (!isTxt) return true;
-      // Mantém apenas se for o Parecer Gerencial real (incluindo "20. PARECER GERENCIAL - FALTA AJUSTAR.txt")
       return isArquivoParecerGerencialReal(file.name);
     });
 
     const mapeadosBrutos: ArquivoMapeadoItem[] = entradasFiltradas.map(
-      ({ file, origemSubpastaCadastro }, idx) => {
+      ({ file, origemSubpasta }, idx) => {
         const partes = file.name.split('.');
         const ext = partes.length > 1 ? partes.pop() || 'pdf' : '';
-        const classif = classificarArquivoAutomaticamente(
+        const classif = classificarArquivoUniversal(
           file.name,
           primTit,
-          primConj
+          primConj,
+          escopoAtivo
         );
         return {
           id: `arq_${idx}_${Date.now()}`,
@@ -1403,32 +997,33 @@ export default function ModalOrganizadorPastasCliente({
           fileObj: file,
           categoria: classif.categoria,
           isViti: classif.isViti,
-          origemSubpastaCadastro,
+          origemSubpasta,
           subtipoAmbientalExtra: classif.subtipoAmbientalExtra,
         };
       }
     );
 
-    // Se a pasta já era organizada, a CAF existe tanto na Raiz (14. CAF) quanto na subpasta CADASTRO (5. CAF).
-    // Evita duplicar a CAF na listagem se ela já estiver presente na Raiz!
-    const jaTemCafNaRaiz = mapeadosBrutos.some(
-      (m) => m.categoria === 'ITEM_14_CAF' && !m.origemSubpastaCadastro
-    );
-    const mapeados = mapeadosBrutos.filter(
-      (m) =>
-        !(
-          m.categoria === 'ITEM_14_CAF' &&
-          m.origemSubpastaCadastro &&
-          jaTemCafNaRaiz
-        )
-    );
+    // Desduplica cópias idênticas que vieram de subpastas diferentes (ex: CAR que estava em LCGH e em INVESTIMENTO)
+    const vistosPorChave = new Set<string>();
+    const mapeados: ArquivoMapeadoItem[] = [];
+    mapeadosBrutos.forEach((m) => {
+      const chaveUnica =
+        m.categoria === 'CAD_9_OUTROS_CADASTRO'
+          ? `${m.categoria}_${m.nomeOriginal}`
+          : `${m.categoria}_${m.isViti ? 'VITI' : 'DOC'}`;
+      if (!vistosPorChave.has(chaveUnica)) {
+        vistosPorChave.add(chaveUnica);
+        mapeados.push(m);
+      }
+    });
 
-    const jaTemCrea = mapeados.some((m) => m.categoria === 'ITEM_6_CREA');
-    const jaTemRb = mapeados.some((m) => m.categoria === 'ITEM_17_RB_PA');
-    const jaTemSema = mapeados.some((m) => m.categoria === 'ITEM_21_PARECER_SEMA');
-    const jaTemCar = mapeados.some((m) => m.categoria === 'ITEM_13_CAR');
+    const jaTemCrea = mapeados.some((m) => m.categoria === 'ITEM_CREA');
+    const jaTemRb = mapeados.some((m) => m.categoria === 'ITEM_RB_PA');
+    const jaTemSema = mapeados.some((m) => m.categoria === 'ITEM_PARECER_SEMA');
+    const jaTemCar = mapeados.some((m) => m.categoria === 'ITEM_CAR');
 
-    if (!jaTemCrea && projAtual) {
+    // Injeta Coringas da Gaveta da Nuvem
+    if (!jaTemCrea && projAtual && escopoAtivo !== 'LIMITE_PURO') {
       const coringaCrea = coringasSalvos.find(
         (c) =>
           c.tipo === 'CREA_PROJETISTA' &&
@@ -1437,24 +1032,21 @@ export default function ModalOrganizadorPastasCliente({
       );
       if (coringaCrea) {
         const bufferCoringa = base64ParaArrayBuffer(coringaCrea.base64Dados);
-        const fileCoringa = new File(
-          [bufferCoringa],
-          coringaCrea.nomeArquivoOriginal,
-          { type: 'application/pdf' }
-        );
         mapeados.push({
           id: `coringa_crea_${Date.now()}`,
           nomeOriginal: `[GAVETA NUVEM] ${coringaCrea.nomeArquivoOriginal}`,
           extensao: 'pdf',
-          fileObj: fileCoringa,
-          categoria: 'ITEM_6_CREA',
+          fileObj: new File([bufferCoringa], coringaCrea.nomeArquivoOriginal, {
+            type: 'application/pdf',
+          }),
+          categoria: 'ITEM_CREA',
           isViti: false,
           origemGaveta: true,
         });
       }
     }
 
-    if (!jaTemRb && paAtual) {
+    if (!jaTemRb && paAtual && porteAtivo === 'PRONAF_A') {
       const coringaRb = coringasSalvos.find(
         (c) =>
           c.tipo === 'RB_PA' &&
@@ -1463,17 +1055,14 @@ export default function ModalOrganizadorPastasCliente({
       );
       if (coringaRb) {
         const bufferCoringa = base64ParaArrayBuffer(coringaRb.base64Dados);
-        const fileCoringa = new File(
-          [bufferCoringa],
-          coringaRb.nomeArquivoOriginal,
-          { type: 'application/pdf' }
-        );
         mapeados.push({
           id: `coringa_rb_${Date.now()}`,
           nomeOriginal: `[GAVETA NUVEM] ${coringaRb.nomeArquivoOriginal}`,
           extensao: 'pdf',
-          fileObj: fileCoringa,
-          categoria: 'ITEM_17_RB_PA',
+          fileObj: new File([bufferCoringa], coringaRb.nomeArquivoOriginal, {
+            type: 'application/pdf',
+          }),
+          categoria: 'ITEM_RB_PA',
           isViti: false,
           origemGaveta: true,
         });
@@ -1489,38 +1078,32 @@ export default function ModalOrganizadorPastasCliente({
       );
       if (coringaCar) {
         const bufferCoringa = base64ParaArrayBuffer(coringaCar.base64Dados);
-        const fileCoringa = new File(
-          [bufferCoringa],
-          coringaCar.nomeArquivoOriginal,
-          { type: 'application/pdf' }
-        );
         mapeados.push({
           id: `coringa_car_${Date.now()}`,
           nomeOriginal: `[GAVETA NUVEM] ${coringaCar.nomeArquivoOriginal}`,
           extensao: 'pdf',
-          fileObj: fileCoringa,
-          categoria: 'ITEM_13_CAR',
+          fileObj: new File([bufferCoringa], coringaCar.nomeArquivoOriginal, {
+            type: 'application/pdf',
+          }),
+          categoria: 'ITEM_CAR',
           isViti: false,
           origemGaveta: true,
         });
       }
     }
 
-    if (!jaTemSema && isPronafA) {
+    if (!jaTemSema && porteAtivo === 'PRONAF_A') {
       const coringaSema = coringasSalvos.find((c) => c.tipo === 'PARECER_SEMA');
       if (coringaSema) {
         const bufferCoringa = base64ParaArrayBuffer(coringaSema.base64Dados);
-        const fileCoringa = new File(
-          [bufferCoringa],
-          coringaSema.nomeArquivoOriginal,
-          { type: 'application/pdf' }
-        );
         mapeados.push({
           id: `coringa_sema_${Date.now()}`,
           nomeOriginal: `[GAVETA NUVEM] ${coringaSema.nomeArquivoOriginal}`,
           extensao: 'pdf',
-          fileObj: fileCoringa,
-          categoria: 'ITEM_21_PARECER_SEMA',
+          fileObj: new File([bufferCoringa], coringaSema.nomeArquivoOriginal, {
+            type: 'application/pdf',
+          }),
+          categoria: 'ITEM_PARECER_SEMA',
           isViti: false,
           origemGaveta: true,
         });
@@ -1529,10 +1112,14 @@ export default function ModalOrganizadorPastasCliente({
 
     setArquivosMapeados(mapeados);
 
-    // Roda (ou re-roda) a Auditoria Inteligente dos 12 Pontos incluindo os arquivos da Raiz e da subpasta CADASTRO!
     setAuditandoPdfs(true);
     executarAuditoriaCompletaDosPdfsDaPasta({
-      arquivos: mapeados,
+      arquivos: mapeados.map((m) => ({
+        fileObj: m.fileObj,
+        categoria: converterCategoriaParaAuditorPdf(m.categoria),
+        isViti: m.isViti,
+        nomeOriginal: m.nomeOriginal,
+      })),
       titularNome: primTit,
       conjugeNome: primConj,
       paEsperado: paAtual,
@@ -1540,68 +1127,80 @@ export default function ModalOrganizadorPastasCliente({
     })
       .then((resAuditoria) => {
         setAuditoriaPdf(resAuditoria);
-        if (resAuditoria.valorPropostaDetectado && !cadValor) {
+        if (resAuditoria.valorPropostaDetectado) {
           setCadValor(resAuditoria.valorPropostaDetectado);
+        }
+        if (resAuditoria.projetistaCurtoDetectado) {
+          setProjetistaNome(resAuditoria.projetistaCurtoDetectado);
+          setCadProjetista(resAuditoria.projetistaCurtoDetectado);
+        }
+        if (resAuditoria.conjugeDetectadoNosPdfs && !conjugeNome) {
+          setConjugeNome(resAuditoria.conjugeDetectadoNosPdfs);
         }
       })
       .catch(() => {})
       .finally(() => setAuditandoPdfs(false));
   };
 
-  // Lê ou re-lê um dirHandle (tanto a Raiz quanto a subpasta CADASTRO, caso a pasta já tenha sido organizada antes!)
+  // Escaneia a pasta raiz e também subpastas já estruturadas (CADASTRO, LCGH, LCGA, INVESTIMENTO, CUSTEIO)
   const escanearHandleDaPasta = async (handle: any) => {
     setDirHandleRoot(handle);
     setNomePastaSelecionada(handle.name);
     setParecerGerencialExtraidoNaPasta(false);
 
-    const entradasLidas: Array<{
-      file: File;
-      origemSubpastaCadastro: boolean;
-    }> = [];
+    const entradasLidas: Array<{ file: File; origemSubpasta?: string }> = [];
     let achouSeloNoSubCadastro = false;
     let achouProcOuCasamentoNoSubCadastro = false;
     let tinhaSubpastaOrganizada = false;
+
+    const SUBPASTAS_CONHECIDAS = new Set([
+      'CADASTRO',
+      'LCGH',
+      'LCGA',
+      'INVESTIMENTO',
+      'CUSTEIO',
+    ]);
 
     for await (const [entryName, entryHandle] of handle.entries()) {
       if (entryHandle.kind === 'file') {
         if (
           entryName.startsWith('.') ||
           entryName.toLowerCase() === 'thumbs.db'
-        ) {
+        )
           continue;
-        }
         const file: File = await entryHandle.getFile();
-        entradasLidas.push({ file, origemSubpastaCadastro: false });
-      } else if (
-        entryHandle.kind === 'directory' &&
-        entryName.toUpperCase() === 'CADASTRO'
-      ) {
-        tinhaSubpastaOrganizada = true;
-        // Lê todos os documentos que já foram movidos para a subpasta CADASTRO na 1ª organização!
-        for await (const [subName, subHandle] of entryHandle.entries()) {
-          if (
-            subHandle.kind === 'file' &&
-            !subName.toLowerCase().endsWith('.txt') &&
-            !subName.startsWith('.') &&
-            subName.toLowerCase() !== 'thumbs.db'
-          ) {
-            const subFile: File = await subHandle.getFile();
-            entradasLidas.push({
-              file: subFile,
-              origemSubpastaCadastro: true,
-            });
-            const upSub = removerAcentos(subName).toUpperCase();
-            if (/\bSELOS?\b/.test(upSub)) achouSeloNoSubCadastro = true;
-            if (upSub.includes('PROCURACAO') || upSub.includes('CASAMENTO')) {
-              achouProcOuCasamentoNoSubCadastro = true;
+        entradasLidas.push({ file });
+      } else if (entryHandle.kind === 'directory') {
+        const upDir = entryName.toUpperCase();
+        if (
+          SUBPASTAS_CONHECIDAS.has(upDir) ||
+          upDir.includes('SOCIOAMBIENTAL')
+        ) {
+          tinhaSubpastaOrganizada = true;
+        }
+        if (SUBPASTAS_CONHECIDAS.has(upDir)) {
+          for await (const [subName, subHandle] of entryHandle.entries()) {
+            if (
+              subHandle.kind === 'file' &&
+              !subName.toLowerCase().endsWith('.txt') &&
+              !subName.startsWith('.') &&
+              subName.toLowerCase() !== 'thumbs.db'
+            ) {
+              const subFile: File = await subHandle.getFile();
+              entradasLidas.push({ file: subFile, origemSubpasta: upDir });
+              if (upDir === 'CADASTRO') {
+                const upSub = removerAcentos(subName).toUpperCase();
+                if (/\bSELOS?\b/.test(upSub)) achouSeloNoSubCadastro = true;
+                if (
+                  upSub.includes('PROCURACAO') ||
+                  upSub.includes('CASAMENTO')
+                ) {
+                  achouProcOuCasamentoNoSubCadastro = true;
+                }
+              }
             }
           }
         }
-      } else if (
-        entryHandle.kind === 'directory' &&
-        entryName.toUpperCase().includes('SOCIOAMBIENTAL')
-      ) {
-        tinhaSubpastaOrganizada = true;
       }
     }
 
@@ -1616,7 +1215,9 @@ export default function ModalOrganizadorPastasCliente({
       detectados.primTit,
       detectados.primConj,
       detectados.projDetectado || projetistaNome,
-      detectados.paDetectado
+      detectados.paDetectado,
+      detectados.escopoFinal,
+      detectados.porteFinal
     );
   };
 
@@ -1624,14 +1225,12 @@ export default function ModalOrganizadorPastasCliente({
     const win = window as unknown as {
       showDirectoryPicker?: (opts: { mode: string }) => Promise<any>;
     };
-
     if (!win.showDirectoryPicker) {
       alert(
         '⚠️ Seu navegador atual não suporta acesso direto a pastas locais. Use o Google Chrome ou Microsoft Edge no computador!'
       );
       return;
     }
-
     try {
       const handle = await win.showDirectoryPicker({ mode: 'readwrite' });
       await escanearHandleDaPasta(handle);
@@ -1641,206 +1240,36 @@ export default function ModalOrganizadorPastasCliente({
     }
   };
 
-  const planoArquivosTxtLembretes = useMemo(() => {
-    const txtsRaiz: string[] = [];
-    const txtsSubpastaCadastro: string[] = [];
+  // Ordena a lista de arquivos exatamente pela numeração do Perfil Ativo!
+  const arquivosMapeadosOrdenados = useMemo(() => {
+    return [...arquivosMapeados].sort((a, b) => {
+      const destA = calcularTodosDestinosDoArquivo(a, cfgPerfil);
+      const destB = calcularTodosDestinosDoArquivo(b, cfgPerfil);
+      const ordA = destA.length > 0 ? destA[0].ordemExibicao : 999;
+      const ordB = destB.length > 0 ? destB[0].ordemExibicao : 999;
+      if (ordA !== ordB) return ordA - ordB;
+      return a.nomeOriginal.localeCompare(b.nomeOriginal);
+    });
+  }, [arquivosMapeados, cfgPerfil]);
 
+  const planoLembretesTxt = useMemo(() => {
     const catsPresentes = new Set(arquivosMapeados.map((a) => a.categoria));
-    const tit = nomesCurtos.titular || 'CLIENTE';
-    const conj = nomesCurtos.conjuge;
-    const proj = (projetistaNome || 'PROJETISTA').toUpperCase().trim();
-    const pa = (paNome || 'P.A LAGO DA CARNAÚBA').toUpperCase().trim();
-
-    const txtsZeroConformidade = gerarTxtsZeroDaConformidadePronafA(
-      registroConformidadeVinculado
-    );
-    txtsZeroConformidade.forEach((t) => txtsRaiz.push(t));
-
-    if (!catsPresentes.has('ITEM_1_PROJETO_ARQ')) {
-      txtsRaiz.push(`1. PROJETO - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_2_AUT_ALTERACAO')) {
-      txtsRaiz.push(`2. AUTORIZAÇÃO DE ALTERAÇÃO - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_3_EMBARGOS_TITULAR')) {
-      txtsRaiz.push(`3. EMBARGOS - ${tit}.txt`);
-    }
-    if (conj && !catsPresentes.has('ITEM_3_EMBARGOS_CONJUGE')) {
-      txtsRaiz.push(`3. EMBARGOS - ${conj}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_4_IMPROBIDADE_TITULAR')) {
-      txtsRaiz.push(`4. IMPROBIDADE - ${tit}.txt`);
-    }
-    if (conj && !catsPresentes.has('ITEM_4_IMPROBIDADE_CONJUGE')) {
-      txtsRaiz.push(`4. IMPROBIDADE - ${conj}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_5_CERT_SOCIOAMBIENTAL')) {
-      txtsRaiz.push(`5. CERT. SOCIOAMBIENTAL - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_6_CREA')) {
-      txtsRaiz.push(`6. CREA - ${proj}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_7_EXTRATO_SICOR')) {
-      txtsRaiz.push(`7. EXTRATO SICOR - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_8_CONTRATO_ASSESSORIA')) {
-      txtsRaiz.push(`8. CONTRATO DE ASSESSORIA - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_9_CONSOLIDADAS')) {
-      txtsRaiz.push(`9. DECLARAÇÕES CONSOLIDADAS - ${tit}.txt`);
-    }
-
-    txtsRaiz.push('9. VERIFICAR C-C NA CONSOLIDADA.txt');
-
-    if (!catsPresentes.has('ITEM_10_DEC_AMBIENTAIS')) {
-      txtsRaiz.push(`10. DEC. AMBIENTAIS - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_10_1_REG_AMBIENTAL')) {
-      txtsRaiz.push(`10.1. DEC. DE REGULARIDADE AMBIENTAL - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_10_2_NAO_DESMATAMENTO')) {
-      txtsRaiz.push(`10.2. DEC. DE NÃO DESMATAMENTO - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_10_3_RECOMPOSICAO')) {
-      txtsRaiz.push(`10.3. DEC. DE RECOMPOSIÇÃO - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_11_ESPELHO_UND')) {
-      txtsRaiz.push(`11. ESPELHO - RELATÓRIO DA UND - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_12_PROJETO_PDF')) {
-      txtsRaiz.push(`12. PROJETO - ${tit}.txt`);
-    }
-    if (
-      !catsPresentes.has('ITEM_13_CAR') &&
-      !catsPresentes.has('ITEM_13_CONSULTA_CAR')
-    ) {
-      txtsRaiz.push(`13. CAR - ${pa}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_14_CAF')) {
-      txtsRaiz.push(`14. CAF - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_15_DCAA')) {
-      txtsRaiz.push(`15. DCAA - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_16_PARECER_TECNICO')) {
-      txtsRaiz.push(`16. PARECER TÉCNICO - ${tit}.txt`);
-    }
-    if (isPronafA && !catsPresentes.has('ITEM_17_RB_PA')) {
-      txtsRaiz.push(`17 - RB ${pa}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_18_ORCAMENTO')) {
-      txtsRaiz.push(`18. ORÇAMENTO - ${tit}.txt`);
-    }
-    if (!catsPresentes.has('ITEM_19_CAPA_ANALISADOR')) {
-      txtsRaiz.push(`19. CAPA DO ANALISADOR - ${tit}.txt`);
-    }
-
-    if (
-      !catsPresentes.has('ITEM_20_PARECER_GERENCIAL') &&
-      !parecerGerencialExtraidoNaPasta
-    ) {
-      txtsRaiz.push('20. FALTA PARECER GERENCIAL.txt');
-    }
-
-    if (isPronafA && !catsPresentes.has('ITEM_21_PARECER_SEMA')) {
-      txtsRaiz.push('21. PARECER DA SEMA.txt');
-    }
-
-    const temProcuracaoOuCasamento =
-      catsPresentes.has('CAD_6_PROCURACAO') ||
-      catsPresentes.has('CAD_2_CERTIDAO_CASAMENTO') ||
-      jaTemProcuracaoOuCasamentoNoCadastro;
-
-    const temSeloPresente =
-      catsPresentes.has('CAD_8_SELO_CARTORIO') || jaTemSeloNaSubpastaCadastro;
-
-    if (temProcuracaoOuCasamento && !temSeloPresente) {
-      txtsSubpastaCadastro.push('FALTA CONSULTAR SELOS.txt');
-      txtsRaiz.push('0. FALTA CONSULTAR SELOS (VER PASTA CADASTRO).txt');
-    }
-
-    return { txtsRaiz, txtsSubpastaCadastro };
+    return gerarLembretesTxtPorPerfil({
+      categoriasPresentes: catsPresentes,
+      cfg: cfgPerfil,
+      registroConformidadePronafA:
+        cfgPerfil.porte === 'PRONAF_A' ? registroConformidadeVinculado : null,
+      jaTemSeloNoCadastro: jaTemSeloNaSubpastaCadastro,
+      jaTemProcuracaoOuCasamentoNoCadastro,
+      parecerGerencialExtraidoNaPasta,
+    });
   }, [
     arquivosMapeados,
-    nomesCurtos,
-    projetistaNome,
-    paNome,
-    isPronafA,
+    cfgPerfil,
     registroConformidadeVinculado,
     jaTemSeloNaSubpastaCadastro,
     jaTemProcuracaoOuCasamentoNoCadastro,
     parecerGerencialExtraidoNaPasta,
-  ]);
-
-  const avisosVitisParaConferenciaManual = useMemo(() => {
-    const vitisPresentes = new Set(
-      arquivosMapeados.filter((a) => a.isViti).map((a) => a.categoria)
-    );
-    const docsPrincipaisPresentes = new Set(
-      arquivosMapeados.filter((a) => !a.isViti).map((a) => a.categoria)
-    );
-
-    const tit = nomesCurtos.titular || 'CLIENTE';
-    const paresAssinaveis: Array<{ cat: CategoriaDocPasta; label: string }> = [
-      { cat: 'ITEM_2_AUT_ALTERACAO', label: `2. AUTORIZAÇÃO DE ALTERAÇÃO - ${tit}` },
-      { cat: 'ITEM_8_CONTRATO_ASSESSORIA', label: `8. CONTRATO DE ASSESSORIA - ${tit}` },
-      { cat: 'ITEM_9_CONSOLIDADAS', label: `9. DECLARAÇÕES CONSOLIDADAS - ${tit}` },
-      { cat: 'ITEM_10_DEC_AMBIENTAIS', label: `10. DEC. AMBIENTAIS - ${tit}` },
-      {
-        cat: 'ITEM_10_1_REG_AMBIENTAL',
-        label: `10.1. DEC. DE REGULARIDADE AMBIENTAL - ${tit}`,
-      },
-      {
-        cat: 'ITEM_10_2_NAO_DESMATAMENTO',
-        label: `10.2. DEC. DE NÃO DESMATAMENTO - ${tit}`,
-      },
-      { cat: 'ITEM_10_3_RECOMPOSICAO', label: `10.3. DEC. DE RECOMPOSIÇÃO - ${tit}` },
-      { cat: 'ITEM_12_PROJETO_PDF', label: `12. PROJETO (PDF) - ${tit}` },
-      { cat: 'ITEM_16_PARECER_TECNICO', label: `16. PARECER TÉCNICO - ${tit}` },
-      { cat: 'ITEM_18_ORCAMENTO', label: `18. ORÇAMENTO - ${tit}` },
-      {
-        cat: 'CAD_5_PROPOSTA_CADASTRO',
-        label: `CAD 6. PROPOSTA DE CADASTRO - ${tit}`,
-      },
-    ];
-
-    return paresAssinaveis
-      .filter(
-        (par) =>
-          docsPrincipaisPresentes.has(par.cat) && !vitisPresentes.has(par.cat)
-      )
-      .map((par) => par.label);
-  }, [arquivosMapeados, nomesCurtos]);
-
-  const resumoContadores = useMemo(() => {
-    let qtdRaiz = 0;
-    let qtdCadastro = 0;
-    let qtdSocio = 0;
-
-    arquivosMapeados.forEach((arq) => {
-      if (arq.categoria === 'IGNORAR') return;
-      const d = calcularDestinosDoArquivo(
-        arq,
-        nomesCurtos,
-        projetistaNome,
-        paNome
-      );
-      if (d.nomeNaRaiz) qtdRaiz++;
-      if (d.nomeNoCadastro) qtdCadastro++;
-      if (d.nomeNaSocioambiental) qtdSocio++;
-    });
-
-    const totalTxts =
-      planoArquivosTxtLembretes.txtsRaiz.length +
-      planoArquivosTxtLembretes.txtsSubpastaCadastro.length;
-
-    return { qtdRaiz, qtdCadastro, qtdSocio, totalTxts };
-  }, [
-    arquivosMapeados,
-    nomesCurtos,
-    projetistaNome,
-    paNome,
-    planoArquivosTxtLembretes,
   ]);
 
   const executarOrganizacaoDiretoNaPasta = async () => {
@@ -1855,22 +1284,17 @@ export default function ModalOrganizadorPastasCliente({
 
     setProcessando(true);
     try {
-      const dirCadastro = await dirHandleRoot.getDirectoryHandle('CADASTRO', {
-        create: true,
-      });
-      const dirSocioambiental = await dirHandleRoot.getDirectoryHandle(
-        'CERTIFICAÇÃO SOCIOAMBIENTAL',
-        { create: true }
-      );
+      const gravadosPorPasta = new Map<string, Set<string>>();
 
-      const nomesSalvosNaRaiz = new Set<string>();
-      const nomesSalvosNoCadastro = new Set<string>();
-
-      const gravarBufferEmPasta = async (
-        pastaHandle: any,
+      const gravarEmSubpasta = async (
+        caminhoRelativo: string,
         nomeArq: string,
         conteudo: ArrayBuffer | string
       ) => {
+        const pastaHandle = await obterSubpastaHandle(
+          dirHandleRoot,
+          caminhoRelativo
+        );
         const nomeSeguro = nomeArq.replace(/[/:*?"<>|]/g, '-');
         const fileHandle = await pastaHandle.getFileHandle(nomeSeguro, {
           create: true,
@@ -1878,99 +1302,98 @@ export default function ModalOrganizadorPastasCliente({
         const writable = await fileHandle.createWritable();
         await writable.write(conteudo);
         await writable.close();
+
+        const chavePasta = caminhoRelativo.toUpperCase();
+        if (!gravadosPorPasta.has(chavePasta)) {
+          gravadosPorPasta.set(chavePasta, new Set());
+        }
+        gravadosPorPasta.get(chavePasta)!.add(nomeSeguro);
         return nomeSeguro;
       };
 
-      // 1. Limpa antigos arquivos .txt de lembretes vazios na raiz,
-      // MAS PROTEGE o "20. PARECER GERENCIAL - FALTA AJUSTAR.txt" e o "20. PARECER GERENCIAL..."!
-      for await (const [entryName, entryHandle] of dirHandleRoot.entries()) {
-        if (
-          entryHandle.kind === 'file' &&
-          entryName.toLowerCase().endsWith('.txt') &&
-          !isArquivoParecerGerencialReal(entryName)
-        ) {
-          try {
-            await dirHandleRoot.removeEntry(entryName);
-          } catch {
-            // Ignora
+      // 1. Limpa antigos .txt de lembretes vazios na raiz e nas subpastas conhecidas
+      const limparTxtsAntigosDeHandle = async (hPasta: any) => {
+        for await (const [entryName, entryHandle] of hPasta.entries()) {
+          if (
+            entryHandle.kind === 'file' &&
+            entryName.toLowerCase().endsWith('.txt') &&
+            !isArquivoParecerGerencialReal(entryName)
+          ) {
+            try {
+              await hPasta.removeEntry(entryName);
+            } catch {
+              // Ignora
+            }
           }
+        }
+      };
+
+      await limparTxtsAntigosDeHandle(dirHandleRoot);
+      for (const subNome of [
+        'CADASTRO',
+        'LCGH',
+        'LCGA',
+        'INVESTIMENTO',
+        'CUSTEIO',
+      ]) {
+        try {
+          const subH = await dirHandleRoot.getDirectoryHandle(subNome, {
+            create: false,
+          });
+          await limparTxtsAntigosDeHandle(subH);
+        } catch {
+          // Subpasta ainda não existe
         }
       }
 
-      try {
-        await dirCadastro.removeEntry('FALTA CONSULTAR SELOS.txt');
-      } catch {
-        // Ignora
-      }
-
-      // 2. Grava todos os documentos nas respectivas pastas (Raiz, CADASTRO e CERTIFICAÇÃO SOCIOAMBIENTAL)
+      // 2. Grava cada arquivo em TODOS os destinos exigidos pelo Perfil (copiando entre Limite, Derivada, Cadastro e Socioambiental!)
       for (const item of arquivosMapeados) {
         if (item.categoria === 'IGNORAR') continue;
+        const destinos = calcularTodosDestinosDoArquivo(item, cfgPerfil);
+        if (destinos.length === 0) continue;
 
-        const destinos = calcularDestinosDoArquivo(
-          item,
-          nomesCurtos,
-          projetistaNome,
-          paNome
-        );
         const buffer = await item.fileObj.arrayBuffer();
 
-        if (destinos.nomeNaRaiz) {
-          const salvo = await gravarBufferEmPasta(
-            dirHandleRoot,
-            destinos.nomeNaRaiz,
-            buffer
-          );
-          nomesSalvosNaRaiz.add(salvo);
-
-          if (
-            item.categoria === 'ITEM_5_CERT_SOCIOAMBIENTAL' &&
-            !item.isViti &&
-            gerarDuplicataCertSocioSemNumero
-          ) {
-            const nomeExtra = `- CERT. SOCIOAMBIENTAL - ${nomesCurtos.titular}.${
-              item.extensao || 'pdf'
-            }`;
-            const salvoExtra = await gravarBufferEmPasta(
-              dirHandleRoot,
-              nomeExtra,
-              buffer
-            );
-            await gravarBufferEmPasta(dirSocioambiental, nomeExtra, buffer);
-            nomesSalvosNaRaiz.add(salvoExtra);
-          }
-        }
-
-        if (destinos.nomeNoCadastro) {
-          const salvoCad = await gravarBufferEmPasta(
-            dirCadastro,
-            destinos.nomeNoCadastro,
-            buffer
-          );
-          nomesSalvosNoCadastro.add(salvoCad);
-        }
-
-        if (destinos.nomeNaSocioambiental) {
-          await gravarBufferEmPasta(
-            dirSocioambiental,
-            destinos.nomeNaSocioambiental,
+        for (const dest of destinos) {
+          await gravarEmSubpasta(
+            dest.pastaRelativa,
+            dest.nomeArquivoFinal,
             buffer
           );
         }
 
-        // Remove o arquivo original antigo caso o nome tenha mudado ou tenha sido movido da Raiz para CADASTRO
+        // No PRONAF A, mantém também a cópia "- CERT. SOCIOAMBIENTAL - NOME.pdf"
+        if (
+          cfgPerfil.porte === 'PRONAF_A' &&
+          (item.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
+            item.categoria === 'ITEM_CERT_SOCIO_SEM_KML') &&
+          !item.isViti
+        ) {
+          const nomeExtra = `- CERT. SOCIOAMBIENTAL - ${nomesCurtos.titular}.${
+            item.extensao || 'pdf'
+          }`;
+          await gravarEmSubpasta('', nomeExtra, buffer);
+          await gravarEmSubpasta(
+            'CERTIFICAÇÃO SOCIOAMBIENTAL',
+            nomeExtra,
+            buffer
+          );
+        }
+
+        // Remove o arquivo original antigo se o nome mudou ou se saiu da Raiz para subpastas
         if (!item.origemGaveta) {
-          if (item.origemSubpastaCadastro) {
-            if (!nomesSalvosNoCadastro.has(item.nomeOriginal)) {
-              try {
-                await dirCadastro.removeEntry(item.nomeOriginal);
-              } catch {
-                // Ignora
-              }
-            }
-          } else if (!nomesSalvosNaRaiz.has(item.nomeOriginal)) {
+          const pastaOrigemKey = (item.origemSubpasta || '').toUpperCase();
+          const conjSalvosNaOrigem = gravadosPorPasta.get(pastaOrigemKey);
+          if (
+            !conjSalvosNaOrigem ||
+            !conjSalvosNaOrigem.has(item.nomeOriginal)
+          ) {
             try {
-              await dirHandleRoot.removeEntry(item.nomeOriginal);
+              const handleOrigem = await obterSubpastaHandle(
+                dirHandleRoot,
+                item.origemSubpasta || ''
+              );
+              await handleOrigem.removeEntry(item.nomeOriginal);
             } catch {
               // Ignora
             }
@@ -1978,31 +1401,27 @@ export default function ModalOrganizadorPastasCliente({
         }
       }
 
-      // 3. Grava os .TXT vazios que ainda faltam (segurando o "20. FALTA PARECER GERENCIAL.txt" se for abrir o Parecer agora)
+      // 3. Grava os .TXT vazios de pendências nas respectivas pastas (segurando o FALTA PARECER GERENCIAL até fechar o overlay)
       const jaTemParecerGerencialNaPasta =
         arquivosMapeados.some(
-          (a) => a.categoria === 'ITEM_20_PARECER_GERENCIAL'
+          (a) => a.categoria === 'ITEM_PARECER_GERENCIAL'
         ) || parecerGerencialExtraidoNaPasta;
 
       if (gerarTxtsLembretesFaltantes) {
-        for (const nomeTxtRaiz of planoArquivosTxtLembretes.txtsRaiz) {
+        for (const lemb of planoLembretesTxt) {
           if (
-            nomeTxtRaiz === '20. FALTA PARECER GERENCIAL.txt' &&
+            lemb.nomeArquivoTxt.includes('FALTA PARECER GERENCIAL') &&
             !jaTemParecerGerencialNaPasta
           ) {
             continue;
           }
-          await gravarBufferEmPasta(dirHandleRoot, nomeTxtRaiz, '');
-        }
-        for (const nomeTxtCad of planoArquivosTxtLembretes.txtsSubpastaCadastro) {
-          await gravarBufferEmPasta(dirCadastro, nomeTxtCad, '');
+          await gravarEmSubpasta(lemb.pastaRelativa, lemb.nomeArquivoTxt, '');
         }
       }
 
-      // 4. Re-escaneia a pasta após gravar para atualizar a tela e a Auditoria dos 12 pontos!
       await escanearHandleDaPasta(dirHandleRoot);
 
-      // 5. FLUXO AUTOMÁTICO DO KANBAN & PARECER GERENCIAL:
+      // 4. Abre o fluxo de Cadastro no Kanban e Parecer Gerencial
       const itemConfBase: ItemConformidadePronafA =
         registroConformidadeVinculado || {
           id: `temp_${Date.now()}`,
@@ -2032,29 +1451,40 @@ export default function ModalOrganizadorPastasCliente({
       );
       const resClassif = classificados[0];
 
-      if (resClassif && !resClassif.jaCadastradoNoPainel && isPronafA) {
-        setModalIniciarPronafA(resClassif);
+      if (resClassif && !resClassif.jaCadastradoNoPainel) {
+        setModalIniciarProposta(resClassif);
         setCadCpf(resClassif.item.cpfCliente || '');
         setCadValor(auditoriaPdf?.valorPropostaDetectado || '');
-        setCadTipo('Investimento');
+        setCadTipo(
+          cfgPerfil.escopo === 'LIMITE_PURO'
+            ? cfgPerfil.modalidadeLimite
+            : cfgPerfil.modalidadeDerivada === 'CUSTEIO'
+            ? 'Custeio'
+            : 'Investimento'
+        );
         setCadProjetista(projetistaNome || '');
-        setCadPrograma('FNE/PRONAF A - RES.5.183/24 (699)');
+        setCadPrograma(
+          cfgPerfil.porte === 'PRONAF_A'
+            ? 'FNE/PRONAF A - RES.5.183/24 (699)'
+            : cfgPerfil.porte === 'PRONAF_V'
+            ? 'FNE /PRONAF - COMUM (FNE) (433)'
+            : 'FNE /RURAL (226)'
+        );
         setCadSituacao('Na Agência');
-        setCadResponsavel('');
-        setCadTelefone('');
         setCadData(getHojeBR());
-        const linhaObjetivo = auditoriaPdf?.objetivoCreditoDetectado
-          ? `\n- OBJETIVO DETECTADO NO PROJETO: ${auditoriaPdf.objetivoCreditoDetectado.toUpperCase()}`
-          : '';
         setCadSitDetalhada(
-          (resClassif.resumoPontosOk.length > 0
-            ? resClassif.resumoPontosOk.map((p) => `- ${p}`).join('\n')
-            : '- PASTA DO CLIENTE ORGANIZADA NO SISTEMA') + linhaObjetivo
+          `- PASTA DO CLIENTE ORGANIZADA (${cfgPerfil.porte.replace(
+            '_',
+            ' '
+          )} • ${cfgPerfil.escopo})`
         );
         setCadObsPendencias(
-          resClassif.resumoPendencias.length > 0
-            ? resClassif.resumoPendencias.map((p) => `- ${p}`).join('\n')
-            : '- SEM PENDÊNCIAS CADASTRAIS IDENTIFICADAS'
+          planoLembretesTxt.length > 0
+            ? planoLembretesTxt
+                .slice(0, 6)
+                .map((l) => `- ${l.nomeArquivoTxt.replace(/\.txt$/i, '')}`)
+                .join('\n')
+            : '- DOCUMENTAÇÃO CONFERIDA'
         );
         return;
       } else if (
@@ -2062,7 +1492,6 @@ export default function ModalOrganizadorPastasCliente({
         resClassif.jaCadastradoNoPainel &&
         !jaTemParecerGerencialNaPasta
       ) {
-        // Se já estava cadastrado no Kanban, mas ainda faltava o Parecer Gerencial na pasta, abre o Card direto no Parecer!
         const cpfLimpo = itemConfBase.cpfCliente.replace(/\D/g, '');
         const nomeUp = itemConfBase.nomeCliente.toUpperCase().trim();
         const cardVinc = listaCards.find(
@@ -2078,9 +1507,7 @@ export default function ModalOrganizadorPastasCliente({
       }
 
       alert(
-        `✅ Pasta "${nomePastaSelecionada}" atualizada e revalidada com sucesso!\n\n` +
-          `• Novos documentos padronizados e .TXT de itens entregues removidos\n` +
-          `• Auditoria dos 12 pontos dos PDFs atualizada ao lado!`
+        `✅ Pasta "${nomePastaSelecionada}" organizada e validada com sucesso no perfil [${cfgPerfil.porte} — ${cfgPerfil.escopo}]!`
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro desconhecido';
@@ -2091,20 +1518,26 @@ export default function ModalOrganizadorPastasCliente({
   };
 
   const confirmarCadastroPropostaEAbrirParecer = async () => {
-    if (!modalIniciarPronafA) return;
+    if (!modalIniciarProposta) return;
     if (!cadValor.trim()) {
       alert('Informe o Valor da Proposta (R$) para cadastrar a operação!');
       return;
     }
 
-    const { item } = modalIniciarPronafA;
+    const { item } = modalIniciarProposta;
     const idNovaOp = String(Date.now());
     const nomeUpper = item.nomeCliente.toUpperCase().trim();
     const cpfFmt = (cadCpf || item.cpfCliente || '').trim();
+    const porteFormatado =
+      cfgPerfil.porte === 'PRONAF_A'
+        ? 'PRONAF A'
+        : cfgPerfil.porte === 'PRONAF_V'
+        ? 'PRONAF V'
+        : 'MINI';
 
     const novaContratacao: RegistroContratacao = {
       id: idNovaOp,
-      porte: 'PRONAF A',
+      porte: porteFormatado,
       cliente: nomeUpper,
       cpf: cpfFmt,
       valor: cadValor.trim(),
@@ -2118,13 +1551,18 @@ export default function ModalOrganizadorPastasCliente({
       obs: cadObsPendencias.trim(),
       programa: cadPrograma.toUpperCase().trim(),
       cadaVezMelhor: isEnquadradoCadaVezMelhor(cadPrograma),
-      tipoGarantiaKanban: 'NENHUMA',
+      tipoGarantiaKanban:
+        cfgPerfil.garantiaDerivada === 'LCGH_LCGA'
+          ? cfgPerfil.modalidadeLimite
+          : cfgPerfil.garantiaDerivada === 'AVAL'
+          ? 'AVAL'
+          : 'NENHUMA',
     };
 
     const { html, textoPuro } = montarHtmlCardSincronizado({
       cliente: nomeUpper,
       cpf: cpfFmt,
-      porte: 'PRONAF A',
+      porte: porteFormatado,
       projetista: novaContratacao.projetista,
       tipo: novaContratacao.tipo,
       valor: novaContratacao.valor,
@@ -2143,19 +1581,11 @@ export default function ModalOrganizadorPastasCliente({
       ],
     });
 
-    const corCard =
-      modalIniciarPronafA.grupoNumero === 1
-        ? 'azul'
-        : modalIniciarPronafA.grupoNumero === 4
-        ? 'vermelho'
-        : 'amarelo';
-
     const etapaInicial: EtapaKanban = 'CADASTROS';
-
     const novoCardKanban: CardKanban = {
-      id: `wk_pronafa_${idNovaOp}`,
+      id: `wk_org_${idNovaOp}`,
       etapa: etapaInicial,
-      statusCor: corCard,
+      statusCor: 'azul',
       texto: html,
       textoPuro,
       dataModificacao: getHojeISO(),
@@ -2164,7 +1594,7 @@ export default function ModalOrganizadorPastasCliente({
       idsPropostasAgrupadas: [idNovaOp],
       clienteVinculado: nomeUpper,
       cpfVinculado: cpfFmt,
-      porteVinculado: 'PRONAF A',
+      porteVinculado: porteFormatado,
       valorVinculado: novaContratacao.valor,
       tipoOpVinculado: novaContratacao.tipo,
       situacaoVinculada: novaContratacao.situacao,
@@ -2172,17 +1602,8 @@ export default function ModalOrganizadorPastasCliente({
       obsVinculada: novaContratacao.obs,
     };
 
-    const baseContrAtual =
-      listaContratacoes.length > 0
-        ? listaContratacoes
-        : lerCacheLocal<RegistroContratacao[]>(STORAGE_KEYS_V2.CONTRATACOES, []);
-    const baseCardsAtual =
-      listaCards.length > 0
-        ? listaCards
-        : lerCacheLocal<CardKanban[]>(STORAGE_KEYS_V2.KANBAN, []);
-
-    const novasContratacoes = [novaContratacao, ...baseContrAtual];
-    const novosCards = [novoCardKanban, ...baseCardsAtual];
+    const novasContratacoes = [novaContratacao, ...listaContratacoes];
+    const novosCards = [novoCardKanban, ...listaCards];
 
     setListaContratacoes(novasContratacoes);
     setListaCards(novosCards);
@@ -2197,68 +1618,40 @@ export default function ModalOrganizadorPastasCliente({
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
         new CustomEvent('bnb_v2_sync_externo', {
-          detail: {
-            cards: novosCards,
-            contratacoes: novasContratacoes,
-          },
+          detail: { cards: novosCards, contratacoes: novasContratacoes },
         })
       );
     }
 
-    setModalIniciarPronafA(null);
+    setModalIniciarProposta(null);
     setCardOverlayParecerId(novoCardKanban.id);
   };
 
   const baixarPacoteZipOrganizado = async () => {
     if (arquivosMapeados.length === 0) return;
     const zip = new PizZip();
-    const pastaCadastro = zip.folder('CADASTRO');
-    const pastaSocio = zip.folder('CERTIFICAÇÃO SOCIOAMBIENTAL');
 
     for (const item of arquivosMapeados) {
       if (item.categoria === 'IGNORAR') continue;
-      const destinos = calcularDestinosDoArquivo(
-        item,
-        nomesCurtos,
-        projetistaNome,
-        paNome
-      );
+      const destinos = calcularTodosDestinosDoArquivo(item, cfgPerfil);
       const buffer = await item.fileObj.arrayBuffer();
 
-      if (destinos.nomeNaRaiz) {
-        zip.file(destinos.nomeNaRaiz.replace(/[/:*?"<>|]/g, '-'), buffer);
-        if (
-          item.categoria === 'ITEM_5_CERT_SOCIOAMBIENTAL' &&
-          !item.isViti &&
-          gerarDuplicataCertSocioSemNumero
-        ) {
-          const nomeExtra = `- CERT. SOCIOAMBIENTAL - ${nomesCurtos.titular}.${
-            item.extensao || 'pdf'
-          }`;
-          zip.file(nomeExtra, buffer);
-          pastaSocio?.file(nomeExtra, buffer);
-        }
-      }
-      if (destinos.nomeNoCadastro) {
-        pastaCadastro?.file(
-          destinos.nomeNoCadastro.replace(/[/:*?"<>|]/g, '-'),
-          buffer
-        );
-      }
-      if (destinos.nomeNaSocioambiental) {
-        pastaSocio?.file(
-          destinos.nomeNaSocioambiental.replace(/[/:*?"<>|]/g, '-'),
-          buffer
-        );
+      for (const dest of destinos) {
+        const nomeSeguro = dest.nomeArquivoFinal.replace(/[/:*?"<>|]/g, '-');
+        const caminhoZip = dest.pastaRelativa
+          ? `${dest.pastaRelativa}/${nomeSeguro}`
+          : nomeSeguro;
+        zip.file(caminhoZip, buffer);
       }
     }
 
     if (gerarTxtsLembretesFaltantes) {
-      planoArquivosTxtLembretes.txtsRaiz.forEach((nomeTxt) => {
-        zip.file(nomeTxt.replace(/[/:*?"<>|]/g, '-'), '');
-      });
-      planoArquivosTxtLembretes.txtsSubpastaCadastro.forEach((nomeTxt) => {
-        pastaCadastro?.file(nomeTxt.replace(/[/:*?"<>|]/g, '-'), '');
+      planoLembretesTxt.forEach((lemb) => {
+        const nomeSeguro = lemb.nomeArquivoTxt.replace(/[/:*?"<>|]/g, '-');
+        const caminhoZip = lemb.pastaRelativa
+          ? `${lemb.pastaRelativa}/${nomeSeguro}`
+          : nomeSeguro;
+        zip.file(caminhoZip, '');
       });
     }
 
@@ -2271,18 +1664,15 @@ export default function ModalOrganizadorPastasCliente({
   ) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const chaveFinal =
       novoCoringaTipo === 'PARECER_SEMA'
         ? 'GLOBAL (TODOS OS PRONAF A)'
         : novoCoringaChave.toUpperCase().trim();
-
     if (!chaveFinal) {
       alert('Informe o nome do Projetista ou do P.A. antes de anexar o PDF!');
       e.target.value = '';
       return;
     }
-
     try {
       setStatusSyncCofre('SINCRONIZANDO');
       const buf = await file.arrayBuffer();
@@ -2300,10 +1690,9 @@ export default function ModalOrganizadorPastasCliente({
       };
       await salvarCoringaNoCofreLocal(novoItem);
       await salvarCoringaGavetaSync(novoItem);
-      const atualizados = await listarCoringasDoCofreLocal();
-      setCoringasSalvos(atualizados);
+      setCoringasSalvos(await listarCoringasDoCofreLocal());
       alert(
-        `✅ Documento Coringa [${novoCoringaTipo} — ${chaveFinal}] salvo e sincronizado na Nuvem com sucesso!`
+        `✅ Documento Coringa [${novoCoringaTipo} — ${chaveFinal}] salvo e sincronizado na Nuvem!`
       );
     } catch {
       alert('❌ Erro ao salvar arquivo no Cofre.');
@@ -2316,9 +1705,9 @@ export default function ModalOrganizadorPastasCliente({
   if (!aberto || typeof document === 'undefined') return null;
 
   const inputPadraoStyle: React.CSSProperties = {
-    height: '34px',
-    padding: '4px 10px',
-    fontSize: '12px',
+    height: '32px',
+    padding: '4px 8px',
+    fontSize: '11.5px',
     lineHeight: '1.25',
     borderRadius: '6px',
     border: '1px solid #cbd5e1',
@@ -2344,8 +1733,8 @@ export default function ModalOrganizadorPastasCliente({
         style={{
           background: '#f8fafc',
           width: '97vw',
-          maxWidth: '1420px',
-          height: '94vh',
+          maxWidth: '1440px',
+          height: '95vh',
           borderRadius: '12px',
           boxShadow: '0 25px 55px rgba(0,0,0,0.45)',
           display: 'flex',
@@ -2354,38 +1743,30 @@ export default function ModalOrganizadorPastasCliente({
           borderTop: '5px solid #8B1530',
         }}
       >
-        {/* CABEÇALHO EXECUTIVO PADRÃO PAINEL BNB */}
+        {/* CABEÇALHO EXECUTIVO */}
         <div
           style={{
-            padding: '12px 22px',
+            padding: '10px 20px',
             background: '#ffffff',
             borderBottom: '1px solid #e2e8f0',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
             flexWrap: 'wrap',
-            gap: '12px',
+            gap: '10px',
           }}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                flexWrap: 'wrap',
-              }}
-            >
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <h3
                 style={{
                   margin: 0,
-                  fontSize: '15.5px',
+                  fontSize: '15px',
                   color: '#8B1530',
                   fontWeight: 800,
-                  letterSpacing: '0.2px',
                 }}
               >
-                🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS & AUDITORIA DE PDFs
+                🗂️ ORGANIZADOR MULTI-PORTE DE PASTAS & AUDITORIA DE PROJETOS
               </h3>
               <span
                 style={{
@@ -2400,31 +1781,27 @@ export default function ModalOrganizadorPastasCliente({
                 }}
               >
                 {statusSyncCofre === 'SINCRONIZADO'
-                  ? '☁️ Gaveta Sincronizada na Nuvem'
-                  : '⏳ Sincronizando Nuvem...'}
+                  ? '☁️ Gaveta na Nuvem OK'
+                  : '⏳ Sincronizando...'}
               </span>
             </div>
             <span style={{ fontSize: '11px', color: '#64748b' }}>
-              Organiza pastas novas ou revalida pastas já organizadas (lendo também a subpasta <b>CADASTRO</b>), atualiza os <b>.TXT</b> e audita os 12 pontos dos PDFs.
+              Suporta <b>PRONAF A</b>, <b>PRONAF V (Comum)</b>,{' '}
+              <b>MINI / PEQUENO</b>, <b>Limites LCGH/LCGA</b> e{' '}
+              <b>Combo (Derivada + Limite)</b> com cópia cruzada entre
+              subpastas.
             </span>
           </div>
 
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              flexWrap: 'wrap',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <button
               type="button"
               onClick={() => setAbaAtiva('ORGANIZADOR')}
               style={{
                 width: 'auto',
-                height: '34px',
+                height: '32px',
                 padding: '0 14px',
-                fontSize: '12px',
+                fontSize: '11.5px',
                 fontWeight: 800,
                 borderRadius: '6px',
                 border: '1px solid #8B1530',
@@ -2433,7 +1810,7 @@ export default function ModalOrganizadorPastasCliente({
                 cursor: 'pointer',
               }}
             >
-              ⚡ 1. Organizar / Revalidar Pasta
+              ⚡ 1. Organizar / Auditar Pasta
             </button>
 
             <button
@@ -2441,9 +1818,9 @@ export default function ModalOrganizadorPastasCliente({
               onClick={() => setAbaAtiva('COFRE')}
               style={{
                 width: 'auto',
-                height: '34px',
+                height: '32px',
                 padding: '0 14px',
-                fontSize: '12px',
+                fontSize: '11.5px',
                 fontWeight: 800,
                 borderRadius: '6px',
                 border: '1px solid #b45309',
@@ -2452,7 +1829,7 @@ export default function ModalOrganizadorPastasCliente({
                 cursor: 'pointer',
               }}
             >
-              🗄️ 2. Gaveta de Coringas na Nuvem ({coringasSalvos.length})
+              🗄️ 2. Gaveta de Coringas ({coringasSalvos.length})
             </button>
 
             <button
@@ -2468,14 +1845,13 @@ export default function ModalOrganizadorPastasCliente({
                 padding: '0 6px',
                 lineHeight: 1,
               }}
-              title="Fechar"
             >
               &times;
             </button>
           </div>
         </div>
 
-        {/* ABA 1: ORGANIZADOR INTELIGENTE DE PASTA */}
+        {/* ABA 1: ORGANIZADOR MULTI-PORTE */}
         {abaAtiva === 'ORGANIZADOR' && (
           <div
             style={{
@@ -2485,20 +1861,238 @@ export default function ModalOrganizadorPastasCliente({
               overflow: 'hidden',
             }}
           >
+            {/* PAINEL DE CONFIGURAÇÃO DO PERFIL E ENVOLVIDOS */}
             <div
               style={{
-                margin: '12px 20px 0 20px',
-                padding: '14px 18px',
+                margin: '10px 20px 0 20px',
+                padding: '12px 16px',
                 background: '#ffffff',
                 border: '1px solid #cbd5e1',
                 borderLeft: '5px solid #8B1530',
                 borderRadius: '8px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '12px',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                gap: '10px',
               }}
             >
+              {/* LINHA 1: SELETOR DE PORTE, ESCOPO (DERIVADA / LIMITE / COMBO) E GARANTIA */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1.6fr 1fr 1.1fr 0.9fr auto',
+                  gap: '10px',
+                  alignItems: 'end',
+                  background: '#fdf2f4',
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #f5c2c7',
+                }}
+              >
+                <div>
+                  <label
+                    style={{
+                      fontSize: '10.5px',
+                      fontWeight: 800,
+                      color: '#8B1530',
+                      display: 'block',
+                      marginBottom: '3px',
+                    }}
+                  >
+                    🎯 1. Porte do Cliente
+                  </label>
+                  <select
+                    value={portePerfil}
+                    onChange={(e) => {
+                      const novoP = e.target.value as PorteOrganizador;
+                      setPortePerfil(novoP);
+                      if (novoP === 'PRONAF_A') {
+                        setEscopoPasta('PRONAF_A_PADRAO');
+                        setGarantiaDerivada('SEM_GARANTIA');
+                      } else if (escopoPasta === 'PRONAF_A_PADRAO') {
+                        setEscopoPasta('DERIVADA_PURA');
+                      }
+                    }}
+                    style={{
+                      ...inputPadraoStyle,
+                      fontWeight: 800,
+                      color: '#8B1530',
+                    }}
+                  >
+                    <option value="PRONAF_A">PRONAF A (Reforma Agrária)</option>
+                    <option value="PRONAF_V">PRONAF V (Comum)</option>
+                    <option value="MINI_PEQUENO">MINI / PEQUENO / DEMAIS</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    style={{
+                      fontSize: '10.5px',
+                      fontWeight: 800,
+                      color: '#8B1530',
+                      display: 'block',
+                      marginBottom: '3px',
+                    }}
+                  >
+                    🗂️ 2. Estrutura de Pastas / Escopo da Proposta
+                  </label>
+                  <select
+                    value={cfgPerfil.escopo}
+                    onChange={(e) =>
+                      setEscopoPasta(e.target.value as EscopoOperacaoPasta)
+                    }
+                    style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                  >
+                    {portePerfil === 'PRONAF_A' && (
+                      <option value="PRONAF_A_PADRAO">
+                        Padrão PRONAF A (Itens 1 a 21 na Raiz + Subpastas)
+                      </option>
+                    )}
+                    {portePerfil !== 'PRONAF_A' && (
+                      <>
+                        <option value="DERIVADA_PURA">
+                          Operação Derivada Pura (Investimento ou Custeio na
+                          Raiz)
+                        </option>
+                        <option value="COMBO_DERIVADA_E_LIMITE">
+                          🔥 Combo: Derivada + Limite (Cria pastas LCGH/LCGA +
+                          INV/CUSTEIO)
+                        </option>
+                      </>
+                    )}
+                    <option value="LIMITE_PURO">
+                      Somente Abertura de Limite (LCGH / LCGA na Raiz)
+                    </option>
+                  </select>
+                </div>
+
+                {cfgPerfil.escopo !== 'LIMITE_PURO' && (
+                  <div>
+                    <label
+                      style={{
+                        fontSize: '10.5px',
+                        fontWeight: 800,
+                        color: '#334155',
+                        display: 'block',
+                        marginBottom: '3px',
+                      }}
+                    >
+                      🚜 Finalidade Derivada
+                    </label>
+                    <select
+                      value={modalidadeDerivada}
+                      onChange={(e) =>
+                        setModalidadeDerivada(
+                          e.target.value as ModalidadeDerivada
+                        )
+                      }
+                      style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                    >
+                      <option value="INVESTIMENTO">Investimento</option>
+                      <option value="CUSTEIO">
+                        Custeio (+ Planilha Geodésica)
+                      </option>
+                    </select>
+                  </div>
+                )}
+
+                {portePerfil !== 'PRONAF_A' &&
+                  cfgPerfil.escopo === 'DERIVADA_PURA' && (
+                    <div>
+                      <label
+                        style={{
+                          fontSize: '10.5px',
+                          fontWeight: 800,
+                          color: '#334155',
+                          display: 'block',
+                          marginBottom: '3px',
+                        }}
+                      >
+                        🛡️ Garantia da Derivada
+                      </label>
+                      <select
+                        value={garantiaDerivada}
+                        onChange={(e) =>
+                          setGarantiaDerivada(
+                            e.target.value as GarantiaDerivada
+                          )
+                        }
+                        style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                      >
+                        <option value="AVAL">Aval / Fiança (Sem Imóvel)</option>
+                        <option value="LCGH_LCGA">
+                          Imóvel em Garantia (LCGH / LCGA)
+                        </option>
+                        <option value="SEM_GARANTIA">Sem Garantia</option>
+                      </select>
+                    </div>
+                  )}
+
+                {(cfgPerfil.escopo === 'LIMITE_PURO' ||
+                  cfgPerfil.escopo === 'COMBO_DERIVADA_E_LIMITE' ||
+                  garantiaDerivada === 'LCGH_LCGA') && (
+                  <div>
+                    <label
+                      style={{
+                        fontSize: '10.5px',
+                        fontWeight: 800,
+                        color: '#334155',
+                        display: 'block',
+                        marginBottom: '3px',
+                      }}
+                    >
+                      🏛️ Tipo Limite
+                    </label>
+                    <select
+                      value={modalidadeLimite}
+                      onChange={(e) =>
+                        setModalidadeLimite(
+                          e.target.value as ModalidadeLimite
+                        )
+                      }
+                      style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                    >
+                      <option value="LCGH">LCGH (Hipoteca)</option>
+                      <option value="LCGA">LCGA (Alienação Fid.)</option>
+                    </select>
+                  </div>
+                )}
+
+                {portePerfil !== 'PRONAF_A' && (
+                  <label
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      color: '#8B1530',
+                      cursor: 'pointer',
+                      height: '32px',
+                      margin: 0,
+                      whiteSpace: 'nowrap',
+                    }}
+                    title="Imóveis avaliados a partir de R$ 600.000,00 exigem Laudo de Avaliação Interno elaborado pelo técnico do Banco"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={imovelAvaliadoAcima600k}
+                      onChange={(e) =>
+                        setImovelAvaliadoAcima600k(e.target.checked)
+                      }
+                      style={{
+                        width: '14px',
+                        height: '14px',
+                        margin: 0,
+                        accentColor: '#8B1530',
+                      }}
+                    />
+                    Imóvel &ge; R$ 600 mil (Exige Laudo Interno)
+                  </label>
+                )}
+              </div>
+
+              {/* LINHA 2: DADOS DOS ENVOLVIDOS */}
               <div
                 style={{
                   display: 'grid',
@@ -2510,14 +2104,14 @@ export default function ModalOrganizadorPastasCliente({
                 <div>
                   <label
                     style={{
-                      fontSize: '11px',
+                      fontSize: '10.5px',
                       fontWeight: 800,
                       color: '#8B1530',
                       display: 'block',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
-                    ⚡ Vincular Cliente do Painel / Conformidade
+                    ⚡ Puxar Cliente do Painel / Conformidade
                   </label>
                   <input
                     type="search"
@@ -2539,7 +2133,11 @@ export default function ModalOrganizadorPastasCliente({
                         if (achado.avalista) setAvalistaNome(achado.avalista);
                         if (achado.projetista)
                           setProjetistaNome(achado.projetista);
-                        setIsPronafA(achado.pronafA);
+                        setPortePerfil(achado.porte);
+                        setEscopoPasta(achado.escopoSugerido);
+                        setModalidadeDerivada(achado.modDerivada);
+                        setModalidadeLimite(achado.modLimite);
+                        setGarantiaDerivada(achado.garDerivada);
                       }
                     }}
                     placeholder="Selecione ou deixe autodetectar..."
@@ -2555,11 +2153,11 @@ export default function ModalOrganizadorPastasCliente({
                 <div>
                   <label
                     style={{
-                      fontSize: '11px',
+                      fontSize: '10.5px',
                       fontWeight: 800,
                       color: '#0f172a',
                       display: 'block',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
                     👤 Titular (Tag:{' '}
@@ -2582,11 +2180,11 @@ export default function ModalOrganizadorPastasCliente({
                 <div>
                   <label
                     style={{
-                      fontSize: '11px',
+                      fontSize: '10.5px',
                       fontWeight: 700,
                       color: '#334155',
                       display: 'block',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
                     👥 Cônjuge{' '}
@@ -2600,7 +2198,7 @@ export default function ModalOrganizadorPastasCliente({
                     onChange={(e) =>
                       setConjugeNome(e.target.value.toUpperCase())
                     }
-                    placeholder="Ex: MARIA ZILMA DOS REIS"
+                    placeholder="Vazio = Sem cônjuge"
                     style={inputPadraoStyle}
                   />
                 </div>
@@ -2608,11 +2206,11 @@ export default function ModalOrganizadorPastasCliente({
                 <div>
                   <label
                     style={{
-                      fontSize: '11px',
+                      fontSize: '10.5px',
                       fontWeight: 700,
                       color: '#334155',
                       display: 'block',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
                     📝 Procurador / Avalista
@@ -2631,14 +2229,14 @@ export default function ModalOrganizadorPastasCliente({
                 <div>
                   <label
                     style={{
-                      fontSize: '11px',
+                      fontSize: '10.5px',
                       fontWeight: 700,
                       color: '#334155',
                       display: 'block',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
-                    👨‍💼 Projetista (Item 6)
+                    👨‍💼 Projetista (CREA)
                   </label>
                   <input
                     type="search"
@@ -2660,14 +2258,14 @@ export default function ModalOrganizadorPastasCliente({
                 <div>
                   <label
                     style={{
-                      fontSize: '11px',
+                      fontSize: '10.5px',
                       fontWeight: 700,
                       color: '#334155',
                       display: 'block',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
-                    🏕️ Assentamento / P.A. (Itens 13 e 17)
+                    🏕️ Imóvel / P.A.
                   </label>
                   <input
                     type="text"
@@ -2679,6 +2277,7 @@ export default function ModalOrganizadorPastasCliente({
                 </div>
               </div>
 
+              {/* LINHA 3: BOTÕES DE AÇÃO NA PASTA */}
               <div
                 style={{
                   display: 'flex',
@@ -2686,7 +2285,7 @@ export default function ModalOrganizadorPastasCliente({
                   alignItems: 'center',
                   flexWrap: 'wrap',
                   gap: '10px',
-                  paddingTop: '10px',
+                  paddingTop: '8px',
                   borderTop: '1px dashed #e2e8f0',
                 }}
               >
@@ -2703,19 +2302,18 @@ export default function ModalOrganizadorPastasCliente({
                     onClick={selecionarPastaNoComputador}
                     style={{
                       width: 'auto',
-                      height: '36px',
+                      height: '34px',
                       padding: '0 16px',
-                      fontSize: '12.5px',
+                      fontSize: '12px',
                       fontWeight: 800,
                       background: '#8B1530',
                       color: '#ffffff',
                       border: 'none',
                       borderRadius: '6px',
                       cursor: 'pointer',
-                      boxShadow: '0 2px 6px rgba(139, 21, 48, 0.25)',
                     }}
                   >
-                    📂 1. Selecionar Pasta do Cliente (Nova ou Já Organizada)
+                    📂 1. Selecionar Pasta do Cliente no Windows
                   </button>
 
                   {nomePastaSelecionada && (
@@ -2729,14 +2327,14 @@ export default function ModalOrganizadorPastasCliente({
                           border: `1px solid ${
                             pastaJaEraOrganizada ? '#86efac' : '#f5c2c7'
                           }`,
-                          padding: '5px 10px',
+                          padding: '4px 10px',
                           borderRadius: '6px',
-                          fontSize: '11.5px',
+                          fontSize: '11px',
                           fontWeight: 800,
                         }}
                       >
-                        📁 {nomePastaSelecionada} ({arquivosMapeados.length} arq.)
-                        {pastaJaEraOrganizada ? ' • Pasta Já Estruturada' : ''}
+                        📁 {nomePastaSelecionada} ({arquivosMapeados.length}{' '}
+                        arq.)
                       </span>
 
                       <button
@@ -2744,10 +2342,9 @@ export default function ModalOrganizadorPastasCliente({
                         onClick={() =>
                           dirHandleRoot && escanearHandleDaPasta(dirHandleRoot)
                         }
-                        title="Re-escanear a pasta aberta para detectar novos PDFs adicionados agora no Windows"
                         style={{
                           width: 'auto',
-                          height: '32px',
+                          height: '30px',
                           padding: '0 10px',
                           fontSize: '11px',
                           fontWeight: 800,
@@ -2768,33 +2365,7 @@ export default function ModalOrganizadorPastasCliente({
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: '5px',
-                      fontSize: '11.5px',
-                      fontWeight: 700,
-                      color: '#334155',
-                      cursor: 'pointer',
-                      margin: 0,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isPronafA}
-                      onChange={(e) => setIsPronafA(e.target.checked)}
-                      style={{
-                        width: '14px',
-                        height: '14px',
-                        margin: 0,
-                        accentColor: '#8B1530',
-                      }}
-                    />
-                    PRONAF A (SEMA e RB)
-                  </label>
-
-                  <label
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      fontSize: '11.5px',
+                      fontSize: '11px',
                       fontWeight: 700,
                       color: '#b45309',
                       cursor: 'pointer',
@@ -2814,25 +2385,18 @@ export default function ModalOrganizadorPastasCliente({
                         accentColor: '#b45309',
                       }}
                     />
-                    Manter .TXT de Pendências
+                    Gerar .TXT Vazios do que Faltar
                   </label>
                 </div>
 
                 {arquivosMapeados.length > 0 && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      flexWrap: 'wrap',
-                    }}
-                  >
+                  <div style={{ display: 'flex', gap: '8px' }}>
                     <button
                       type="button"
                       onClick={baixarPacoteZipOrganizado}
                       style={{
                         width: 'auto',
-                        height: '36px',
+                        height: '34px',
                         padding: '0 14px',
                         fontSize: '11.5px',
                         fontWeight: 700,
@@ -2852,9 +2416,9 @@ export default function ModalOrganizadorPastasCliente({
                       onClick={executarOrganizacaoDiretoNaPasta}
                       style={{
                         width: 'auto',
-                        height: '36px',
-                        padding: '0 20px',
-                        fontSize: '12.5px',
+                        height: '34px',
+                        padding: '0 18px',
+                        fontSize: '12px',
                         fontWeight: 800,
                         background: '#15803d',
                         color: '#ffffff',
@@ -2866,8 +2430,6 @@ export default function ModalOrganizadorPastasCliente({
                     >
                       {processando
                         ? '⏳ Processando Pasta...'
-                        : pastaJaEraOrganizada
-                        ? '⚡ 2. Atualizar Novos Arquivos & Revalidar Pasta!'
                         : '⚡ 2. Organizar Pasta & Iniciar Proposta / Parecer!'}
                     </button>
                   </div>
@@ -2875,14 +2437,14 @@ export default function ModalOrganizadorPastasCliente({
               </div>
             </div>
 
-            {/* CORPO PRINCIPAL DIVIDIDO EM 2 COLUNAS */}
+            {/* CORPO PRINCIPAL: TABELA DE ARQUIVOS ORDENADA + COLUNA DIREITA DE AUDITORIA E .TXT */}
             <div
               style={{
                 flex: 1,
                 display: 'grid',
                 gridTemplateColumns: '1.85fr 1fr',
                 gap: '14px',
-                padding: '12px 20px 18px 20px',
+                padding: '10px 20px 16px 20px',
                 overflow: 'hidden',
               }}
             >
@@ -2895,12 +2457,11 @@ export default function ModalOrganizadorPastasCliente({
                   display: 'flex',
                   flexDirection: 'column',
                   overflow: 'hidden',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
                 }}
               >
                 <div
                   style={{
-                    padding: '10px 16px',
+                    padding: '9px 14px',
                     background: '#8B1530',
                     color: '#ffffff',
                     fontSize: '12px',
@@ -2908,46 +2469,20 @@ export default function ModalOrganizadorPastasCliente({
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: '8px',
                   }}
                 >
                   <span>
-                    📋 1. ARQUIVOS IDENTIFICADOS NA PASTA ({arquivosMapeados.length})
+                    📋 1. ARQUIVOS IDENTIFICADOS NA ORDEM DO PERFIL (
+                    {arquivosMapeadosOrdenados.length})
                   </span>
-                  <div style={{ display: 'flex', gap: '8px', fontSize: '10.5px' }}>
-                    <span
-                      style={{
-                        background: 'rgba(255,255,255,0.18)',
-                        padding: '2px 8px',
-                        borderRadius: '10px',
-                      }}
-                    >
-                      📁 Raiz: {resumoContadores.qtdRaiz}
-                    </span>
-                    <span
-                      style={{
-                        background: 'rgba(255,255,255,0.18)',
-                        padding: '2px 8px',
-                        borderRadius: '10px',
-                      }}
-                    >
-                      🪪 Cadastro: {resumoContadores.qtdCadastro}
-                    </span>
-                    <span
-                      style={{
-                        background: 'rgba(255,255,255,0.18)',
-                        padding: '2px 8px',
-                        borderRadius: '10px',
-                      }}
-                    >
-                      🌿 Socioambiental (1 a 6): {resumoContadores.qtdSocio}
-                    </span>
-                  </div>
+                  <span style={{ fontSize: '10.5px', opacity: 0.9 }}>
+                    Perfil Ativo: {cfgPerfil.porte.replace('_', ' ')} •{' '}
+                    {cfgPerfil.escopo.replace(/_/g, ' ')}
+                  </span>
                 </div>
 
                 <div style={{ flex: 1, overflowY: 'auto' }}>
-                  {arquivosMapeados.length === 0 ? (
+                  {arquivosMapeadosOrdenados.length === 0 ? (
                     <div
                       style={{
                         textAlign: 'center',
@@ -2956,11 +2491,8 @@ export default function ModalOrganizadorPastasCliente({
                         fontSize: '13px',
                       }}
                     >
-                      Clique em{' '}
-                      <b style={{ color: '#8B1530' }}>
-                        &ldquo;📂 1. Selecionar Pasta do Cliente (Nova ou Já Organizada)&rdquo;
-                      </b>{' '}
-                      acima para carregar e auditar os arquivos.
+                      Selecione a pasta do cliente acima para organizar e
+                      validar os documentos automaticamente.
                     </div>
                   ) : (
                     <table
@@ -2983,7 +2515,7 @@ export default function ModalOrganizadorPastasCliente({
                         >
                           <th
                             style={{
-                              padding: '8px 10px',
+                              padding: '7px 10px',
                               borderBottom: '1px solid #cbd5e1',
                             }}
                           >
@@ -2991,18 +2523,18 @@ export default function ModalOrganizadorPastasCliente({
                           </th>
                           <th
                             style={{
-                              padding: '8px 10px',
+                              padding: '7px 10px',
                               borderBottom: '1px solid #cbd5e1',
-                              width: '245px',
+                              width: '260px',
                             }}
                           >
                             Classificação Detectada
                           </th>
                           <th
                             style={{
-                              padding: '8px 6px',
+                              padding: '7px 6px',
                               borderBottom: '1px solid #cbd5e1',
-                              width: '54px',
+                              width: '50px',
                               textAlign: 'center',
                             }}
                           >
@@ -3010,21 +2542,19 @@ export default function ModalOrganizadorPastasCliente({
                           </th>
                           <th
                             style={{
-                              padding: '8px 10px',
+                              padding: '7px 10px',
                               borderBottom: '1px solid #cbd5e1',
                             }}
                           >
-                            Nome Padronizado & Destino
+                            Destinos & Numeração por Pasta
                           </th>
                         </tr>
                       </thead>
                       <tbody>
                         {arquivosMapeadosOrdenados.map((arq, idx) => {
-                          const dest = calcularDestinosDoArquivo(
+                          const destinos = calcularTodosDestinosDoArquivo(
                             arq,
-                            nomesCurtos,
-                            projetistaNome,
-                            paNome
+                            cfgPerfil
                           );
                           const aceitaViti = CATEGORIAS_QUE_ACEITAM_VITI.has(
                             arq.categoria
@@ -3037,7 +2567,7 @@ export default function ModalOrganizadorPastasCliente({
                                 borderBottom: '1px solid #e2e8f0',
                                 background: arq.origemGaveta
                                   ? '#fffbeb'
-                                  : arq.origemSubpastaCadastro
+                                  : arq.origemSubpasta
                                   ? '#faf5ff'
                                   : idx % 2 === 0
                                   ? '#ffffff'
@@ -3046,27 +2576,25 @@ export default function ModalOrganizadorPastasCliente({
                             >
                               <td
                                 style={{
-                                  padding: '8px 10px',
+                                  padding: '7px 10px',
                                   wordBreak: 'break-all',
-                                  color: arq.origemGaveta
-                                    ? '#b45309'
-                                    : arq.origemSubpastaCadastro
-                                    ? '#6b21a8'
-                                    : '#334155',
                                   fontWeight:
-                                    arq.origemGaveta ||
-                                    arq.origemSubpastaCadastro
+                                    arq.origemGaveta || arq.origemSubpasta
                                       ? 700
                                       : 500,
-                                  lineHeight: 1.35,
+                                  color: arq.origemGaveta
+                                    ? '#b45309'
+                                    : arq.origemSubpasta
+                                    ? '#6b21a8'
+                                    : '#334155',
                                 }}
                               >
-                                {arq.origemSubpastaCadastro
-                                  ? `[Já em CADASTRO] ${arq.nomeOriginal}`
+                                {arq.origemSubpasta
+                                  ? `[Em ${arq.origemSubpasta}] ${arq.nomeOriginal}`
                                   : arq.nomeOriginal}
                               </td>
 
-                              <td style={{ padding: '6px 10px' }}>
+                              <td style={{ padding: '5px 10px' }}>
                                 <select
                                   value={arq.categoria}
                                   onChange={(e) => {
@@ -3094,7 +2622,7 @@ export default function ModalOrganizadorPastasCliente({
                                     height: '34px',
                                     minHeight: '34px',
                                     padding: '4px 8px',
-                                    fontSize: '11.5px',
+                                    fontSize: '11px',
                                     lineHeight: '1.25',
                                     fontWeight: 700,
                                     color: '#0f172a',
@@ -3103,128 +2631,27 @@ export default function ModalOrganizadorPastasCliente({
                                     borderRadius: '6px',
                                   }}
                                 >
-                                  {/* ...mantenha todos os <optgroup> e <option> exatamente iguais... */}
-                                  <optgroup label="📂 Pasta Raiz (Itens 1 a 21)">
-                                    <option value="ITEM_1_PROJETO_ARQ">
-                                      1. PROJETO (.PRONAF_A2)
-                                    </option>
-                                    <option value="ITEM_2_AUT_ALTERACAO">
-                                      2. AUTORIZAÇÃO DE ALTERAÇÃO
-                                    </option>
-                                    <option value="ITEM_3_EMBARGOS_TITULAR">
-                                      3. EMBARGOS (Titular)
-                                    </option>
-                                    <option value="ITEM_3_EMBARGOS_CONJUGE">
-                                      3. EMBARGOS (Cônjuge)
-                                    </option>
-                                    <option value="ITEM_4_IMPROBIDADE_TITULAR">
-                                      4. IMPROBIDADE (Titular)
-                                    </option>
-                                    <option value="ITEM_4_IMPROBIDADE_CONJUGE">
-                                      4. IMPROBIDADE (Cônjuge)
-                                    </option>
-                                    <option value="ITEM_5_CERT_SOCIOAMBIENTAL">
-                                      5. CERT. SOCIOAMBIENTAL
-                                    </option>
-                                    <option value="ITEM_6_CREA">
-                                      6. CREA (Projetista)
-                                    </option>
-                                    <option value="ITEM_7_EXTRATO_SICOR">
-                                      7. EXTRATO SICOR
-                                    </option>
-                                    <option value="ITEM_8_CONTRATO_ASSESSORIA">
-                                      8. CONTRATO DE ASSESSORIA
-                                    </option>
-                                    <option value="ITEM_9_CONSOLIDADAS">
-                                      9. DECLARAÇÕES CONSOLIDADAS
-                                    </option>
-                                    <option value="ITEM_10_DEC_AMBIENTAIS">
-                                      10. DEC. AMBIENTAIS
-                                    </option>
-                                    <option value="ITEM_10_1_REG_AMBIENTAL">
-                                      10.1. DEC. REGULARIDADE AMBIENTAL
-                                    </option>
-                                    <option value="ITEM_10_2_NAO_DESMATAMENTO">
-                                      10.2. DEC. NÃO DESMATAMENTO
-                                    </option>
-                                    <option value="ITEM_10_3_RECOMPOSICAO">
-                                      10.3. DEC. DE RECOMPOSIÇÃO
-                                    </option>
-                                    <option value="ITEM_10_4_OUTRA_DEC_AMBIENTAL">
-                                      10.4. OUTRA DEC. AMBIENTAL
-                                    </option>
-                                    <option value="ITEM_11_ESPELHO_UND">
-                                      11. ESPELHO - RELATÓRIO DA UND
-                                    </option>
-                                    <option value="ITEM_12_PROJETO_PDF">
-                                      12. PROJETO (PDF)
-                                    </option>
-                                    <option value="ITEM_13_CAR">13. CAR</option>
-                                    <option value="ITEM_13_CONSULTA_CAR">
-                                      13. CONSULTA DO CAR
-                                    </option>
-                                    <option value="ITEM_14_CAF">
-                                      14. CAF (Raiz + Cadastro)
-                                    </option>
-                                    <option value="ITEM_15_DCAA">15. DCAA</option>
-                                    <option value="ITEM_16_PARECER_TECNICO">
-                                      16. PARECER TÉCNICO
-                                    </option>
-                                    <option value="ITEM_17_RB_PA">
-                                      17 - RB P.A.
-                                    </option>
-                                    <option value="ITEM_18_ORCAMENTO">
-                                      18. ORÇAMENTO
-                                    </option>
-                                    <option value="ITEM_19_CAPA_ANALISADOR">
-                                      19. CAPA DO ANALISADOR
-                                    </option>
-                                    <option value="ITEM_20_PARECER_GERENCIAL">
-                                      20. PARECER GERENCIAL
-                                    </option>
-                                    <option value="ITEM_21_PARECER_SEMA">
-                                      21. PARECER DA SEMA
-                                    </option>
-                                  </optgroup>
-                                  <optgroup label="🪪 Subpasta CADASTRO (1 a 9)">
-                                    <option value="CAD_1_IDENTIDADE_TITULAR">
-                                      CAD 1. IDENTIDADE (Titular)
-                                    </option>
-                                    <option value="CAD_1_IDENTIDADE_CONJUGE">
-                                      CAD 1. IDENTIDADE (Cônjuge)
-                                    </option>
-                                    <option value="CAD_1_IDENTIDADE_OUTRO">
-                                      CAD 1. IDENTIDADE (Procurador/Aval.)
-                                    </option>
-                                    <option value="CAD_2_CERTIDAO_CASAMENTO">
-                                      CAD 2. CERTIDÃO DE CASAMENTO
-                                    </option>
-                                    <option value="CAD_3_COMP_ENDERECO">
-                                      CAD 3. COMP. DE ENDEREÇO
-                                    </option>
-                                    <option value="CAD_4_COMP_RENDA">
-                                      CAD 4. COMP. DE RENDA
-                                    </option>
-                                    <option value="CAD_5_PROPOSTA_CADASTRO">
-                                      CAD 6. PROPOSTA DE CADASTRO (Aceita VITI)
-                                    </option>
-                                    <option value="CAD_6_PROCURACAO">
-                                      CAD 7. PROCURAÇÃO
-                                    </option>
-                                    <option value="CAD_8_SELO_CARTORIO">
-                                      CAD 8. SELO DE FISCALIZAÇÃO
-                                    </option>
-                                    <option value="CAD_9_OUTROS_CADASTRO">
-                                      CAD 9. OUTROS CADASTRAIS
-                                    </option>
-                                  </optgroup>
+                                  {OPCOES_SELECT_CATEGORIA.map((grp) => (
+                                    <optgroup key={grp.grupo} label={grp.grupo}>
+                                      {grp.itens.map((opt) => (
+                                        <option
+                                          key={opt.valor}
+                                          value={opt.valor}
+                                        >
+                                          {opt.label}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  ))}
                                   <option value="IGNORAR">
                                     🚫 Ignorar / Não Mexer
                                   </option>
                                 </select>
                               </td>
 
-                              <td style={{ padding: '6px', textAlign: 'center' }}>
+                              <td
+                                style={{ padding: '5px', textAlign: 'center' }}
+                              >
                                 {aceitaViti ? (
                                   <input
                                     type="checkbox"
@@ -3246,63 +2673,49 @@ export default function ModalOrganizadorPastasCliente({
                                       cursor: 'pointer',
                                       accentColor: '#8B1530',
                                     }}
-                                    title="Marque se este PDF for o Relatório de Validação ITI (VITI)"
                                   />
                                 ) : (
-                                  <span
-                                    style={{ color: '#cbd5e1', fontSize: '12px' }}
-                                    title="Este tipo de documento não utiliza validação ITI"
-                                  >
-                                    —
-                                  </span>
+                                  <span style={{ color: '#cbd5e1' }}>—</span>
                                 )}
                               </td>
 
-                              <td style={{ padding: '8px 10px' }}>
+                              <td style={{ padding: '7px 10px' }}>
                                 <div
                                   style={{
                                     display: 'flex',
                                     flexDirection: 'column',
-                                    gap: '3px',
+                                    gap: '2px',
                                   }}
                                 >
-                                  {dest.nomeNaRaiz && (
-                                    <span
-                                      style={{
-                                        color: '#0f172a',
-                                        fontWeight: 800,
-                                        fontSize: '11.5px',
-                                      }}
-                                    >
-                                      📁 Raiz:{' '}
-                                      <span style={{ color: '#8B1530' }}>
-                                        {dest.nomeNaRaiz}
+                                  {destinos.map((d, iD) => {
+                                    const isCad =
+                                      d.pastaRelativa === 'CADASTRO';
+                                    const isSocio =
+                                      d.pastaRelativa.includes(
+                                        'SOCIOAMBIENTAL'
+                                      );
+                                    return (
+                                      <span
+                                        key={iD}
+                                        style={{
+                                          fontSize: '11px',
+                                          fontWeight: isCad || isSocio ? 700 : 800,
+                                          color: isCad
+                                            ? '#6b21a8'
+                                            : isSocio
+                                            ? '#15803d'
+                                            : '#8B1530',
+                                        }}
+                                      >
+                                        {d.pastaRelativa
+                                          ? `📁 [${d.pastaRelativa}]: `
+                                          : '📁 [Raiz]: '}
+                                        <span style={{ color: '#0f172a' }}>
+                                          {d.nomeArquivoFinal}
+                                        </span>
                                       </span>
-                                    </span>
-                                  )}
-                                  {dest.nomeNoCadastro && (
-                                    <span
-                                      style={{
-                                        color: '#6b21a8',
-                                        fontWeight: 700,
-                                        fontSize: '11px',
-                                      }}
-                                    >
-                                      🪪 Subpasta CADASTRO: {dest.nomeNoCadastro}
-                                    </span>
-                                  )}
-                                  {dest.nomeNaSocioambiental && (
-                                    <span
-                                      style={{
-                                        color: '#15803d',
-                                        fontWeight: 700,
-                                        fontSize: '11px',
-                                      }}
-                                    >
-                                      🌿 Subpasta CERT. SOCIOAMBIENTAL:{' '}
-                                      {dest.nomeNaSocioambiental}
-                                    </span>
-                                  )}
+                                    );
+                                  })}
                                 </div>
                               </td>
                             </tr>
@@ -3314,7 +2727,7 @@ export default function ModalOrganizadorPastasCliente({
                 </div>
               </div>
 
-              {/* COLUNA DIREITA: AUDITORIA DOS 12 PONTOS + LEMBRETES .TXT + ASSINATURAS */}
+              {/* COLUNA DIREITA: AUDITORIA DOS PDFs + LEMBRETES .TXT */}
               <div
                 style={{
                   display: 'flex',
@@ -3323,7 +2736,7 @@ export default function ModalOrganizadorPastasCliente({
                   overflowY: 'auto',
                 }}
               >
-                {/* BLOCO 1: AUDITORIA INTELIGENTE DOS 12 PONTOS LIDOS NOS PDFs DA PASTA */}
+                {/* AUDITORIA AUTOMÁTICA DOS PDFs */}
                 <div
                   style={{
                     background: '#ffffff',
@@ -3331,7 +2744,6 @@ export default function ModalOrganizadorPastasCliente({
                     border: '1px solid #cbd5e1',
                     borderTop: '4px solid #0369a1',
                     padding: '12px 14px',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
                   }}
                 >
                   <div
@@ -3343,7 +2755,7 @@ export default function ModalOrganizadorPastasCliente({
                     }}
                   >
                     <strong style={{ fontSize: '12px', color: '#0369a1' }}>
-                      🧠 AUDITORIA AUTOMÁTICA DOS PDFs DA PASTA (12 VERIFICAÇÕES)
+                      🧠 AUDITORIA AUTOMÁTICA DOS PDFs DA PASTA
                     </strong>
                     {auditandoPdfs && (
                       <span
@@ -3360,7 +2772,9 @@ export default function ModalOrganizadorPastasCliente({
 
                   {!auditoriaPdf ? (
                     <span style={{ fontSize: '11px', color: '#64748b' }}>
-                      Selecione a pasta do cliente para o sistema ler o conteúdo interno dos PDFs (Consolidada, Projeto, Orçamento, CAF, Espelho, CAR e RB).
+                      Selecione a pasta do cliente para extrair Valor, Prazo,
+                      Carência, Elaborador, Inversões, C/C da Consolidada e
+                      Assinaturas Digitais.
                     </span>
                   ) : (
                     <div
@@ -3368,7 +2782,7 @@ export default function ModalOrganizadorPastasCliente({
                         display: 'flex',
                         flexDirection: 'column',
                         gap: '6px',
-                        maxHeight: '320px',
+                        maxHeight: '300px',
                         overflowY: 'auto',
                       }}
                     >
@@ -3433,9 +2847,6 @@ export default function ModalOrganizadorPastasCliente({
                                   borderTop: `1px dashed ${paleta.borda}`,
                                   fontSize: '10.5px',
                                   color: '#475569',
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: '2px',
                                 }}
                               >
                                 {diag.detalhes.map((det, idxD) => (
@@ -3450,7 +2861,7 @@ export default function ModalOrganizadorPastasCliente({
                   )}
                 </div>
 
-                {/* BLOCO 2: LEMBRETES .TXT PENDENTES NA PASTA */}
+                {/* LEMBRETES .TXT PENDENTES POR PASTA */}
                 <div
                   style={{
                     background: '#ffffff',
@@ -3458,104 +2869,38 @@ export default function ModalOrganizadorPastasCliente({
                     border: '1px solid #cbd5e1',
                     borderTop: '4px solid #8B1530',
                     padding: '12px 14px',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
                   }}
                 >
-                  <div
+                  <strong
                     style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
+                      fontSize: '12px',
+                      color: '#8B1530',
+                      display: 'block',
                       marginBottom: '6px',
                     }}
                   >
-                    <strong style={{ fontSize: '12px', color: '#8B1530' }}>
-                      📝 ARQUIVOS .TXT DE PENDÊNCIAS & LEMBRETES ({resumoContadores.totalTxts})
-                    </strong>
-                    {registroConformidadeVinculado && (
-                      <span
-                        style={{
-                          fontSize: '10px',
-                          background: '#dcfce7',
-                          color: '#15803d',
-                          padding: '2px 6px',
-                          borderRadius: '8px',
-                          fontWeight: 800,
-                        }}
-                      >
-                        🔗 Na Conformidade PRONAF A
-                      </span>
-                    )}
-                  </div>
-                  <span
-                    style={{
-                      fontSize: '11px',
-                      color: '#64748b',
-                      display: 'block',
-                      marginBottom: '8px',
-                    }}
-                  >
-                    Quando você adiciona um documento que faltava e clica no botão verde, o respectivo <b>.txt</b> some automaticamente da pasta!
-                  </span>
-
+                    📝 ARQUIVOS .TXT DE PENDÊNCIAS DO PERFIL (
+                    {planoLembretesTxt.length})
+                  </strong>
                   <div
                     style={{
                       display: 'flex',
                       flexDirection: 'column',
                       gap: '4px',
-                      maxHeight: '240px',
+                      maxHeight: '280px',
                       overflowY: 'auto',
                     }}
                   >
-                    {planoArquivosTxtLembretes.txtsSubpastaCadastro.map(
-                      (tCad, idxC) => (
-                        <div
-                          key={`cad_${idxC}`}
-                          style={{
-                            background: '#faf5ff',
-                            color: '#6b21a8',
-                            border: '1px solid #d8b4fe',
-                            padding: '5px 8px',
-                            borderRadius: '5px',
-                            fontSize: '11px',
-                            fontWeight: 800,
-                          }}
-                        >
-                          🪪 [Pasta CADASTRO] {tCad}
-                        </div>
-                      )
-                    )}
-
-                    {planoArquivosTxtLembretes.txtsRaiz.map((tRaiz, idxR) => {
-                      const isZero = tRaiz.startsWith('0.');
-                      const isLembrete9 = tRaiz.startsWith('9. VERIFICAR');
-                      const isParecer20 = tRaiz.startsWith('20. FALTA');
+                    {planoLembretesTxt.map((lemb, iL) => {
+                      const isZero = lemb.nomeArquivoTxt.startsWith('0.');
                       return (
                         <div
-                          key={`raiz_${idxR}`}
+                          key={iL}
                           style={{
-                            background: isZero
-                              ? '#fef2f2'
-                              : isLembrete9
-                              ? '#eff6ff'
-                              : isParecer20
-                              ? '#f0fdf4'
-                              : '#fffbeb',
-                            color: isZero
-                              ? '#b91c1c'
-                              : isLembrete9
-                              ? '#1d4ed8'
-                              : isParecer20
-                              ? '#15803d'
-                              : '#92400e',
+                            background: isZero ? '#fef2f2' : '#fffbeb',
+                            color: isZero ? '#b91c1c' : '#92400e',
                             border: `1px solid ${
-                              isZero
-                                ? '#fecaca'
-                                : isLembrete9
-                                ? '#bfdbfe'
-                                : isParecer20
-                                ? '#86efac'
-                                : '#fde68a'
+                              isZero ? '#fecaca' : '#fde68a'
                             }`,
                             padding: '5px 8px',
                             borderRadius: '5px',
@@ -3563,86 +2908,21 @@ export default function ModalOrganizadorPastasCliente({
                             fontWeight: 700,
                           }}
                         >
-                          📄 {tRaiz}
+                          {lemb.pastaRelativa
+                            ? `📁 [${lemb.pastaRelativa}] `
+                            : '📄 '}
+                          {lemb.nomeArquivoTxt}
                         </div>
                       );
                     })}
                   </div>
-                </div>
-
-                {/* BLOCO 3: CONFERÊNCIA VISUAL DE ASSINATURAS */}
-                <div
-                  style={{
-                    background: '#ffffff',
-                    borderRadius: '8px',
-                    border: '1px solid #cbd5e1',
-                    borderTop: '4px solid #475569',
-                    padding: '12px 14px',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-                  }}
-                >
-                  <strong
-                    style={{
-                      fontSize: '12px',
-                      color: '#334155',
-                      display: 'block',
-                      marginBottom: '4px',
-                    }}
-                  >
-                    🔍 CONFERÊNCIA VISUAL DE ASSINATURAS (SEM GERAR .TXT)
-                  </strong>
-                  <span
-                    style={{
-                      fontSize: '11px',
-                      color: '#64748b',
-                      display: 'block',
-                      marginBottom: '8px',
-                    }}
-                  >
-                    Documentos abaixo estão na pasta sem arquivo <b>VITI</b>. Caso tenham sido assinados manualmente, não precisam de VITI:
-                  </span>
-                  {avisosVitisParaConferenciaManual.length === 0 ? (
-                    <div
-                      style={{
-                        color: '#15803d',
-                        fontWeight: 800,
-                        fontSize: '11.5px',
-                      }}
-                    >
-                      ✅ Todos os documentos assináveis presentes já possuem VITI!
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '4px',
-                        fontSize: '11px',
-                        color: '#475569',
-                      }}
-                    >
-                      {avisosVitisParaConferenciaManual.map((v, i) => (
-                        <div
-                          key={i}
-                          style={{
-                            background: '#f8fafc',
-                            padding: '4px 8px',
-                            borderRadius: '4px',
-                            border: '1px solid #e2e8f0',
-                          }}
-                        >
-                          👀 Conferir se é digital ou manual: <b>{v}</b>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* ABA 2: GAVETA / COFRE DE DOCUMENTOS CORINGAS SINCRONIZADA NA NUVEM */}
+        {/* ABA 2: GAVETA DE CORINGAS NA NUVEM */}
         {abaAtiva === 'COFRE' && (
           <div
             style={{
@@ -3669,24 +2949,15 @@ export default function ModalOrganizadorPastasCliente({
                   fontSize: '14px',
                 }}
               >
-                ☁️ Cadastrar Documento Coringa na Gaveta da Nuvem (Injeção Automática)
+                ☁️ Cadastrar Documento Coringa na Gaveta da Nuvem
               </h4>
-              <p
-                style={{
-                  margin: '0 0 12px 0',
-                  fontSize: '12px',
-                  color: '#475569',
-                }}
-              >
-                Todos os PDFs enviados aqui ficam salvos permanentemente no <b>Firebase (Nuvem)</b> e no cache local até que você os edite ou remova!
-              </p>
-
               <div
                 style={{
                   display: 'grid',
                   gridTemplateColumns: '1.2fr 1.4fr 1.5fr',
                   gap: '12px',
                   alignItems: 'end',
+                  marginTop: '10px',
                 }}
               >
                 <div>
@@ -3713,13 +2984,13 @@ export default function ModalOrganizadorPastasCliente({
                       21. PARECER DA SEMA (Global p/ Todos os PRONAF A)
                     </option>
                     <option value="CREA_PROJETISTA">
-                      6. CREA DO PROJETISTA (Por Nome do Projetista)
+                      CREA / CFTA DO PROJETISTA (Por Nome do Projetista)
                     </option>
                     <option value="RB_PA">
                       17 - RB DO ASSENTAMENTO (Por Nome do P.A.)
                     </option>
                     <option value="CAR_PA">
-                      13. CAR GERAL DO ASSENTAMENTO (Por Nome do P.A.)
+                      CAR GERAL DO ASSENTAMENTO (Por Nome do P.A.)
                     </option>
                   </select>
                 </div>
@@ -3733,11 +3004,7 @@ export default function ModalOrganizadorPastasCliente({
                       marginBottom: '4px',
                     }}
                   >
-                    {novoCoringaTipo === 'PARECER_SEMA'
-                      ? 'Aplicação Global'
-                      : novoCoringaTipo === 'CREA_PROJETISTA'
-                      ? 'Nome do Projetista (Ex: ZEZÃO)'
-                      : 'Nome do Assentamento (Ex: P.A LAGO DA CARNAÚBA)'}
+                    Referência (Projetista / P.A.)
                   </label>
                   <input
                     type="text"
@@ -3750,7 +3017,6 @@ export default function ModalOrganizadorPastasCliente({
                     onChange={(e) =>
                       setNovoCoringaChave(e.target.value.toUpperCase())
                     }
-                    placeholder="Ex: ZEZÃO ou P.A LAGO DA CARNAÚBA"
                     style={{ ...inputPadraoStyle, fontWeight: 700 }}
                   />
                 </div>
@@ -3761,7 +3027,7 @@ export default function ModalOrganizadorPastasCliente({
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      height: '34px',
+                      height: '32px',
                       background: '#8B1530',
                       color: '#ffffff',
                       fontWeight: 800,
@@ -3799,97 +3065,81 @@ export default function ModalOrganizadorPastasCliente({
                   marginBottom: '10px',
                 }}
               >
-                📚 DOCUMENTOS CORINGAS SINCRONIZADOS NA NUVEM ({coringasSalvos.length})
+                📚 DOCUMENTOS CORINGAS SINCRONIZADOS ({coringasSalvos.length})
               </strong>
-              {coringasSalvos.length === 0 ? (
-                <p style={{ fontSize: '12px', color: '#64748b' }}>
-                  Nenhum documento coringa guardado ainda. Suba o Parecer da SEMA, os CREAs dos projetistas e as RBs acima!
-                </p>
-              ) : (
-                <table
-                  style={{
-                    width: '100%',
-                    borderCollapse: 'collapse',
-                    fontSize: '12px',
-                  }}
-                >
-                  <thead>
-                    <tr style={{ background: '#f1f5f9', textAlign: 'left' }}>
-                      <th style={{ padding: '8px' }}>Categoria</th>
-                      <th style={{ padding: '8px' }}>
-                        Referência (Projetista / P.A. / Global)
-                      </th>
-                      <th style={{ padding: '8px' }}>Arquivo Base Salvo</th>
-                      <th style={{ padding: '8px', textAlign: 'right' }}>
-                        Ações
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {coringasSalvos.map((cor) => (
-                      <tr
-                        key={cor.id}
-                        style={{ borderBottom: '1px solid #e2e8f0' }}
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: '12px',
+                }}
+              >
+                <thead>
+                  <tr style={{ background: '#f1f5f9', textAlign: 'left' }}>
+                    <th style={{ padding: '8px' }}>Categoria</th>
+                    <th style={{ padding: '8px' }}>Referência</th>
+                    <th style={{ padding: '8px' }}>Arquivo</th>
+                    <th style={{ padding: '8px', textAlign: 'right' }}>
+                      Ações
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {coringasSalvos.map((cor) => (
+                    <tr
+                      key={cor.id}
+                      style={{ borderBottom: '1px solid #e2e8f0' }}
+                    >
+                      <td
+                        style={{
+                          padding: '8px',
+                          fontWeight: 800,
+                          color: '#8B1530',
+                        }}
                       >
-                        <td
+                        {cor.tipo}
+                      </td>
+                      <td style={{ padding: '8px', fontWeight: 700 }}>
+                        {cor.chaveReferencia}
+                      </td>
+                      <td style={{ padding: '8px' }}>
+                        {cor.nomeArquivoOriginal}
+                      </td>
+                      <td style={{ padding: '8px', textAlign: 'right' }}>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await removerCoringaDoCofreLocal(cor.id);
+                            await removerCoringaGavetaSync(cor.id);
+                            setCoringasSalvos(
+                              await listarCoringasDoCofreLocal()
+                            );
+                          }}
                           style={{
-                            padding: '8px',
-                            fontWeight: 800,
-                            color: '#8B1530',
+                            width: 'auto',
+                            padding: '4px 10px',
+                            fontSize: '11px',
+                            background: '#fee2e2',
+                            color: '#b91c1c',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
                           }}
                         >
-                          {cor.tipo === 'PARECER_SEMA'
-                            ? '21. PARECER DA SEMA (Raiz 21 / Socioamb. 5)'
-                            : cor.tipo === 'CREA_PROJETISTA'
-                            ? '6. CREA DO PROJETISTA'
-                            : cor.tipo === 'RB_PA'
-                            ? '17 - RB DO P.A.'
-                            : '13. CAR GERAL DO P.A. (Raiz 13 / Socioamb. 2)'}
-                        </td>
-                        <td style={{ padding: '8px', fontWeight: 700 }}>
-                          {cor.chaveReferencia}
-                        </td>
-                        <td style={{ padding: '8px', color: '#475569' }}>
-                          {cor.nomeArquivoOriginal}
-                        </td>
-                        <td style={{ padding: '8px', textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              await removerCoringaDoCofreLocal(cor.id);
-                              await removerCoringaGavetaSync(cor.id);
-                              setCoringasSalvos(
-                                await listarCoringasDoCofreLocal()
-                              );
-                            }}
-                            style={{
-                              width: 'auto',
-                              padding: '4px 10px',
-                              fontSize: '11px',
-                              background: '#fee2e2',
-                              color: '#b91c1c',
-                              border: 'none',
-                              borderRadius: '4px',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            🗑️ Remover da Nuvem
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                          🗑️ Remover
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
       </div>
 
-      {/* ===================================================================== */}
-      {/* PASSO AUTOMÁTICO 3.1: MODAL INICIAR PROPOSTA PRONAF A                 */}
-      {/* ===================================================================== */}
-      {modalIniciarPronafA && (
+      {/* MODAL INICIAR PROPOSTA NO KANBAN */}
+      {modalIniciarProposta && (
         <div
           style={{
             position: 'fixed',
@@ -3908,113 +3158,23 @@ export default function ModalOrganizadorPastasCliente({
               borderRadius: '10px',
               width: '680px',
               maxWidth: '95%',
-              maxHeight: '90vh',
-              overflowY: 'auto',
               borderTop: '5px solid #8B1530',
-              boxShadow: '0 20px 45px rgba(0,0,0,0.45)',
             }}
           >
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                borderBottom: '1px solid #e2e8f0',
-                paddingBottom: '10px',
-                marginBottom: '14px',
-              }}
-            >
-              <div>
-                <h3
-                  style={{
-                    margin: 0,
-                    color: '#8B1530',
-                    fontSize: '15.5px',
-                  }}
-                >
-                  🚀 INICIAR PROPOSTA PRONAF A & GERAR PARECER GERENCIAL
-                </h3>
-                <span
-                  style={{
-                    fontSize: '11.5px',
-                    color: '#15803d',
-                    fontWeight: 700,
-                  }}
-                >
-                  ✅ Pasta organizada! Cadastre a operação abaixo para já abrir o Parecer Gerencial no Card do Kanban.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setModalIniciarPronafA(null);
-                  handleFecharOverlayParecer();
-                }}
-                style={{
-                  width: 'auto',
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '22px',
-                  color: '#64748b',
-                }}
-              >
-                &times;
-              </button>
-            </div>
-
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 2fr 1.2fr',
-                gap: '10px',
-                marginBottom: '10px',
-              }}
-            >
-              <div>
-                <label style={{ fontSize: '11px', fontWeight: 700 }}>Porte</label>
-                <input
-                  type="text"
-                  value="PRONAF A"
-                  disabled
-                  style={{
-                    background: '#dcfce7',
-                    color: '#15803d',
-                    fontWeight: 800,
-                  }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '11px', fontWeight: 700 }}>Cliente</label>
-                <input
-                  type="text"
-                  value={modalIniciarPronafA.item.nomeCliente.toUpperCase()}
-                  disabled
-                  style={{ background: '#f8fafc', fontWeight: 700 }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '11px', fontWeight: 700 }}>CPF</label>
-                <input
-                  type="text"
-                  value={cadCpf}
-                  onChange={(e) => setCadCpf(aplicarMascaraCPF(e.target.value))}
-                  placeholder="000.000.000-00"
-                  maxLength={14}
-                />
-              </div>
-            </div>
-
+            <h3 style={{ margin: '0 0 12px 0', color: '#8B1530' }}>
+              🚀 CADASTRAR PROPOSTA NO KANBAN & ABRIR PARECER GERENCIAL
+            </h3>
             <div
               style={{
                 display: 'grid',
                 gridTemplateColumns: '1fr 1fr 1fr 1fr',
                 gap: '10px',
-                marginBottom: '10px',
+                marginBottom: '12px',
               }}
             >
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700 }}>
-                  Tipo de Operação
+                  Tipo
                 </label>
                 <select
                   value={cadTipo}
@@ -4022,6 +3182,8 @@ export default function ModalOrganizadorPastasCliente({
                 >
                   <option value="Investimento">Investimento</option>
                   <option value="Custeio">Custeio</option>
+                  <option value="LCGH">LCGH</option>
+                  <option value="LCGA">LCGA</option>
                 </select>
               </div>
               <div>
@@ -4040,87 +3202,56 @@ export default function ModalOrganizadorPastasCliente({
                   onChange={(e) =>
                     setCadValor(aplicarMascaraMoedaInput(e.target.value))
                   }
-                  placeholder="Ex: 55.000,00"
                   autoFocus
                   style={{ fontWeight: 800 }}
                 />
               </div>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700 }}>
-                  Projetista (Detectado)
+                  Projetista
                 </label>
                 <input
-                  type="search"
-                  list="dl_proj_organizador"
+                  type="text"
                   value={cadProjetista}
                   onChange={(e) => setCadProjetista(e.target.value)}
                 />
               </div>
               <div>
+                <label style={{ fontSize: '11px', fontWeight: 700 }}>CPF</label>
+                <input
+                  type="text"
+                  value={cadCpf}
+                  onChange={(e) =>
+                    setCadCpf(aplicarMascaraCPF(e.target.value))
+                  }
+                />
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1.5fr 1fr 1fr',
+                gap: '10px',
+                marginBottom: '12px',
+              }}
+            >
+              <div>
                 <label style={{ fontSize: '11px', fontWeight: 700 }}>
-                  Situação Inicial
+                  Programa
                 </label>
-                <select
-                  value={cadSituacao}
-                  onChange={(e) => setCadSituacao(e.target.value)}
-                >
-                  <option value="Com Cliente/Projetista">
-                    Com Cliente/Projetista
-                  </option>
-                  <option value="Na Agência">Na Agência (AG)</option>
-                </select>
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
-                gap: '10px',
-                marginBottom: '10px',
-              }}
-            >
-              <div>
-                <label
-                  style={{
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    color: '#8B1530',
-                  }}
-                >
-                  📊 SITUAÇÃO (Para o Card do Kanban)
-                </label>
-                <textarea
-                  rows={3}
-                  value={cadSitDetalhada}
-                  onChange={(e) => setCadSitDetalhada(e.target.value)}
+                <input
+                  type="search"
+                  list="dl_prog_org_multi"
+                  value={cadPrograma}
+                  onChange={(e) => setCadPrograma(e.target.value)}
                 />
+                <datalist id="dl_prog_org_multi">
+                  {listaProgramas.map((pr) => (
+                    <option key={pr} value={pr} />
+                  ))}
+                </datalist>
               </div>
-              <div>
-                <label
-                  style={{
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    color: '#b45309',
-                  }}
-                >
-                  📝 PENDÊNCIAS / OBSERVAÇÕES
-                </label>
-                <textarea
-                  rows={3}
-                  value={cadObsPendencias}
-                  onChange={(e) => setCadObsPendencias(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr 0.9fr 1.5fr',
-                gap: '10px',
-              }}
-            >
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700 }}>
                   Responsável BNB
@@ -4129,46 +3260,19 @@ export default function ModalOrganizadorPastasCliente({
                   type="text"
                   value={cadResponsavel}
                   onChange={(e) => setCadResponsavel(e.target.value)}
-                  placeholder="Analista"
                 />
               </div>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700 }}>
-                  Telefone Cliente
+                  Data
                 </label>
-                <input
-                  type="text"
-                  value={cadTelefone}
-                  onChange={(e) => setCadTelefone(e.target.value)}
-                  placeholder="(98) 99999-9999"
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '11px', fontWeight: 700 }}>Data</label>
                 <input
                   type="text"
                   value={cadData}
                   onChange={(e) =>
                     setCadData(aplicarMascaraDataBR(e.target.value))
                   }
-                  maxLength={10}
                 />
-              </div>
-              <div>
-                <label style={{ fontSize: '11px', fontWeight: 700 }}>
-                  📑 Programa
-                </label>
-                <input
-                  type="search"
-                  list="dl_prog_org_pronafa"
-                  value={cadPrograma}
-                  onChange={(e) => setCadPrograma(e.target.value)}
-                />
-                <datalist id="dl_prog_org_pronafa">
-                  {listaProgramas.map((pr) => (
-                    <option key={pr} value={pr} />
-                  ))}
-                </datalist>
               </div>
             </div>
 
@@ -4177,15 +3281,13 @@ export default function ModalOrganizadorPastasCliente({
                 display: 'flex',
                 justifyContent: 'flex-end',
                 gap: '10px',
-                marginTop: '18px',
-                borderTop: '1px solid #e2e8f0',
-                paddingTop: '12px',
+                marginTop: '14px',
               }}
             >
               <button
                 type="button"
                 onClick={() => {
-                  setModalIniciarPronafA(null);
+                  setModalIniciarProposta(null);
                   handleFecharOverlayParecer();
                 }}
                 style={{
@@ -4196,7 +3298,7 @@ export default function ModalOrganizadorPastasCliente({
                   fontSize: '12px',
                 }}
               >
-                Pular Cadastro (Gerar 20. FALTA PARECER GERENCIAL.txt)
+                Pular Cadastro (Gerar FALTA PARECER GERENCIAL.txt)
               </button>
               <button
                 type="button"
@@ -4218,9 +3320,7 @@ export default function ModalOrganizadorPastasCliente({
         </div>
       )}
 
-      {/* ===================================================================== */}
-      {/* PASSO AUTOMÁTICO 3.2: OVERLAY DO CARD NA ABA PARECER GERENCIAL        */}
-      {/* ===================================================================== */}
+      {/* OVERLAY DO CARD NA ABA PARECER GERENCIAL */}
       {cardOverlayParecerId && (
         <>
           <div
@@ -4234,7 +3334,6 @@ export default function ModalOrganizadorPastasCliente({
               color: '#ffffff',
               padding: '6px 16px',
               borderRadius: '30px',
-              boxShadow: '0 8px 25px rgba(0,0,0,0.45)',
               border: '1.5px solid #22c55e',
               display: 'flex',
               alignItems: 'center',
@@ -4243,7 +3342,10 @@ export default function ModalOrganizadorPastasCliente({
             }}
           >
             <span>
-              📂 Pasta ativa: <b style={{ color: '#4ade80' }}>{nomePastaSelecionada}</b> — Edite o parecer abaixo e clique no botão <b>&ldquo;Extrair .TXT&rdquo;</b> da própria aba para salvar como <b>&ldquo;20. PARECER GERENCIAL - FALTA AJUSTAR.txt&rdquo;</b>!
+              📂 Pasta ativa:{' '}
+              <b style={{ color: '#4ade80' }}>{nomePastaSelecionada}</b> —
+              Clique em <b>&ldquo;📥 Extrair .TXT&rdquo;</b> na aba abaixo para
+              gravar direto na pasta do cliente!
             </span>
             <button
               type="button"
@@ -4275,13 +3377,6 @@ export default function ModalOrganizadorPastasCliente({
             onAtualizarCards={(novosCards) => {
               setListaCards(novosCards);
               salvarKanbanSync(novosCards).catch(() => {});
-              if (typeof window !== 'undefined') {
-                window.dispatchEvent(
-                  new CustomEvent('bnb_v2_sync_externo', {
-                    detail: { cards: novosCards, contratacoes: listaContratacoes },
-                  })
-                );
-              }
             }}
             onCardSincronizadoAlterado={(cardAtualizado, todosOsCards) => {
               setListaCards(todosOsCards);
@@ -4300,24 +3395,10 @@ export default function ModalOrganizadorPastasCliente({
               );
               setListaContratacoes(novasContrat);
               salvarContratacoesSync(novasContrat).catch(() => {});
-              if (typeof window !== 'undefined') {
-                window.dispatchEvent(
-                  new CustomEvent('bnb_v2_sync_externo', {
-                    detail: { cards: todosOsCards, contratacoes: novasContrat },
-                  })
-                );
-              }
             }}
             onAtualizarContratacoes={(novas) => {
               setListaContratacoes(novas);
               salvarContratacoesSync(novas).catch(() => {});
-              if (typeof window !== 'undefined') {
-                window.dispatchEvent(
-                  new CustomEvent('bnb_v2_sync_externo', {
-                    detail: { cards: listaCards, contratacoes: novas },
-                  })
-                );
-              }
             }}
             onRegistroContratacaoSalvo={(_reg, todas) => {
               setListaContratacoes(todas);

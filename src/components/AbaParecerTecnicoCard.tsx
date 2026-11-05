@@ -3,6 +3,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { CardKanban, RegistroContratacao } from '@/types/painel';
 import {
+  obterDadosExtraidosParaParecer,
+  DadosExtraidosProjetoParecer,
+} from '@/lib/auditorInteligentePdfPasta';
+import {
   parseMoeda,
   formatarMoedaBD,
   mascaraDocumento,
@@ -136,7 +140,20 @@ function formatarProgramaOficialParecer(progBruto: string): string {
   return p || '[Informar Programa]';
 }
 
-// Formata em negrito (<strong>) todos os títulos de seções e rótulos fixos solicitados nos Itens 2, 2.1 e 3
+function normalizarObjetivoParaSelect(objBruto: string): string {
+  const up = (objBruto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+  if (up.includes('IMPLANT')) return 'Implantação';
+  if (up.includes('MODERN')) return 'Modernização';
+  if (up.includes('EXPANS')) return 'Expansão';
+  if (up.includes('MANUT')) return 'Manutenção';
+  if (up.includes('AMPLI')) return 'Ampliação';
+  return 'Ampliação';
+}
+
 function formatarParecerHtmlComNegrito(textoPuro: string): string {
   const escapado = (textoPuro || '')
     .replace(/&/g, '&amp;')
@@ -144,14 +161,12 @@ function formatarParecerHtmlComNegrito(textoPuro: string): string {
     .replace(/>/g, '&gt;');
 
   return escapado
-    // Rótulos fixos do cabeçalho PRONAF A (Item 2.1)
     .replace(/^(PROGRAMA:)/gm, '<strong>$1</strong>')
     .replace(
       /^(Cliente:|CPF:|Valor Financiado:|Finalidade:|Prazo Total:|Carência:|Objetivo:|Garantia:)/gm,
       '<strong>$1</strong>'
     )
     .replace(/^(Atividade Econômica –)/gm, '<strong>$1</strong>')
-    // Tópicos numerados dos 3 modelos (Itens 2, 2.1 e 3)
     .replace(
       /^(\d+\.\s*(?:PROPOSTA DE CRÉDITO:|INFORMAÇÕES DO PLEITO:|GARANTIAS?:|HISTÓRICO DO CLIENTE:?|HISTÓRICO:|IMÓVEIS OBJETOS DO PLEITO:|IM[ÓO]VEL:|PROPOSTA:?|PARECER CONCLUSIVO:|PARECER:?))$/gm,
       '<strong>$1</strong>'
@@ -242,7 +257,6 @@ export default function AbaParecerTecnicoCard({
   card,
   operacoesCliente,
 }: AbaParecerTecnicoCardProps) {
-  // 1. Seleção da Operação Base do Parecer
   const [opSelecionadaId, setOpSelecionadaId] = useState<string>(() => {
     const deriv = operacoesCliente.find(
       (o) => !['LCGH', 'LCGA'].includes((o.tipo || '').toUpperCase().trim())
@@ -257,12 +271,10 @@ export default function AbaParecerTecnicoCard({
     );
   }, [operacoesCliente, opSelecionadaId]);
 
-  // Identifica o Modelo de Parecer ("PRONAF_A" | "INV_CUSTEIO" | "LIMITE_LCG")
   const [modeloAtivo, setModeloAtivo] = useState<'PRONAF_A' | 'INV_CUSTEIO' | 'LIMITE_LCG'>(
     'PRONAF_A'
   );
 
-  // Dados Gerais Comuns
   const [nomeCliente, setNomeCliente] = useState('');
   const [cpfCliente, setCpfCliente] = useState('');
   const [porteCliente, setPorteCliente] = useState('PRONAF V');
@@ -274,7 +286,6 @@ export default function AbaParecerTecnicoCard({
   const [objetivoPleito, setObjetivoPleito] = useState('Ampliação');
   const [notaRisco, setNotaRisco] = useState('AA');
 
-  // Histórico e Atividade
   const [anoInicioRel, setAnoInicioRel] = useState(() => String(new Date().getFullYear()));
   const [statusAdimplencia, setStatusAdimplencia] = useState('está adimplente');
   const [statusAtrasos, setStatusAtrasos] = useState('sem atrasos');
@@ -287,12 +298,13 @@ export default function AbaParecerTecnicoCard({
     'FORMAÇÃO 1 HA DE PASTAGEM CAPIM BRACHIARIA, AQ. DE REPRODUTOR BOVINO MESTIÇO ZEBUINO APTIDÃO CORTE, AQ. DE MATRIZES BOVINAS APTIDÃO CORTE'
   );
 
-  // Regra dos 4 Módulos Fiscais (Automático para PRONAF/PRONAF A | Perguntado para MINI)
+  // Flag que indica se os dados vieram automaticamente do PDF 12. PROJETO
+  const [dadosCarregadosDoPdfProjeto, setDadosCarregadosDoPdfProjeto] = useState(false);
+
   const [abaixoQuatroModulos, setAbaixoQuatroModulos] = useState<'SIM' | 'NAO' | 'PERGUNTAR'>(
     'SIM'
   );
 
-  // Campos Ambientais e Lista de Múltiplas Restrições Leves
   const [idDcaa, setIdDcaa] = useState('');
   const [idSema, setIdSema] = useState('');
   const [possuiRestricaoLeve22, setPossuiRestricaoLeve22] = useState<'NAO' | 'SIM'>('NAO');
@@ -300,11 +312,9 @@ export default function AbaParecerTecnicoCard({
     { id: 'rest_1', descricao: 'PEFIN comercial (CAEMA)', valor: '127,82' },
   ]);
 
-  // Campos Específicos de LCGH / LCGA
   const [idEnderecoFora, setIdEnderecoFora] = useState('');
   const [idRendaExtra, setIdRendaExtra] = useState('');
 
-  // Campos Específicos de Investimento / Custeio (PRONAF V e MINI)
   const [valorAssessoria, setValorAssessoria] = useState('0,00');
   const [assessoriaPropria, setAssessoriaPropria] = useState<'NÃO' | 'SIM'>('NÃO');
   const [modoCalculoAssessoriaFinanciada, setModoCalculoAssessoriaFinanciada] = useState<
@@ -320,19 +330,16 @@ export default function AbaParecerTecnicoCard({
   const [saldoDevedorEmSer, setSaldoDevedorEmSer] = useState('0,00');
   const [garantiaComprometida, setGarantiaComprometida] = useState('0,00');
 
-  // Relacionamento Negocial Opcional (Desmarcado por padrão; oculto para LCGH/LCGA)
   const [incluirRelacionamentoNegocial, setIncluirRelacionamentoNegocial] = useState(false);
   const [valSeguroPrestamista, setValSeguroPrestamista] = useState('0,00');
   const [valAplicacaoAutomatica, setValAplicacaoAutomatica] = useState('0,00');
 
-  // Garantia Fidejussória (Aval / Fiança)
   const [temFidejussoria, setTemFidejussoria] = useState<'NÃO' | 'SIM'>('NÃO');
   const [tipoFidejussoria, setTipoFidejussoria] = useState<'Aval' | 'Fiança'>('Aval');
   const [nomeAvalista, setNomeAvalista] = useState('');
   const [cpfAvalista, setCpfAvalista] = useState('');
   const [rendaAnualAvalista, setRendaAnualAvalista] = useState('0,00');
 
-  // Imóveis Beneficiados (PRONAF A / PRONAF V / MINI)
   const [imoveisBeneficiados, setImoveisBeneficiados] = useState<ImovelBeneficiadoForm[]>([
     {
       id: 'ben_1',
@@ -343,7 +350,6 @@ export default function AbaParecerTecnicoCard({
     },
   ]);
 
-  // Imóveis em Garantia Real (LCGH / LCGA e Inv/Custeio)
   const [temGarantiaRealInv, setTemGarantiaRealInv] = useState<'NÃO' | 'SIM'>('NÃO');
   const [imoveisGarantia, setImoveisGarantia] = useState<ImovelGarantiaForm[]>([
     {
@@ -358,7 +364,6 @@ export default function AbaParecerTecnicoCard({
     },
   ]);
 
-  // Assinaturas com Persistência Local
   const [gerenteRelacionamento, setGerenteRelacionamento] = useState(
     'Kerllys Ruan Ferreira da Silva - F180227'
   );
@@ -366,12 +371,10 @@ export default function AbaParecerTecnicoCard({
   const [gerenteAgencia, setGerenteAgencia] = useState('Josenildo Nunes da Costa - F120286');
   const [gerenteAgEE, setGerenteAgEE] = useState(false);
 
-  // Texto Final do Parecer (Editável com suporte a Negrito visual)
   const [textoParecerFinal, setTextoParecerFinal] = useState('');
   const [editouTextoManualmente, setEditouTextoManualmente] = useState(false);
   const editorParecerRef = useRef<HTMLDivElement>(null);
 
-  // Regras de Teto do Relacionamento Negocial por Porte (5% PRONAF / PRONAF A | 10% MINI e demais)
   const percMaximoRelacionamento = useMemo(() => {
     return porteCliente.toUpperCase().includes('PRONAF') ? 0.05 : 0.1;
   }, [porteCliente]);
@@ -454,6 +457,67 @@ export default function AbaParecerTecnicoCard({
     }
   };
 
+  // Aplica no formulário do Parecer todos os dados extraídos automaticamente do PDF 12. PROJETO
+  const aplicarDadosExtraidosDoProjetoNoFormulario = (
+    dadosPdf: DadosExtraidosProjetoParecer,
+    prtAtual: string
+  ) => {
+    if (
+      dadosPdf.valorTotalFinanciado &&
+      parseMoeda(dadosPdf.valorTotalFinanciado) > 0
+    ) {
+      setValorOperacao(dadosPdf.valorTotalFinanciado);
+      recalcularRelacionamentoNegocialPadrao(
+        dadosPdf.valorTotalFinanciado,
+        prtAtual
+      );
+    }
+
+    if (dadosPdf.prazoMeses) {
+      setPrazoMeses(dadosPdf.prazoMeses);
+    }
+    if (dadosPdf.carenciaMeses) {
+      setCarenciaMeses(dadosPdf.carenciaMeses);
+    }
+    if (dadosPdf.objetivoCurto) {
+      setObjetivoPleito(normalizarObjetivoParaSelect(dadosPdf.objetivoCurto));
+    }
+
+    // Preenche a lista de itens de inversão separados por vírgula (para o formato do Parecer)
+    if (dadosPdf.itensInversao && dadosPdf.itensInversao.length > 0) {
+      const textoItensSeparadosPorVirgula = dadosPdf.itensInversao
+        .map((it) => it.discriminacao.trim())
+        .filter(Boolean)
+        .join(', ');
+      if (textoItensSeparadosPorVirgula) {
+        setItensFinanciadosTexto(textoItensSeparadosPorVirgula);
+      }
+    }
+
+    // Preenche a Denominação do Imóvel (P.A.), Município e Área (ha) se extraídos do PDF 12
+    if (
+      dadosPdf.denominacaoImovelPa ||
+      dadosPdf.municipioImovel ||
+      dadosPdf.areaImovelHa
+    ) {
+      setImoveisBeneficiados((prev) => [
+        {
+          id: prev[0]?.id || 'ben_1',
+          nome: dadosPdf.denominacaoImovelPa || prev[0]?.nome || 'PA LAGO DA CARNAUBA',
+          matricula: prev[0]?.matricula || '',
+          cidadeUf:
+            dadosPdf.municipioImovel
+              ? dadosPdf.municipioImovel.replace('-', ' - ').replace(/\s+/g, ' ')
+              : prev[0]?.cidadeUf || 'PIO XII - MA',
+          areaHa: dadosPdf.areaImovelHa || prev[0]?.areaHa || '25',
+        },
+      ]);
+    }
+
+    setDadosCarregadosDoPdfProjeto(true);
+    setEditouTextoManualmente(false);
+  };
+
   useEffect(() => {
     const cli = (opAtiva?.cliente || card.clienteVinculado || '').toUpperCase().trim();
     const cpf = opAtiva?.cpf || card.cpfVinculado || '';
@@ -467,6 +531,7 @@ export default function AbaParecerTecnicoCard({
     setPorteCliente(prt);
     setTipoOperacao(tOp);
     setValorOperacao(valOp);
+    setDadosCarregadosDoPdfProjeto(false);
 
     setIncluirRelacionamentoNegocial(false);
     recalcularRelacionamentoNegocialPadrao(valOp, prt);
@@ -547,7 +612,18 @@ export default function AbaParecerTecnicoCard({
     const mRenda = textoCardCompleto.match(/RENDA[^0-9]*(\d{5,15})/i);
     if (mRenda && mRenda[1]) setIdRendaExtra(mRenda[1]);
 
+    // ITEM 0 E 0.1: Puxa automaticamente Valor, Prazo, Carência, Objetivo, Inversões e P.A. lidos do PDF 12. PROJETO!
+    if (tUp !== 'LCGH' && tUp !== 'LCGA') {
+      const dadosPdf =
+        obterDadosExtraidosParaParecer(cpf) ||
+        obterDadosExtraidosParaParecer(cli);
+      if (dadosPdf) {
+        aplicarDadosExtraidosDoProjetoNoFormulario(dadosPdf, prt);
+      }
+    }
+
     setEditouTextoManualmente(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opAtiva, card, operacoesCliente]);
 
   useEffect(() => {
@@ -583,9 +659,6 @@ export default function AbaParecerTecnicoCard({
     return `Cliente possui pendências (${copia.join('; ')} e ${ultima}), em andamento para resolução, não sendo impeditivas à concessão do crédito conforme norma nº 1038-05-02 (nota 34).`;
   };
 
-  // =========================================================================
-  // MOTOR DE GERAÇÃO DOS 3 MODELOS DE PARECERES OFICIAIS
-  // =========================================================================
   const construirTextoParecer = (): string => {
     const nome = (nomeCliente || '[NOME DO CLIENTE]').toUpperCase().trim();
     const cpf = cpfCliente || '[CPF]';
@@ -640,9 +713,6 @@ export default function AbaParecerTecnicoCard({
     const sufixoRelEE = gerenteRelEE ? ' e.e.' : '';
     const sufixoAgEE = gerenteAgEE ? ' e.e.' : '';
 
-    // -----------------------------------------------------------------------
-    // MODELO 1: PRONAF A (NUMERAÇÃO 1 A 6 + ESPAÇAMENTOS DE 1 LINHA — ITEM 2.1)
-    // -----------------------------------------------------------------------
     if (modeloAtivo === 'PRONAF_A') {
       const imoPrincipal = imoveisBeneficiados[0] || {
         nome: '[NOME DO ASSENTAMENTO/PA]',
@@ -710,9 +780,6 @@ export default function AbaParecerTecnicoCard({
       );
     }
 
-    // -----------------------------------------------------------------------
-    // MODELO 2: LIMITE DE CRÉDITO GARANTIDO (LCGH / LCGA)
-    // -----------------------------------------------------------------------
     if (modeloAtivo === 'LIMITE_LCG') {
       const siglaLim = tipoOperacao.toUpperCase().includes('LCGA') ? 'LCGA' : 'LCGH';
       const descTipo =
@@ -845,9 +912,6 @@ export default function AbaParecerTecnicoCard({
       );
     }
 
-    // -----------------------------------------------------------------------
-    // MODELO 3: INVESTIMENTO / CUSTEIO (PRONAF V, MINI E DEMAIS PORTES)
-    // -----------------------------------------------------------------------
     const valorProjNum = parseMoeda(valorOperacao);
     const valAssNum = parseMoeda(valorAssessoria);
 
@@ -1150,7 +1214,6 @@ export default function AbaParecerTecnicoCard({
     return true;
   };
 
-  // Copia o Parecer preservando os negritos em editores ricos (Word/GED) e texto limpo no S400/Bloco de Notas
   const copiarParecerComNegrito = async () => {
     verificar4ModulosAntesDeExportar();
     const txtFinal = editouTextoManualmente ? textoParecerFinal : construirTextoParecer();
@@ -1175,10 +1238,27 @@ export default function AbaParecerTecnicoCard({
     }
   };
 
-  // Exportação direta em arquivo .TXT
-  const exportarParecerTXT = () => {
+  // ITEM 1 CORRIGIDO: Se estiver dentro do fluxo do Organizador de Pastas, grava diretamente na pasta do cliente
+  // e retorna na hora (SEM abrir a caixa de diálogo "Guardar como..." do navegador)!
+  // Se estiver na aba normal do Kanban, faz o download normal perguntando onde guardar.
+  const exportarParecerTXT = async () => {
     verificar4ModulosAntesDeExportar();
-    const txtFinal = editouTextoManualmente ? textoParecerFinal : construirTextoParecer();
+    const txtFinal = editouTextoManualmente
+      ? editorParecerRef.current?.innerText || textoParecerFinal
+      : construirTextoParecer();
+
+    if (typeof window !== 'undefined') {
+      const win = window as unknown as {
+        __salvarParecerDiretoNaPastaOrganizador?: (
+          conteudo: string
+        ) => Promise<void>;
+      };
+      if (typeof win.__salvarParecerDiretoNaPastaOrganizador === 'function') {
+        await win.__salvarParecerDiretoNaPastaOrganizador(txtFinal);
+        return;
+      }
+    }
+
     const blob = new Blob([txtFinal], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const nomeLimpo = (nomeCliente || 'CLIENTE')
@@ -1194,7 +1274,6 @@ export default function AbaParecerTecnicoCard({
     URL.revokeObjectURL(url);
   };
 
-  // Exportação PDF com todos os tópicos em negrito, sem data/hora e sem about:blank
   const exportarParecerPDF = () => {
     verificar4ModulosAntesDeExportar();
     const txtFinal = editouTextoManualmente ? textoParecerFinal : construirTextoParecer();
@@ -1272,14 +1351,13 @@ export default function AbaParecerTecnicoCard({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', paddingBottom: '24px' }}>
-      {/* DATALIST DE ATIVIDADES ECONÔMICAS SELECIONÁVEIS / EDITÁVEIS */}
       <datalist id="dl_atividades_parecer">
         {OPCOES_ATIVIDADE_ECONOMICA.map((ativ) => (
           <option key={ativ} value={ativ} />
         ))}
       </datalist>
 
-      {/* PAINEL DE COMANDO DO PARECER GERENCIAL (DESIGN EXECUTIVO REFINADO) */}
+      {/* PAINEL DE COMANDO DO PARECER GERENCIAL */}
       <div
         style={{
           background: '#ffffff',
@@ -1321,18 +1399,42 @@ export default function AbaParecerTecnicoCard({
             <div>
               <div
                 style={{
-                  fontSize: '13.5px',
-                  fontWeight: 800,
-                  color: '#8B1530',
-                  letterSpacing: '0.3px',
-                  textTransform: 'uppercase',
-                  lineHeight: 1.2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  flexWrap: 'wrap',
                 }}
               >
-                Gerador de Parecer Gerencial
+                <span
+                  style={{
+                    fontSize: '13.5px',
+                    fontWeight: 800,
+                    color: '#8B1530',
+                    letterSpacing: '0.3px',
+                    textTransform: 'uppercase',
+                    lineHeight: 1.2,
+                  }}
+                >
+                  Gerador de Parecer Gerencial
+                </span>
+                {dadosCarregadosDoPdfProjeto && (
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      background: '#dcfce7',
+                      color: '#15803d',
+                      border: '1px solid #86efac',
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                    }}
+                  >
+                    ⚡ Valor, Prazo, Carência, Objetivo e Inversões lidos do PDF 12. PROJETO
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: '11px', color: '#64748b' }}>
-                Preencha os campos abaixo para gerar o parecer gerencial completo
+                Preencha ou revise os campos abaixo para gerar o parecer gerencial completo
               </div>
             </div>
           </div>
@@ -1408,7 +1510,7 @@ export default function AbaParecerTecnicoCard({
                 alignItems: 'center',
                 gap: '5px',
               }}
-              title="Baixar arquivo de texto (.TXT)"
+              title="Extrair arquivo de texto (.TXT)"
             >
               📥 Extrair .TXT
             </button>
@@ -1492,9 +1594,7 @@ export default function AbaParecerTecnicoCard({
               }}
             >
               <option value="PRONAF_A">1. Modelo PRONAF A</option>
-              <option value="INV_CUSTEIO">
-                2. Modelo - Derivada
-              </option>
+              <option value="INV_CUSTEIO">2. Modelo - Derivada</option>
               <option value="LIMITE_LCG">3. Modelo Limite / Garantia</option>
             </select>
           </div>
@@ -1716,9 +1816,7 @@ export default function AbaParecerTecnicoCard({
           </div>
 
           <div>
-            <label style={ui.label}>
-              Atividade Econômica
-            </label>
+            <label style={ui.label}>Atividade Econômica</label>
             <input
               type="search"
               list="dl_atividades_parecer"
@@ -1739,9 +1837,7 @@ export default function AbaParecerTecnicoCard({
           </div>
 
           <div>
-            <label style={ui.label}>
-              Atividade Econômica (2)
-            </label>
+            <label style={ui.label}>Atividade Econômica (2)</label>
             <input
               type="search"
               list="dl_atividades_parecer"
@@ -2526,7 +2622,6 @@ export default function AbaParecerTecnicoCard({
           </h4>
         </div>
 
-        {/* TÓPICO OPCIONAL DE RELACIONAMENTO NEGOCIAL (Oculto em LCGH/LCGA) */}
         {modeloAtivo !== 'LIMITE_LCG' && (
           <div
             style={{
@@ -2683,7 +2778,6 @@ export default function AbaParecerTecnicoCard({
           </div>
         )}
 
-        {/* BLOCO DE MÚLTIPLAS PENDÊNCIAS / RESTRIÇÕES LEVES COM BOTÃO "+" E VALOR OPCIONAL */}
         {modeloAtivo !== 'LIMITE_LCG' && (
           <div
             style={{
@@ -2838,7 +2932,6 @@ export default function AbaParecerTecnicoCard({
           </div>
         )}
 
-        {/* LINHA DE IDs AMBIENTAIS / GED (Quando PRONAF A ou Limite LCG) */}
         {(modeloAtivo === 'PRONAF_A' || modeloAtivo === 'LIMITE_LCG') && (
           <div
             style={{
@@ -2912,7 +3005,6 @@ export default function AbaParecerTecnicoCard({
           </div>
         )}
 
-        {/* ITEM 1: LINHA EXCLUSIVA DOS GERENTES (SEMPRE LADO A LADO NA MESMA LINHA EM TODOS OS MODELOS) */}
         <div
           style={{
             display: 'grid',
@@ -3001,7 +3093,7 @@ export default function AbaParecerTecnicoCard({
         </div>
       </div>
 
-      {/* CAIXA DO PARECER GERENCIAL GERADO (100% EDITÁVEL COM NEGRITO VISUAL NOS TÓPICOS) */}
+      {/* CAIXA DO PARECER GERENCIAL GERADO */}
       <div style={ui.sectionCard}>
         <div style={ui.sectionHeader}>
           <h4 style={{ ...ui.sectionTitle, color: '#1e293b' }}>

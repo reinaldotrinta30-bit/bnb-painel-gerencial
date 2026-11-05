@@ -2162,8 +2162,18 @@ const opNumero =
     if (filtroCor !== 'TODOS' && card.statusCor !== filtroCor) return false;
 
     if (temBuscaTextoAtiva) {
-      const puro = (card.textoPuro || extrairTextoPuro(card.texto)).toLowerCase();
-      if (!puro.includes(termoBusca.toLowerCase().trim())) return false;
+      const normalizarBusca = (s: string) =>
+        (s || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .trim();
+
+      const puroSemAcento = normalizarBusca(
+        card.textoPuro || extrairTextoPuro(card.texto)
+      );
+      const termoSemAcento = normalizarBusca(termoBusca);
+      if (!puroSemAcento.includes(termoSemAcento)) return false;
     }
     return true;
   };

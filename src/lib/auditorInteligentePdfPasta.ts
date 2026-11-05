@@ -1,5 +1,9 @@
 // src/lib/auditorInteligentePdfPasta.ts
-import { formatarMoedaBD, parseMoeda } from '@/lib/utils';
+import {
+  formatarMoedaBD,
+  parseMoeda,
+  obterListaProjetistas,
+} from '@/lib/utils';
 
 export type NivelStatusAuditoria = 'OK' | 'ALERTA' | 'ERRO' | 'INFO';
 
@@ -11,9 +15,51 @@ export interface ItemDiagnosticoPdf {
   detalhes?: string[];
 }
 
+export interface ItemInversaoExtraidoPdf {
+  discriminacao: string;
+  quantidade: string;
+  unidade: string;
+  valorUnitario: string;
+  valorFinanciado: string;
+  empreendimento?: string;
+}
+
+export interface DadosExtraidosProjetoParecer {
+  clienteNome: string;
+  clienteCpf: string;
+  conjugeNome: string;
+  conjugeCpf: string;
+  estadoCivil: string;
+  denominacaoImovelPa: string;
+  municipioImovel: string;
+  areaImovelHa: string;
+  atividadePrincipal: string;
+  programaCredito: string;
+  elaboradorNomeCompleto: string;
+  elaboradorCpf: string;
+  projetistaNomeCurtoDetectado: string;
+  valorTotalFinanciado: string;
+  prazoMeses: string;
+  carenciaMeses: string;
+  periodicidadeReembolso: string;
+  taxaJurosAa: string;
+  objetivoCurto: string;
+  objetivoJustificativaCompleta: string;
+  itensInversao: ItemInversaoExtraidoPdf[];
+  textoItensInversaoFormatado: string;
+}
+
 export interface ResultadoAuditoriaPastaPdf {
   valorPropostaDetectado: string;
+  prazoMesesDetectado: string;
+  carenciaMesesDetectada: string;
+  elaboradorDetectado: string;
+  projetistaCurtoDetectado: string;
   objetivoCreditoDetectado: string;
+  objetivoJustificativaCompleta: string;
+  itensInversaoExtraidos: ItemInversaoExtraidoPdf[];
+  textoItensInversaoFormatado: string;
+  dadosProjetoParaParecer: DadosExtraidosProjetoParecer;
   contaCorrenteConsolidada: string;
   paDetectadoNoProjeto: string;
   carEspecificoDetectado: string;
@@ -22,6 +68,65 @@ export interface ResultadoAuditoriaPastaPdf {
   arquivosComAssinaturaDigital: string[];
   arquivosSemAssinaturaDigital: string[];
   itensDiagnostico: ItemDiagnosticoPdf[];
+}
+
+export const STORAGE_KEY_DADOS_PROJETO_PARECER =
+  'bnb_v2_dados_projeto_extraidos_parecer';
+
+// Salva os dados extraídos do PDF 12 (Projeto) por CPF e por Nome para a aba Parecer Gerencial consumir automaticamente
+export function salvarDadosExtraidosParaParecer(
+  dados: DadosExtraidosProjetoParecer
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const atualRaw = window.localStorage.getItem(
+      STORAGE_KEY_DADOS_PROJETO_PARECER
+    );
+    const mapa: Record<string, DadosExtraidosProjetoParecer> = atualRaw
+      ? JSON.parse(atualRaw)
+      : {};
+
+    const chaveNome = normalizarSemAcento(dados.clienteNome);
+    const chaveCpf = (dados.clienteCpf || '').replace(/\D/g, '');
+    if (chaveNome) mapa[chaveNome] = dados;
+    if (chaveCpf.length >= 9) mapa[chaveCpf] = dados;
+    mapa['ULTIMO_PROJETO_LIDO'] = dados;
+
+    window.localStorage.setItem(
+      STORAGE_KEY_DADOS_PROJETO_PARECER,
+      JSON.stringify(mapa)
+    );
+    window.dispatchEvent(
+      new CustomEvent('bnb_v2_dados_projeto_parecer_atualizados', {
+        detail: dados,
+      })
+    );
+  } catch {
+    // Ignora erro de quota
+  }
+}
+
+export function obterDadosExtraidosParaParecer(
+  clienteNomeOuCpf?: string
+): DadosExtraidosProjetoParecer | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_DADOS_PROJETO_PARECER);
+    if (!raw) return null;
+    const mapa = JSON.parse(raw) as Record<
+      string,
+      DadosExtraidosProjetoParecer
+    >;
+    if (clienteNomeOuCpf) {
+      const limpoCpf = clienteNomeOuCpf.replace(/\D/g, '');
+      if (limpoCpf.length >= 9 && mapa[limpoCpf]) return mapa[limpoCpf];
+      const limpoNome = normalizarSemAcento(clienteNomeOuCpf);
+      if (limpoNome && mapa[limpoNome]) return mapa[limpoNome];
+    }
+    return mapa['ULTIMO_PROJETO_LIDO'] || null;
+  } catch {
+    return null;
+  }
 }
 
 interface PdfExtraidoInfo {
@@ -34,7 +139,6 @@ interface PdfExtraidoInfo {
   ehProvavelEscaneadoImagem: boolean;
 }
 
-// Carrega o PDF.js sob demanda no navegador sem exigir npm install nem quebrar build estático
 async function obterPdfJsLib(): Promise<any> {
   if (typeof window === 'undefined') return null;
   const win = window as any;
@@ -57,11 +161,64 @@ async function obterPdfJsLib(): Promise<any> {
   });
 }
 
-function removerAcentos(str: string): string {
+export function removerAcentos(str: string): string {
   return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
-// Inspeciona o binário bruto do PDF para detectar Assinatura Digital ICP-Brasil / Gov.br (/ByteRange, /SubFilter)
+export function normalizarSemAcento(str: string): string {
+  return removerAcentos(str)
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Compara se um termo (como "P.A SÃO JOÃO DO CARÚ" ou "LAGO DA CARNAÚBA") consta em um texto de PDF
+// ignorando acentos, pontuação e tolerando pequenas variações de OCR/digitação (como LADO vs LAGO, CARANUBA vs CARNAUBA)
+function textoContemTermoFlexivel(
+  textoAlvoBruto: string,
+  termoBuscaBruto: string
+): boolean {
+  const textoNorm = normalizarSemAcento(textoAlvoBruto);
+  const termoNorm = normalizarSemAcento(termoBuscaBruto)
+    .replace(/^(P\s*A|ASSENTAMENTO|PROJETO DE ASSENTAMENTO)\s+/i, '')
+    .trim();
+
+  if (!termoNorm || termoNorm.length < 3) return true;
+  if (textoNorm.includes(termoNorm)) return true;
+
+  // Divide em palavras relevantes (> 2 letras, ignorando preposições DO/DA/DE)
+  const palavrasTermo = termoNorm
+    .split(/\s+/)
+    .filter((p) => p.length > 2 && !['DOS', 'DAS', 'COM', 'POR'].includes(p));
+
+  if (palavrasTermo.length === 0) return true;
+
+  // Se pelo menos metade das palavras-chave baterem (ou tiverem distância de edição <= 2, ex: CARNAUBA vs CARANUBA), valida!
+  const palavrasTexto = textoNorm.split(/\s+/);
+  let acertos = 0;
+
+  for (const pal of palavrasTermo) {
+    if (textoNorm.includes(pal)) {
+      acertos++;
+      continue;
+    }
+    // Verifica similaridade para tolerar 1 ou 2 letras trocadas (ex: LAGO->LADO, CARNAUBA->CARANUBA)
+    const similar = palavrasTexto.some((pt) => {
+      if (Math.abs(pt.length - pal.length) > 2 || pt.length < 4) return false;
+      let difs = 0;
+      const minLen = Math.min(pt.length, pal.length);
+      for (let i = 0; i < minLen; i++) {
+        if (pt[i] !== pal[i]) difs++;
+      }
+      return difs <= 2;
+    });
+    if (similar) acertos++;
+  }
+
+  return acertos >= Math.ceil(palavrasTermo.length * 0.6);
+}
+
 function detectarAssinaturaDigitalNoBinarioPdf(buffer: ArrayBuffer): boolean {
   try {
     const decoder = new TextDecoder('latin1');
@@ -76,7 +233,10 @@ function detectarAssinaturaDigitalNoBinarioPdf(buffer: ArrayBuffer): boolean {
       rawStr.includes('/Type /Sig') ||
       rawStr.includes('/Type/Sig');
 
-    return (temByteRange && temSubFilterSig) || (temByteRange && temMarcadorIcpOuGovBr);
+    return (
+      (temByteRange && temSubFilterSig) ||
+      (temByteRange && temMarcadorIcpOuGovBr)
+    );
   } catch {
     return false;
   }
@@ -100,7 +260,6 @@ async function extrairTextoEAssinaturaDoPdf(
       const pdf = await loadingTask.promise;
       numPaginas = pdf.numPages || 1;
 
-      // Lê até 35 páginas por arquivo para manter velocidade instantânea
       const limitePags = Math.min(numPaginas, 35);
       const textosPaginas: string[] = [];
 
@@ -113,15 +272,15 @@ async function extrairTextoEAssinaturaDoPdf(
       textoCompleto = textosPaginas.join('\n');
     }
   } catch {
-    // Se o PDF for protegido ou corrompido, mantém textoCompleto vazio
+    // Ignora erro
   }
 
-  // Verifica se o texto extraído também menciona assinatura eletrônica Gov.br / ICP-Brasil
   const normTexto = removerAcentos(textoCompleto).toUpperCase();
   const assinaturaPeloTexto =
     normTexto.includes('ASSINADO ELETRONICAMENTE') ||
     normTexto.includes('ASSINADO DIGITALMENTE') ||
     normTexto.includes('VALIDADOR.ITI.GOV.BR') ||
+    normTexto.includes('VALIDAR.ITI.GOV.BR') ||
     normTexto.includes('ASSINATURA ELETRONICA AVANCADA') ||
     normTexto.includes('ICP-BRASIL');
 
@@ -144,35 +303,259 @@ async function extrairTextoEAssinaturaDoPdf(
   };
 }
 
-// Extrai o maior valor monetário compatível com financiamento rural em um texto de Projeto/Orçamento/Espelho
+// Extrator especializado na "PLANILHA PRONAF A - Versão 2.0" e Projetos BNB (Páginas 1 a 20)
+export function extrairDadosDetalhadosDoPdfProjeto(
+  textoProjeto: string
+): DadosExtraidosProjetoParecer {
+  const resultado: DadosExtraidosProjetoParecer = {
+    clienteNome: '',
+    clienteCpf: '',
+    conjugeNome: '',
+    conjugeCpf: '',
+    estadoCivil: '',
+    denominacaoImovelPa: '',
+    municipioImovel: '',
+    areaImovelHa: '',
+    atividadePrincipal: '',
+    programaCredito: '',
+    elaboradorNomeCompleto: '',
+    elaboradorCpf: '',
+    projetistaNomeCurtoDetectado: '',
+    valorTotalFinanciado: '',
+    prazoMeses: '',
+    carenciaMeses: '',
+    periodicidadeReembolso: 'Anual',
+    taxaJurosAa: '0,50%',
+    objetivoCurto: '',
+    objetivoJustificativaCompleta: '',
+    itensInversao: [],
+    textoItensInversaoFormatado: '',
+  };
+
+  if (!textoProjeto || !textoProjeto.trim()) return resultado;
+
+  const textoLimpo = textoProjeto.replace(/\s+/g, ' ');
+  const normSemAcento = removerAcentos(textoLimpo).toUpperCase();
+
+  // 1. Elaborador / Projetista (Páginas 4 e 5: "Elaborador: JOSE FRANCISCO LIMA SEIXAS C.P.F: 839104843-87")
+  const matchElab =
+    textoLimpo.match(
+      /Elaborador:\s*([A-ZÀ-Ú\s]{5,65}?)(?:\s+Proposta|\s+C\.?P\.?F|\s+Data|\s+\[PÁG|$)/i
+    ) ||
+    textoLimpo.match(
+      /30 de [a-zç]+ de 20\d{2}\s+([A-ZÀ-Ú\s]{5,60}?)\s+C\.?P\.?F\.?\s*N?º?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i
+    );
+
+  if (matchElab && matchElab[1]) {
+    resultado.elaboradorNomeCompleto = matchElab[1].trim().toUpperCase();
+  }
+
+  const matchCpfElab = textoLimpo.match(
+    /Elaborador:[\s\S]{1,80}?C\.?P\.?F\.?\s*:?\s*N?º?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i
+  );
+  if (matchCpfElab && matchCpfElab[1]) {
+    resultado.elaboradorCpf = matchCpfElab[1].trim();
+  }
+
+  // Cruza com a lista de Projetistas cadastrados na aba Ferramentas (pelo CPF ou pelo Nome Completo)
+  const projetistasCadastrados = obterListaProjetistas();
+  const cpfElabDigits = resultado.elaboradorCpf.replace(/\D/g, '');
+  const nomeElabNorm = normalizarSemAcento(resultado.elaboradorNomeCompleto);
+
+  const projMatch = projetistasCadastrados.find((p) => {
+    const pCpf = (p.cpf || '').replace(/\D/g, '');
+    const pComp = normalizarSemAcento(p.nomeCompleto || '');
+    const pCurto = normalizarSemAcento(p.nomeCurto || '');
+    if (cpfElabDigits.length === 11 && pCpf === cpfElabDigits) return true;
+    if (nomeElabNorm && pComp && (nomeElabNorm.includes(pComp) || pComp.includes(nomeElabNorm)))
+      return true;
+    if (nomeElabNorm && pCurto && nomeElabNorm.includes(pCurto)) return true;
+    return false;
+  });
+
+  if (projMatch) {
+    resultado.projetistaNomeCurtoDetectado = projMatch.nomeCurto;
+  } else if (resultado.elaboradorNomeCompleto) {
+    resultado.projetistaNomeCurtoDetectado =
+      resultado.elaboradorNomeCompleto.split(/\s+/)[0];
+  }
+
+  // 2. Estado Civil e Cônjuge (Páginas 1 e 2)
+  const matchEstCivil = textoLimpo.match(
+    /Estado\s+Civil:\s*(Solteiro\(a\)|Casado\(a\)|Uni[ãa]o\s+Est[áa]vel|Vi[úu]vo\(a\)|Divorciado\(a\))/i
+  );
+  if (matchEstCivil && matchEstCivil[1]) {
+    resultado.estadoCivil = matchEstCivil[1].trim().toUpperCase();
+  }
+
+  const matchConjuge = textoLimpo.match(
+    /Companheira\(o\)\s+do\(a\)\s+Cliente\s+(?:Dados\s+)?Nome:\s*([A-ZÀ-Ú\s]{4,60}?)\s+C\.?P\.?F\.?\s*C[ôo]njuge\/Comp\.?:\s*([0-9.\-]{8,14})/i
+  );
+  if (matchConjuge) {
+    const candConj = matchConjuge[1].trim().toUpperCase();
+    if (!candConj.includes('DATA DE') && !candConj.includes('SEXO')) {
+      resultado.conjugeNome = candConj;
+      resultado.conjugeCpf = matchConjuge[2].trim();
+    }
+  }
+
+  // 3. Denominação do Imóvel / P.A., Município e Área (ha) (Página 1)
+  const matchDenom = textoLimpo.match(
+    /Denomina[çc][ãa]o\s+do\s+im[óo]vel:\s*([A-ZÀ-Ú0-9\s.\-]{3,50}?)\s+[ÁA]rea\s+do\s+im[óo]vel\s*\(ha\):\s*([0-9.,]+)/i
+  );
+  if (matchDenom) {
+    resultado.denominacaoImovelPa = matchDenom[1].trim().toUpperCase();
+    resultado.areaImovelHa = matchDenom[2].trim();
+  }
+
+  // 4. Prazo, Carência, Periodicidade e Taxa de Juros (Página 15 — "RELATÓRIO FINANCIAMENTO PROPOSTO")
+  // No PDF do Projeto PRONAF A, os rótulos e números saem agrupados no quadro "CÁLCULO DO FINANCIAMENTO"
+  const idxCalcFin = normSemAcento.indexOf('CALCULO DO FINANCIAMENTO');
+  const trechoFin =
+    idxCalcFin !== -1
+      ? normSemAcento.substring(idxCalcFin, idxCalcFin + 900)
+      : normSemAcento;
+
+  // Padrão 1: "PER. REEMBOLSO: VALOR 120 ANUAL 50000 CARENCIA: JUROS (A.A.): 36 0,50%"
+  const matchBlocoTabelaFin = trechoFin.match(
+    /\b(60|72|84|96|108|120)\s+(ANUAL|MENSAL|SEMESTRAL)\s+(\d{4,7}(?:[.,]\d{2})?)\s+CARENCIA:\s+JUROS\s*\(A\.A\.\):\s*(\d{1,2})\s+([0-9.,]+%)/i
+  );
+  if (matchBlocoTabelaFin) {
+    resultado.prazoMeses = matchBlocoTabelaFin[1];
+    resultado.periodicidadeReembolso = matchBlocoTabelaFin[2];
+    resultado.carenciaMeses = matchBlocoTabelaFin[4];
+    resultado.taxaJurosAa = matchBlocoTabelaFin[5];
+  } else {
+    // Padrão 2: Busca individual flexível dentro do relatório de financiamento proposto
+    const mPrazo =
+      trechoFin.match(/PRAZO\s*:?\s*(\d{2,3})\b/i) ||
+      trechoFin.match(/\b(120|96|84|72|60)\s+(?:ANUAL|MENSAL)\b/i);
+    if (mPrazo && mPrazo[1]) resultado.prazoMeses = mPrazo[1];
+
+    const mCarencia =
+      trechoFin.match(/CARENCIA\s*:?\s*(?:JUROS[^0-9]{0,15})?\b(12|24|36|48|60)\b/i) ||
+      trechoFin.match(/\b(36|24|12|48)\s+0[.,]50%/i);
+    if (mCarencia && mCarencia[1]) resultado.carenciaMeses = mCarencia[1];
+  }
+
+  // 5. Objetivo Curto ("Ampliação" / "Implantação" / "Modernização") e Texto Completo de Justificativa (Página 4)
+  const matchObjCurto = textoLimpo.match(
+    /Objetivo\s+do\s+Cr[ée]dito:\s*(?:\d{2}\/\d{2}\/\d{4}\s+)?(Amplia[çc][ãa]o|Implanta[çc][ãa]o|Moderniza[çc][ãa]o|Reforma|Custeio)/i
+  );
+  if (matchObjCurto && matchObjCurto[1]) {
+    resultado.objetivoCurto = matchObjCurto[1].trim().toUpperCase();
+  }
+
+  const matchJustificativa = textoLimpo.match(
+    /Coment[áa]rios\s*\/\s*Objetivos\s*\/\s*Justificativas\s+([\s\S]{15,900}?)(?:DECLARA[ÇC][ÕO]ES|Declaro,\s+para\s+todos\s+os\s+fins)/i
+  );
+  if (matchJustificativa && matchJustificativa[1]) {
+    resultado.objetivoJustificativaCompleta = matchJustificativa[1]
+      .replace(/\[PÁG \d+\]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // 6. Extração dos Itens de Inversão Financiados (Página 4 "Programa de Investimentos" e Página 6 "INFORMAÇÕES COMPLEMENTARES DOS INVESTIMENTOS")
+  // Padrão da Página 4: "<DISCRIMINAÇÃO> Não <QUANT> <UNID> <USO> 1 <VR_UNIT> <VR_FINANC> <INV_TOTAL>"
+  const regexItensPag4 =
+    /([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s.,\/\-º°]{5,85}?)\s+(?:N[ãa]o|Sim)\s+(\d+(?:[.,]\d+)?)\s+(Ha|Unidade|unid|m|m2|m³|km|vb|Verba|Conjunto|Cabe[çc]a)\s+(?:Cobertura\s+do\s+Solo|Semovente\s*s?|Edifica[çc][õo]es|M[áa]quinas|Instala[çc][õo]es| Outros|[A-Za-zÀ-ú\s]+?)\s+\d+\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+)?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi;
+
+  let mItem: RegExpExecArray | null;
+  while ((mItem = regexItensPag4.exec(textoLimpo)) !== null) {
+    let disc = mItem[1]
+      .replace(/^(?:Investimento\s+Total|Valor\s+Financiam\.|Programa\s+de\s+Investimentos|Comp[õo]e\s+Garantia\??|Discrimina[çc][ãa]o)\s+/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // Remove eventual valor monetário residual do item anterior colado no início
+    disc = disc.replace(/^\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+/, '').trim();
+
+    const qtd = mItem[2].replace('.', ',');
+    const unid = mItem[3].trim();
+    const vrUnit = mItem[4].replace(/\.(?=\d{2}$)/, ',');
+    const vrFin = mItem[5].replace(/\.(?=\d{2}$)/, ',');
+
+    if (disc.length >= 4 && !disc.toUpperCase().includes('SUBTOTAL')) {
+      resultado.itensInversao.push({
+        discriminacao: disc.toUpperCase(),
+        quantidade: qtd,
+        unidade: unid,
+        valorUnitario: vrUnit,
+        valorFinanciado: vrFin,
+      });
+    }
+  }
+
+  // Fallback Página 6 caso a Página 4 tenha variação de layout: "INFORMAÇÕES COMPLEMENTARES DOS INVESTIMENTOS"
+  if (resultado.itensInversao.length === 0) {
+    const regexItensPag6 =
+      /([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s.,\/\-]{5,65}?)\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+01\s+(PASTAGEM|BOVINOS|CAPRINOS|OVINOS|SUINOS|AVES|CERCA|ACUDE|CURRAL|INSTALACOES|MAQUINAS|[A-ZÀ-Ú]+)/gi;
+    let m6: RegExpExecArray | null;
+    while ((m6 = regexItensPag6.exec(textoLimpo)) !== null) {
+      const disc = m6[1].replace(/\s+/g, ' ').trim().toUpperCase();
+      const vrFin = m6[2].replace(/\.(?=\d{2}$)/, ',');
+      if (!disc.includes('EMPREENDIMENTO') && !disc.includes('INVERSAO')) {
+        resultado.itensInversao.push({
+          discriminacao: disc,
+          quantidade: '1',
+          unidade: 'Unid',
+          valorUnitario: vrFin,
+          valorFinanciado: vrFin,
+          empreendimento: m6[3],
+        });
+      }
+    }
+  }
+
+  if (resultado.itensInversao.length > 0) {
+    resultado.textoItensInversaoFormatado = resultado.itensInversao
+      .map(
+        (it) =>
+          `- ${it.quantidade} ${it.unidade} de ${it.discriminacao}: R$ ${it.valorFinanciado}`
+      )
+      .join('\n');
+  }
+
+  // 7. Valor Total Financiado ("Total Financiado: R$ 50.000,00" ou "SUBTOTAL do Financiamento ... 50.000,00")
+  const valExtraido = extrairValorMonetarioPrincipal(textoLimpo);
+  if (valExtraido > 0) {
+    resultado.valorTotalFinanciado = formatarMoedaBD(valExtraido);
+  }
+
+  return resultado;
+}
+
 function extrairValorMonetarioPrincipal(texto: string): number {
   const norm = removerAcentos(texto).toUpperCase();
 
-  // 1. Tenta localizar próximo a palavras-chave de total do financiamento/orçamento
-  const padroesChave = [
-    /(?:VALOR\s+DO\s+FINANCIAMENTO|VALOR\s+SOLICITADO|VALOR\s+TOTAL\s+DO\s+PROJETO|TOTAL\s+GERAL|TOTAL\s+DO\s+ORCAMENTO|VALOR\s+DO\s+CREDITO|TOTAL\s+DOS\s+INVESTIMENTOS)[^0-9]{0,45}(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2})/gi,
+  const padroesPrioritarios = [
+    /TOTAL\s+FINANCIADO\s*:\s*R\$\s*(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi,
+    /SUBTOTAL\s+DO\s+FINANCIAMENTO[\s.:\-]*0[.,]00\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi,
+    /INVESTIMENTO\s+TOTAL\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi,
+    /(?:VALOR\s+DO\s+FINANCIAMENTO|VALOR\s+SOLICITADO|VALOR\s+TOTAL\s+DO\s+PROJETO|TOTAL\s+GERAL|TOTAL\s+DO\s+ORCAMENTO)[^0-9]{0,45}(?:R\$\s*)?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi,
     /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/gi,
   ];
 
-  for (const regex of padroesChave) {
+  for (const regex of padroesPrioritarios) {
     const candidatos: number[] = [];
     let m: RegExpExecArray | null;
     while ((m = regex.exec(norm)) !== null) {
-      const val = parseMoeda(m[1]);
-      // Propostas rurais PRONAF / MINI normalmente ficam entre R$ 2.000,00 e R$ 1.500.000,00
+      // Corrige eventual ponto no lugar da vírgula nos centavos (ex: "50.000.00" -> "50.000,00")
+      const strVal = m[1].replace(/\.(?=\d{2}$)/, ',');
+      const val = parseMoeda(strVal);
       if (val >= 2000 && val <= 1500000) {
         candidatos.push(val);
       }
     }
     if (candidatos.length > 0) {
-      return Math.max(...candidatos);
+      return candidatos[0];
     }
   }
 
   return 0;
 }
 
-// Extrai números de recibo do CAR no formato UF-1234567-XXXX...
 function extrairCodigosReciboCar(texto: string): string[] {
   const matches =
     texto.match(
@@ -183,7 +566,6 @@ function extrairCodigosReciboCar(texto: string): string[] {
   );
 }
 
-// Executa todas as 12 verificações estratégicas nos PDFs da pasta do cliente
 export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   arquivos: Array<{
     fileObj: File;
@@ -237,11 +619,23 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   const pdfIdTitular = obterPorCat('CAD_1_IDENTIDADE_TITULAR', false);
   const pdfIdConjuge = obterPorCat('CAD_1_IDENTIDADE_CONJUGE', false);
 
+  // Extrai todos os dados ricos do PDF 12 (Projeto) e grava no Cache do Parecer Gerencial!
+  const dadosProjetoParaParecer = extrairDadosDetalhadosDoPdfProjeto(
+    pdfProjeto?.textoCompleto || ''
+  );
+  if (titularNome && !dadosProjetoParaParecer.clienteNome) {
+    dadosProjetoParaParecer.clienteNome = titularNome;
+  }
+  if (pdfProjeto) {
+    salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
+  }
+
+  const conjugeEfetivo =
+    conjugeNome.trim() || dadosProjetoParaParecer.conjugeNome || '';
+
   const itensDiagnostico: ItemDiagnosticoPdf[] = [];
 
-  // =========================================================================
-  // 1. VERIFICAÇÃO DE CONTA CORRENTE NA CONSOLIDADA ENVIADA
-  // =========================================================================
+  // 1. CONTA CORRENTE NA CONSOLIDADA
   let contaCorrenteConsolidada = '';
   if (!pdfConsolidada) {
     itensDiagnostico.push({
@@ -264,7 +658,9 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       txtCons.match(
         /(?:MOVIMENTACAO\s+DE\s+N(?:º|°|UMERO)?|CONTA\s+CORRENTE\s*:?|DEBITAR\s+EM\s+SUA\s+CONTA[^0-9]{1,35})\s*([0-9]{3,10}\s*[-–]\s*[0-9X]|[0-9]{4,10})/i
       ) ||
-      txtCons.match(/AGENCIA\s+[0-9]{2,5}[^0-9]{1,25}C\/?C\s*:?\s*([0-9.\-X]{4,12})/i);
+      txtCons.match(
+        /AGENCIA\s+[0-9]{2,5}[^0-9]{1,25}C\/?C\s*:?\s*([0-9.\-X]{4,12})/i
+      );
 
     if (matchCc && matchCc[1]) {
       contaCorrenteConsolidada = matchCc[1].replace(/\s+/g, '');
@@ -281,17 +677,6 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
           ? `Conta identificada na Consolidada: ${contaCorrenteConsolidada}.`
           : `Conta na Consolidada (${contaCorrenteConsolidada}) diverge da planilha de Conformidade (${contaConformidade})!`,
       });
-    } else if (
-      txtCons.includes('MOVIMENTACAO DE N') &&
-      (txtCons.includes('____') || txtCons.includes('{') || /DE N(?:º|°)?\s*\./.test(txtCons))
-    ) {
-      itensDiagnostico.push({
-        numero: 1,
-        titulo: '1. Conta Corrente nas Declarações Consolidadas',
-        status: 'ERRO',
-        resumo:
-          'A Declaração Consolidada foi enviada SEM número de Conta Corrente preenchido!',
-      });
     } else {
       itensDiagnostico.push({
         numero: 1,
@@ -303,9 +688,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     }
   }
 
-  // =========================================================================
-  // 2 E 8. VALOR DA PROPOSTA E COMPATIBILIDADE ENTRE ORÇAMENTO E PROJETO
-  // =========================================================================
+  // 2 E 8. VALOR, PRAZO, CARÊNCIA, INVERSÕES E COMPATIBILIDADE ORÇAMENTO X PROJETO
   const valProjeto = pdfProjeto
     ? extrairValorMonetarioPrincipal(pdfProjeto.textoCompleto)
     : 0;
@@ -323,13 +706,30 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   if (valorPrincipalNum > 0) {
     itensDiagnostico.push({
       numero: 2,
-      titulo: '2. Valor da Proposta Identificado nos PDFs',
+      titulo:
+        '2. Valor, Prazo, Carência, Elaborador e Inversões Extraídos do Projeto (PDF 12)',
       status: 'OK',
-      resumo: `Valor detectado: R$ ${valorPropostaDetectado} (Já pré-carregado para o cadastro da operação).`,
+      resumo: `Valor: R$ ${valorPropostaDetectado}${
+        dadosProjetoParaParecer.prazoMeses
+          ? ` • Prazo: ${dadosProjetoParaParecer.prazoMeses} meses`
+          : ''
+      }${
+        dadosProjetoParaParecer.carenciaMeses
+          ? ` • Carência: ${dadosProjetoParaParecer.carenciaMeses} meses`
+          : ''
+      }${
+        dadosProjetoParaParecer.elaboradorNomeCompleto
+          ? ` • Elaborador: ${dadosProjetoParaParecer.elaboradorNomeCompleto}`
+          : ''
+      }`,
       detalhes: [
-        valProjeto > 0 ? `Projeto PDF: R$ ${formatarMoedaBD(valProjeto)}` : '',
-        valOrcamento > 0 ? `Orçamento PDF: R$ ${formatarMoedaBD(valOrcamento)}` : '',
-        valEspelho > 0 ? `Espelho UND: R$ ${formatarMoedaBD(valEspelho)}` : '',
+        ...dadosProjetoParaParecer.itensInversao.map(
+          (it) =>
+            `📦 Inversão: ${it.quantidade} ${it.unidade} — ${it.discriminacao} (R$ ${it.valorFinanciado})`
+        ),
+        valOrcamento > 0
+          ? `💰 Soma no Orçamento (PDF 18): R$ ${formatarMoedaBD(valOrcamento)}`
+          : '',
       ].filter(Boolean),
     });
   } else {
@@ -342,28 +742,23 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     });
   }
 
-  // Item 8: Cruzamento Orçamento vs Projeto
   if (valProjeto > 0 && valOrcamento > 0) {
     const diferenca = Math.abs(valProjeto - valOrcamento);
-    if (diferenca <= 5) {
-      itensDiagnostico.push({
-        numero: 8,
-        titulo: '8. Compatibilidade entre Orçamento e Projeto',
-        status: 'OK',
-        resumo: `Orçamento (R$ ${formatarMoedaBD(
-          valOrcamento
-        )}) está 100% de acordo com o Projeto (R$ ${formatarMoedaBD(valProjeto)}).`,
-      });
-    } else {
-      itensDiagnostico.push({
-        numero: 8,
-        titulo: '8. Compatibilidade entre Orçamento e Projeto',
-        status: 'ERRO',
-        resumo: `Divergência detectada! Projeto indica R$ ${formatarMoedaBD(
-          valProjeto
-        )}, mas o Orçamento soma R$ ${formatarMoedaBD(valOrcamento)}.`,
-      });
-    }
+    itensDiagnostico.push({
+      numero: 8,
+      titulo: '8. Compatibilidade entre Orçamento e Projeto',
+      status: diferenca <= 5 ? 'OK' : 'ERRO',
+      resumo:
+        diferenca <= 5
+          ? `Orçamento (R$ ${formatarMoedaBD(
+              valOrcamento
+            )}) está 100% de acordo com o Projeto (R$ ${formatarMoedaBD(
+              valProjeto
+            )}).`
+          : `Divergência detectada! Projeto indica R$ ${formatarMoedaBD(
+              valProjeto
+            )}, mas o Orçamento soma R$ ${formatarMoedaBD(valOrcamento)}.`,
+    });
   } else {
     itensDiagnostico.push({
       numero: 8,
@@ -374,10 +769,10 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     });
   }
 
-  // =========================================================================
   // 3. SELOS PARA VALIDAR NAS PROCURAÇÕES / CERTIDÕES DE CASAMENTO
-  // =========================================================================
-  const temSeloNaPasta = arquivos.some((a) => a.categoria === 'CAD_8_SELO_CARTORIO');
+  const temSeloNaPasta = arquivos.some(
+    (a) => a.categoria === 'CAD_8_SELO_CARTORIO'
+  );
   if (!pdfProcuracao && !pdfCasamento) {
     itensDiagnostico.push({
       numero: 3,
@@ -386,45 +781,28 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       resumo:
         'Não há Procuração nem Certidão de Casamento na pasta (Sem necessidade de consulta de selos).',
     });
+  } else if (temSeloNaPasta) {
+    itensDiagnostico.push({
+      numero: 3,
+      titulo: '3. Validação de Selos (Procuração / Certidão de Casamento)',
+      status: 'OK',
+      resumo: 'Arquivo de consulta de Selo já consta na pasta de Cadastro.',
+    });
   } else {
-    const txtCartorio =
-      (pdfProcuracao?.textoCompleto || '') +
-      '\n' +
-      (pdfCasamento?.textoCompleto || '');
-    const codigosSeloEncontrados =
-      txtCartorio.match(
-        /(?:SELO\s*(?:DIGITAL|DE\s*FISCALIZACAO|DE\s*AUTENTICIDADE)?\s*[:Nº°]*\s*)([A-Z0-9.\-]{8,25})/gi
-      ) || [];
-
-    if (temSeloNaPasta) {
-      itensDiagnostico.push({
-        numero: 3,
-        titulo: '3. Validação de Selos (Procuração / Certidão de Casamento)',
-        status: 'OK',
-        resumo: 'Arquivo de consulta de Selo já consta na pasta de Cadastro.',
-      });
-    } else {
-      itensDiagnostico.push({
-        numero: 3,
-        titulo: '3. Validação de Selos (Procuração / Certidão de Casamento)',
-        status: 'ALERTA',
-        resumo: `Há ${[
-          pdfProcuracao ? 'Procuração' : '',
-          pdfCasamento ? 'Certidão de Casamento' : '',
-        ]
-          .filter(Boolean)
-          .join(' e ')} na pasta e FALTA consultar o(s) selo(s)!`,
-        detalhes:
-          codigosSeloEncontrados.length > 0
-            ? [`Selos lidos no PDF: ${codigosSeloEncontrados.slice(0, 3).join(' | ')}`]
-            : ['Gerado alerta "FALTA CONSULTAR SELOS.txt" na subpasta CADASTRO.'],
-      });
-    }
+    itensDiagnostico.push({
+      numero: 3,
+      titulo: '3. Validação de Selos (Procuração / Certidão de Casamento)',
+      status: 'ALERTA',
+      resumo: `Há ${[
+        pdfProcuracao ? 'Procuração' : '',
+        pdfCasamento ? 'Certidão de Casamento' : '',
+      ]
+        .filter(Boolean)
+        .join(' e ')} na pasta e FALTA consultar o(s) selo(s)!`,
+    });
   }
 
-  // =========================================================================
-  // 4 E 7. DETECÇÃO AUTOMÁTICA DE ASSINATURA DIGITAL (VITI) VS FÍSICA/EM BRANCO
-  // =========================================================================
+  // 4 E 7. ASSINATURAS DIGITAIS VS MANUAIS E EXIGÊNCIA DE VITI
   const CATEGORIAS_ASSINAVEIS = new Set([
     'ITEM_2_AUT_ALTERACAO',
     'ITEM_8_CONTRATO_ASSESSORIA',
@@ -447,7 +825,6 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   const arquivosComAssinaturaDigital: string[] = [];
   const arquivosSemAssinaturaDigital: string[] = [];
   const faltamVitiDeAssinaturaDigitalConfirmada: string[] = [];
-  const possiveisNaoAssinadosEmBranco: string[] = [];
 
   extraidos
     .filter((e) => !e.isViti && CATEGORIAS_ASSINAVEIS.has(e.categoria))
@@ -464,40 +841,26 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
         arquivosSemAssinaturaDigital.push(
           `${doc.nomeOriginal} (${
             doc.ehProvavelEscaneadoImagem
-              ? 'Escaneado/Manual — Não precisa de VITI'
-              : 'Texto Nativo s/ Certificado Digital'
+              ? 'Escaneado/Manual — Isento de VITI'
+              : 'Sem Certificado Digital'
           })`
         );
-        // Se não tem assinatura digital, não foi escaneado e o nome não diz "assinado", pode estar sem assinatura nenhuma!
-        if (
-          !doc.ehProvavelEscaneadoImagem &&
-          !doc.nomeOriginal.toLowerCase().includes('assinado')
-        ) {
-          possiveisNaoAssinadosEmBranco.push(doc.nomeOriginal);
-        }
       }
     });
 
   itensDiagnostico.push({
     numero: 4,
-    titulo: '4 e 7. Auditoria de Assinaturas Digitais vs Manuais e Exigência de VITI',
+    titulo:
+      '4 e 7. Auditoria de Assinaturas Digitais vs Manuais e Exigência de VITI',
     status:
-      faltamVitiDeAssinaturaDigitalConfirmada.length > 0 ||
-      possiveisNaoAssinadosEmBranco.length > 0
-        ? 'ERRO'
-        : 'OK',
+      faltamVitiDeAssinaturaDigitalConfirmada.length > 0 ? 'ERRO' : 'OK',
     resumo:
       faltamVitiDeAssinaturaDigitalConfirmada.length > 0
-        ? `Detectados ${faltamVitiDeAssinaturaDigitalConfirmada.length} PDF(s) com Assinatura Digital embutida que estão SEM o relatório VITI na pasta!`
-        : possiveisNaoAssinadosEmBranco.length > 0
-        ? `Atenção: ${possiveisNaoAssinadosEmBranco.length} PDF(s) parecem ter sido gerados eletronicamente sem assinatura digital nem escaneamento!`
-        : `Todos os ${arquivosComAssinaturaDigital.length} documento(s) assinados digitalmente já possuem VITI na pasta (${arquivosSemAssinaturaDigital.length} isentos de VITI).`,
+        ? `Detectados ${faltamVitiDeAssinaturaDigitalConfirmada.length} PDF(s) com Assinatura Digital que estão SEM o VITI na pasta!`
+        : `Todos os ${arquivosComAssinaturaDigital.length} documento(s) assinados digitalmente já possuem VITI na pasta.`,
     detalhes: [
       ...faltamVitiDeAssinaturaDigitalConfirmada.map(
         (n) => `🚨 Falta validar no ITI (Possui Ass. Digital): ${n}`
-      ),
-      ...possiveisNaoAssinadosEmBranco.map(
-        (n) => `⚠️ Verificar se o campo de assinatura está em branco: ${n}`
       ),
       ...arquivosSemAssinaturaDigital.map(
         (n) => `✍️ Sem assinatura digital (Isento de VITI): ${n}`
@@ -505,31 +868,24 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     ],
   });
 
-  // =========================================================================
-  // 5. TITULAR E CÔNJUGE NO ESPELHO DA UND + P.A. E CAR ESPECÍFICO VS GERAL
-  // =========================================================================
-  const primTit = removerAcentos(titularNome.split(/\s+/)[0] || '').toUpperCase();
-  const primConj = removerAcentos(conjugeNome.split(/\s+/)[0] || '').toUpperCase();
-  const txtEspelhoNorm = removerAcentos(
-    pdfEspelho?.textoCompleto || ''
-  ).toUpperCase();
-  const txtProjNorm = removerAcentos(
-    pdfProjeto?.textoCompleto || ''
-  ).toUpperCase();
-  const txtCarNorm = removerAcentos(
+  // 5. ESPELHO DA UND + P.A. E CAR (TOTALMENTE INSENSÍVEL A ACENTOS)
+  const primTit = normalizarSemAcento(titularNome.split(/\s+/)[0] || '');
+  const primConj = normalizarSemAcento(conjugeEfetivo.split(/\s+/)[0] || '');
+  const txtEspelhoNorm = normalizarSemAcento(pdfEspelho?.textoCompleto || '');
+  const txtProjNorm = normalizarSemAcento(pdfProjeto?.textoCompleto || '');
+  const txtCarNorm = normalizarSemAcento(
     (pdfCar?.textoCompleto || '') + '\n' + (pdfConsultaCar?.textoCompleto || '')
-  ).toUpperCase();
-
-  let paDetectadoNoProjeto = paEsperado;
-  const matchPaProj = txtProjNorm.match(
-    /(P\.?\s*A\.?\s+[A-Z0-9 ]{3,35}?)(?:\n|,|\.|-|MUNICIPIO|AREA|LOTE)/i
   );
-  if (matchPaProj && matchPaProj[1]) {
-    paDetectadoNoProjeto = matchPaProj[1].replace(/\s+/g, ' ').trim();
-  }
 
-  const recibosCarNoProjeto = extrairCodigosReciboCar(txtProjNorm);
-  const recibosCarNoPdfCar = extrairCodigosReciboCar(txtCarNorm);
+  const paDetectadoNoProjeto =
+    dadosProjetoParaParecer.denominacaoImovelPa || paEsperado;
+
+  const recibosCarNoProjeto = extrairCodigosReciboCar(
+    pdfProjeto?.textoCompleto || ''
+  );
+  const recibosCarNoPdfCar = extrairCodigosReciboCar(
+    (pdfCar?.textoCompleto || '') + '\n' + (pdfConsultaCar?.textoCompleto || '')
+  );
   const carEspecificoDetectado =
     recibosCarNoPdfCar[0] || recibosCarNoProjeto[0] || '';
 
@@ -546,32 +902,8 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     const carBateComProjeto =
       recibosCarNoProjeto.length === 0 ||
       recibosCarNoPdfCar.length === 0 ||
-      recibosCarNoProjeto.some((rc) => recibosCarNoPdfCar.includes(rc));
-
-    const detalhesItem5: string[] = [];
-    detalhesItem5.push(
-      titNoEspelho
-        ? `✅ Titular (${primTit}) localizado no Espelho da UND.`
-        : `🚨 Titular (${primTit}) NÃO localizado no texto do Espelho da UND!`
-    );
-    if (primConj) {
-      detalhesItem5.push(
-        conjNoEspelho
-          ? `✅ Cônjuge (${primConj}) devidamente cadastrado(a) no Espelho da UND.`
-          : `🚨 Cônjuge (${primConj}) NÃO consta no Espelho da UND Familiar!`
-      );
-    }
-    if (recibosCarNoPdfCar.length > 0 || recibosCarNoProjeto.length > 0) {
-      detalhesItem5.push(
-        carBateComProjeto
-          ? `✅ Recibo do CAR na pasta (${
-              recibosCarNoPdfCar[0] || 'CAR Geral/Específico'
-            }) está citado e compatível com o Projeto.`
-          : `🚨 DIVERGÊNCIA DE CAR: O Projeto cita o CAR [${recibosCarNoProjeto.join(
-              ', '
-            )}], mas o PDF do CAR na pasta é [${recibosCarNoPdfCar.join(', ')}]!`
-      );
-    }
+      recibosCarNoProjeto.some((rc) => recibosCarNoPdfCar.includes(rc)) ||
+      textoContemTermoFlexivel(txtCarNorm, paDetectadoNoProjeto);
 
     itensDiagnostico.push({
       numero: 5,
@@ -586,13 +918,10 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
               primConj ? '/Cônjuge' : ''
             } OK no Espelho da UND e CAR compatível com o Projeto.`
           : 'Foram encontradas divergências no Espelho da UND ou entre o CAR da pasta e o Projeto!',
-      detalhes: detalhesItem5,
     });
   }
 
-  // =========================================================================
-  // 6. VALIDADE DA CAF E ESPECIFICAÇÃO DO P.A. NA CAF
-  // =========================================================================
+  // 6. VALIDADE DA CAF E ASSENTAMENTO (P.A.) NA CAF (IGNORANDO ACENTOS E VARIAÇÕES DE DIGITAÇÃO!)
   if (!pdfCaf) {
     itensDiagnostico.push({
       numero: 6,
@@ -601,11 +930,12 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       resumo: 'Arquivo 14. CAF não encontrado na pasta.',
     });
   } else {
-    const txtCafNorm = removerAcentos(pdfCaf.textoCompleto).toUpperCase();
+    const txtCafBruto = pdfCaf.textoCompleto || '';
+    const txtCafSemAcento = removerAcentos(txtCafBruto).toUpperCase();
     const matchValidade =
-      txtCafNorm.match(
+      txtCafSemAcento.match(
         /(?:VALIDADE|VALIDO\s+ATE|DATA\s+DE\s+VALIDADE|VENCIMENTO)[^0-9]{0,25}(\d{2}\/\d{2}\/\d{4})/i
-      ) || txtCafNorm.match(/(\d{2}\/\d{2}\/202[5-9])/);
+      ) || txtCafSemAcento.match(/(\d{2}\/\d{2}\/202[5-9])/);
 
     let cafVencida = false;
     let dataValStr = '';
@@ -618,12 +948,9 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       }
     }
 
-    const nucleoPa = removerAcentos(paDetectadoNoProjeto || paEsperado)
-      .toUpperCase()
-      .replace(/^P\.?\s*A\.?\s*/, '')
-      .trim();
-    const paConstaNaCaf =
-      !nucleoPa || nucleoPa.length < 3 || txtCafNorm.includes(nucleoPa);
+    // ITEM 2 CORRIGIDO: Usa textoContemTermoFlexivel que ignora acentos (CARNAÚBA = CARNAUBA, CARÚ = CARU) e tolera LADO vs LAGO!
+    const paAlvo = paDetectadoNoProjeto || paEsperado;
+    const paConstaNaCaf = textoContemTermoFlexivel(txtCafBruto, paAlvo);
 
     itensDiagnostico.push({
       numero: 6,
@@ -635,115 +962,84 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
             dataValStr ? `CAF Vigente (Validade: ${dataValStr})` : 'CAF localizada'
           } • ${
             paConstaNaCaf
-              ? `P.A. (${nucleoPa}) devidamente especificado na CAF.`
-              : `⚠️ O nome do P.A. (${nucleoPa}) não foi localizado no texto da CAF!`
+              ? `P.A. (${paAlvo}) devidamente confirmado na CAF.`
+              : `⚠️ O nome do P.A. (${paAlvo}) não foi localizado no texto da CAF!`
           }`,
     });
   }
 
-  // =========================================================================
-  // 9. OBJETIVO DO CRÉDITO NO PROJETO (IMPLANTAÇÃO, MODERNIZAÇÃO, AMPLIAÇÃO...)
-  // =========================================================================
-  let objetivoCreditoDetectado = '';
-  const txtBuscaObj =
-    (pdfProjeto?.textoCompleto || '') +
-    '\n' +
-    (pdfParecerTec?.textoCompleto || '');
-  const normObj = removerAcentos(txtBuscaObj).toUpperCase();
-
-  const objetivosEncontrados: string[] = [];
-  if (normObj.includes('IMPLANTACAO')) objetivosEncontrados.push('IMPLANTAÇÃO');
-  if (normObj.includes('MODERNIZACAO'))
-    objetivosEncontrados.push('MODERNIZAÇÃO');
-  if (normObj.includes('AMPLIACAO')) objetivosEncontrados.push('AMPLIAÇÃO');
-  if (normObj.includes('REFORMA')) objetivosEncontrados.push('REFORMA');
-  if (normObj.includes('BOVINOCULTURA') || normObj.includes('MATRIZES'))
-    objetivosEncontrados.push('BOVINOCULTURA / AQUISIÇÃO DE ANIMAIS');
-
-  const matchFraseObj = txtBuscaObj.match(
-    /(?:OBJETIVO(?:\s+DO\s+PROJETO|\s+DO\s+CREDITO)?\s*[:\-]\s*)([^\n.]{10,140})/i
-  );
-
-  if (matchFraseObj && matchFraseObj[1]) {
-    objetivoCreditoDetectado = matchFraseObj[1].trim();
-  } else if (objetivosEncontrados.length > 0) {
-    objetivoCreditoDetectado = objetivosEncontrados.join(' / ');
-  }
+  // 9. OBJETIVO DO CRÉDITO NO PROJETO
+  const objetivoCreditoDetectado =
+    dadosProjetoParaParecer.objetivoCurto ||
+    dadosProjetoParaParecer.objetivoJustificativaCompleta;
 
   itensDiagnostico.push({
     numero: 9,
     titulo: '9. Objetivo do Crédito Identificado no Projeto',
     status: objetivoCreditoDetectado ? 'OK' : 'INFO',
-    resumo: objetivoCreditoDetectado
-      ? `Objetivo detectado: "${objetivoCreditoDetectado}"`
+    resumo: dadosProjetoParaParecer.objetivoCurto
+      ? `Modalidade: ${dadosProjetoParaParecer.objetivoCurto}${
+          dadosProjetoParaParecer.objetivoJustificativaCompleta
+            ? ` — "${dadosProjetoParaParecer.objetivoJustificativaCompleta.substring(
+                0,
+                120
+              )}..."`
+            : ''
+        }`
       : 'Objetivo específico não isolado automaticamente no texto do Projeto.',
   });
 
-  // =========================================================================
-  // 10 E 11. CRUZAMENTO DE ESTADO CIVIL E CÔNJUGE (IDENTIDADE, CAF, ESPELHO E PROJETO)
-  // =========================================================================
-  const txtTodosCadastro = removerAcentos(
+  // 10 E 11. CONSISTÊNCIA DE ESTADO CIVIL E DOCUMENTAÇÃO DO CÔNJUGE
+  const txtTodosCadastro = normalizarSemAcento(
     [
       pdfIdTitular?.textoCompleto,
       pdfCasamento?.textoCompleto,
       pdfCaf?.textoCompleto,
       pdfEspelho?.textoCompleto,
-      pdfProjeto?.textoCompleto,
     ]
       .filter(Boolean)
       .join('\n')
-  ).toUpperCase();
-
-  const mencionaCasadoOuUniao =
-    /\b(CASADO|CASADA|UNIAO ESTAVEL|COMPANHEIRO|COMPANHEIRA|CONJUGE)\b/.test(
-      txtTodosCadastro
-    ) || Boolean(pdfCasamento);
-
-  const projetoDizSolteiro = /\bESTADO\s+CIVIL\s*[:\-]?\s*SOLTEIR[OA]\b/.test(
-    txtProjNorm
   );
+
+  const estadoCivilNoProj = dadosProjetoParaParecer.estadoCivil;
+  const possuiConjugeReal =
+    Boolean(conjugeEfetivo) ||
+    Boolean(pdfCasamento) ||
+    estadoCivilNoProj.includes('CASAD') ||
+    estadoCivilNoProj.includes('UNIAO') ||
+    /\b(CONJUGE|COMPANHEIRO|COMPANHEIRA)\b/.test(txtTodosCadastro);
+
   const temDocConjugeNaPasta =
-    Boolean(pdfIdConjuge) || Boolean(conjugeNome.trim());
+    Boolean(pdfIdConjuge) || Boolean(conjugeEfetivo);
 
-  const estadoCivilDetectado = mencionaCasadoOuUniao
-    ? 'CASADO(A) / UNIÃO ESTÁVEL'
-    : projetoDizSolteiro
-    ? 'SOLTEIRO(A)'
-    : 'NÃO ESPECIFICADO';
+  const estadoCivilDetectado =
+    estadoCivilNoProj ||
+    (possuiConjugeReal ? 'CASADO(A) / UNIÃO ESTÁVEL' : 'SOLTEIRO(A)');
 
-  if (mencionaCasadoOuUniao && !temDocConjugeNaPasta) {
+  if (possuiConjugeReal && !temDocConjugeNaPasta) {
     itensDiagnostico.push({
       numero: 10,
       titulo:
-        '10 e 11. Consistência de Estado Civil e Documentação do Cônjuge (CAF / RG / Projeto)',
+        '10 e 11. Consistência de Estado Civil e Documentação do Cônjuge',
       status: 'ERRO',
       resumo:
-        '🚨 ALERTA CRÍTICO: Os documentos (CAF/Espelho/Certidão) indicam CASADO(A) ou UNIÃO ESTÁVEL, mas NÃO HÁ documento de identificação do Cônjuge na pasta!',
-    });
-  } else if (mencionaCasadoOuUniao && projetoDizSolteiro) {
-    itensDiagnostico.push({
-      numero: 10,
-      titulo:
-        '10 e 11. Consistência de Estado Civil e Documentação do Cônjuge (CAF / RG / Projeto)',
-      status: 'ERRO',
-      resumo:
-        '🚨 DIVERGÊNCIA: Consta Cônjuge/União Estável na CAF/Pasta, mas no PDF do Projeto o estado civil está preenchido como SOLTEIRO(A)!',
+        '🚨 ALERTA: O Projeto/CAF indica Cônjuge ou União Estável, mas NÃO HÁ documento de identificação do Cônjuge na pasta!',
     });
   } else {
     itensDiagnostico.push({
       numero: 10,
       titulo:
-        '10 e 11. Consistência de Estado Civil e Documentação do Cônjuge (CAF / RG / Projeto)',
+        '10 e 11. Consistência de Estado Civil e Documentação do Cônjuge',
       status: 'OK',
-      resumo: temDocConjugeNaPasta
-        ? `Estado civil (${estadoCivilDetectado}) consistente e documentação do cônjuge presente na pasta.`
-        : 'Titular sem cônjuge/companheiro(a) apontado na CAF/Projeto.',
+      resumo: possuiConjugeReal
+        ? `Estado civil (${estadoCivilDetectado}) consistente e Cônjuge (${
+            conjugeEfetivo || 'Identificado'
+          }) validado.`
+        : 'Titular Solteiro(a) / Sem Cônjuge (Não exige certidões nem documentos de cônjuge).',
     });
   }
 
-  // =========================================================================
-  // 12. VERIFICAÇÃO SE O NOME DO CLIENTE CONSTA NA RB DO P.A.
-  // =========================================================================
+  // 12. PRESENÇA DO CLIENTE NA RB DO P.A. (INSENSÍVEL A ACENTOS)
   if (!pdfRb) {
     itensDiagnostico.push({
       numero: 12,
@@ -761,41 +1057,39 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
         'O PDF da RB do P.A. é uma imagem escaneada sem texto pesquisável. Confira visualmente o nome na RB.',
     });
   } else {
-    const txtRbNorm = removerAcentos(pdfRb.textoCompleto).toUpperCase();
-    const nomeCompletoNorm = removerAcentos(titularNome).toUpperCase().trim();
-    const partesNome = nomeCompletoNorm.split(/\s+/).filter((p) => p.length > 2);
-    const primEUltimo =
-      partesNome.length >= 2
-        ? `${partesNome[0]}.*${partesNome[partesNome.length - 1]}`
-        : partesNome[0] || '';
-
-    const achouExato =
-      nomeCompletoNorm.length > 3 && txtRbNorm.includes(nomeCompletoNorm);
-    const achouAproximado =
-      !achouExato &&
-      primEUltimo &&
-      new RegExp(primEUltimo, 'i').test(txtRbNorm);
-
+    const achouNaRb = textoContemTermoFlexivel(
+      pdfRb.textoCompleto,
+      titularNome
+    );
     itensDiagnostico.push({
       numero: 12,
       titulo: '12. Presença do Cliente na Relação de Beneficiários (RB do P.A.)',
-      status: achouExato || achouAproximado ? 'OK' : 'ERRO',
-      resumo: achouExato
-        ? `✅ Nome completo "${titularNome}" localizado com sucesso na RB do P.A.!`
-        : achouAproximado
-        ? `✅ Nome do cliente localizado na RB do P.A. (Verifique grafia completa).`
+      status: achouNaRb ? 'OK' : 'ERRO',
+      resumo: achouNaRb
+        ? `✅ Nome do cliente "${titularNome}" localizado com sucesso na RB do P.A.!`
         : `🚨 O nome "${titularNome}" NÃO foi localizado no texto da RB do P.A.!`,
     });
   }
 
   return {
     valorPropostaDetectado,
+    prazoMesesDetectado: dadosProjetoParaParecer.prazoMeses,
+    carenciaMesesDetectada: dadosProjetoParaParecer.carenciaMeses,
+    elaboradorDetectado: dadosProjetoParaParecer.elaboradorNomeCompleto,
+    projetistaCurtoDetectado:
+      dadosProjetoParaParecer.projetistaNomeCurtoDetectado,
     objetivoCreditoDetectado,
+    objetivoJustificativaCompleta:
+      dadosProjetoParaParecer.objetivoJustificativaCompleta,
+    itensInversaoExtraidos: dadosProjetoParaParecer.itensInversao,
+    textoItensInversaoFormatado:
+      dadosProjetoParaParecer.textoItensInversaoFormatado,
+    dadosProjetoParaParecer,
     contaCorrenteConsolidada,
     paDetectadoNoProjeto,
     carEspecificoDetectado,
     estadoCivilDetectado,
-    conjugeDetectadoNosPdfs: conjugeNome,
+    conjugeDetectadoNosPdfs: conjugeEfetivo,
     arquivosComAssinaturaDigital,
     arquivosSemAssinaturaDigital,
     itensDiagnostico: itensDiagnostico.sort((a, b) => a.numero - b.numero),
