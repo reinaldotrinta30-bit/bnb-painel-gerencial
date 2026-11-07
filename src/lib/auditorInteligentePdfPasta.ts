@@ -496,12 +496,47 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     }
   }
 
+  // Extrai Nome e CPF do Titular na Página 1 do Projeto (ex: "C.P.F.: 932526763-20")
+  const matchNomeCli = textoLimpo.match(
+    /Dados\s+Cadastrais\s+do\(a\)\s+Cliente[\s\S]{1,80}?Nome:\s*([A-ZÀ-Ú\s]{5,65}?)\s+(?:Apelido:|C\.?P\.?F)/i
+  );
+  if (matchNomeCli && matchNomeCli[1]) {
+    resultado.clienteNome = matchNomeCli[1].trim().toUpperCase();
+  }
+
+  const matchCpfCli = textoLimpo.match(
+    /C\.?P\.?F\.?:\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i
+  );
+  if (matchCpfCli && matchCpfCli[1]) {
+    resultado.clienteCpf = matchCpfCli[1].trim();
+  }
+
   const matchDenom = textoLimpo.match(
     /Denomina[çc][ãa]o\s+do\s+im[óo]vel:\s*([A-ZÀ-Ú0-9\s.\-]{3,50}?)\s+[ÁA]rea\s+do\s+im[óo]vel\s*\(ha\):\s*([0-9.,]+)/i
   );
   if (matchDenom) {
     resultado.denominacaoImovelPa = matchDenom[1].trim().toUpperCase();
     resultado.areaImovelHa = matchDenom[2].trim();
+  }
+
+  // Extrai Município do Imóvel e Atividade Principal do Projeto para cruzar com o S400 (Item 2 V98)
+  const matchMunImovel =
+    textoLimpo.match(
+      /Munic[íi]pio(?:\s+do\s+im[óo]vel|-UF)?\s*:\s*([A-ZÀ-Ú\s]+-[A-Z]{2})/i
+    ) || textoLimpo.match(/\b([A-ZÀ-Ú\s]{3,30}-MA)\b/);
+  if (matchMunImovel && matchMunImovel[1]) {
+    resultado.municipioImovel = matchMunImovel[1].trim().toUpperCase();
+  }
+
+  const matchAtivPrinc = textoLimpo.match(
+    /Atividade(?:\s+Principal)?\s*:\s*([A-Za-zÀ-ú\s\-()/]{5,80}?)(?:\s+Renda\s+Mensal|\s+Munic[íi]pio|\s+\d{11}|$)/i
+  );
+  if (matchAtivPrinc && matchAtivPrinc[1]) {
+    resultado.atividadePrincipal = matchAtivPrinc[1]
+      .split('(')[0]
+      .replace(/\d+/g, '')
+      .trim()
+      .toUpperCase();
   }
 
   const regexImoveisVinculados =
@@ -1507,6 +1542,300 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       detalhes: [
         ...diagSemKml.errosCriticos.map((er) => `🚨 ${er}`),
         ...diagSemKml.justificativasERessalvas.map((ju) => `✅ ${ju}`),
+      ],
+    });
+  }
+
+  // =========================================================================
+  // 14. ITEM 5 (V98): AUDITORIA DE TETO DE ASSESSORIA TÉCNICA (5% vs 2%)
+  //     E VERIFICAÇÃO DE SEGURO NO KML / PROJETO
+  // =========================================================================
+  if (!isSomenteLimite) {
+    const valAssNum = parseMoeda(
+      dadosProjetoParaParecer.valorAssessoriaExtraido ||
+        dadosProjetoParaParecer.valorRecursosProprios ||
+        '0'
+    );
+    const tetoMaxPerc = isPronafA ? 5 : 2;
+    const percAssAtual =
+      valorPrincipalNum > 0 && valAssNum > 0
+        ? (valAssNum / valorPrincipalNum) * 100
+        : 0;
+    const excedeuAssessoria = percAssAtual > tetoMaxPerc + 0.01;
+
+    const temSeguroNoKml = itensKmlExtraidos.some((nome) =>
+      normalizarSemAcento(nome).includes('SEGURO')
+    );
+    const txtProjNormSeg = normalizarSemAcento(pdfProjeto?.textoCompleto || '');
+    const projetoMencionaSeguroFinanciado =
+      txtProjNormSeg.includes('SEGURO RURAL') ||
+      txtProjNormSeg.includes('SEGURO PRESTAMISTA');
+
+    const detalhesItem14: string[] = [];
+    if (valAssNum > 0 && valorPrincipalNum > 0) {
+      detalhesItem14.push(
+        excedeuAssessoria
+          ? `🚨 Assessoria Técnica (R$ ${formatarMoedaBD(
+              valAssNum
+            )} = ${percAssAtual.toFixed(
+              2
+            )}%) EXCEDE o limite de ${tetoMaxPerc}% permitido para o porte!`
+          : `✅ Assessoria Técnica (R$ ${formatarMoedaBD(
+              valAssNum
+            )} = ${percAssAtual.toFixed(
+              2
+            )}%) dentro do limite normativo de ${tetoMaxPerc}%.`
+      );
+    } else {
+      detalhesItem14.push(
+        `ℹ️ Custo de assessoria técnica: R$ 0,00 (ou isento no plano). Limite do porte: ${tetoMaxPerc}%.`
+      );
+    }
+
+    if (!isPronafA && arqKmlItem) {
+      if (temSeguroNoKml) {
+        detalhesItem14.push(
+          '✅ Gleba de SEGURO identificada dentro do arquivo .KML.'
+        );
+      } else if (projetoMencionaSeguroFinanciado) {
+        detalhesItem14.push(
+          '⚠️ ATENÇÃO: Caso haja Seguro financiado junto ao projeto, o projetista deve inserir a respectiva área de SEGURO no .KML!'
+        );
+      }
+    }
+
+    itensDiagnostico.push({
+      numero: 14,
+      titulo: `14. Limite de Assessoria Técnica (Máx. ${tetoMaxPerc}%) & Seguro no KML (V98)`,
+      status: excedeuAssessoria ? 'ERRO' : 'OK',
+      resumo: excedeuAssessoria
+        ? `🚨 Valor de assessoria técnica (${percAssAtual.toFixed(
+            2
+          )}%) ultrapassa o teto de ${tetoMaxPerc}%!`
+        : valAssNum > 0
+        ? `Assessoria Técnica em conformidade (${percAssAtual.toFixed(
+            2
+          )}% ≤ ${tetoMaxPerc}%).`
+        : `Sem cobrança de assessoria acima do teto (${tetoMaxPerc}%).`,
+      detalhes: detalhesItem14,
+    });
+  }
+
+  // =========================================================================
+  // 15. IDEIA 4: AUDITORIA DE VALIDADE DE CERTIDÕES (CND, CNDT, ITR, CCIR)
+  //     E HISTÓRICO DE 15 ANOS DA MATRÍCULA (INTEIRO TEOR)
+  // =========================================================================
+  const pdfCndPf = obterPorCat('ITEM_CND_PF', false);
+  const pdfCndtPf = obterPorCat('ITEM_CNDT_PF', false);
+  const pdfItr = obterPorCat('ITEM_CND_ITR_IMOVEL', false);
+  const pdfCcir = obterPorCat('ITEM_CCIR', false);
+  const pdfsInteiroTeor = extraidos.filter(
+    (e) => e.categoria === 'ITEM_INTEIRO_TEOR' && !e.isViti
+  );
+
+  if (
+    !isPronafA ||
+    isSomenteLimite ||
+    pdfCndPf ||
+    pdfCndtPf ||
+    pdfItr ||
+    pdfCcir ||
+    pdfsInteiroTeor.length > 0
+  ) {
+    const detalhesValidade: string[] = [];
+    let statusValidade: NivelStatusAuditoria = 'OK';
+
+    const checarValidadeCertidao = (
+      docPdf: PdfExtraidoInfo | undefined,
+      rotulo: string
+    ) => {
+      if (!docPdf) return;
+      const txtNorm = removerAcentos(docPdf.textoCompleto).toUpperCase();
+      const mVal =
+        txtNorm.match(
+          /(?:VALIDA\s+ATE|VALIDADE\s*:?|DATA\s+DE\s+VALIDADE\s*:?|VENCIMENTO\s*:?)[^0-9]{0,30}(\d{2}\/\d{2}\/20\d{2})/i
+        ) || txtNorm.match(/ATE\s+(\d{2}\/\d{2}\/20\d{2})/i);
+
+      if (mVal && mVal[1]) {
+        const [dd, mm, aaaa] = mVal[1].split('/').map(Number);
+        const dtVenc = new Date(aaaa, mm - 1, dd, 23, 59, 59);
+        const diasRestantes = Math.ceil(
+          (dtVenc.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+        );
+        if (diasRestantes < 0) {
+          statusValidade = 'ERRO';
+          detalhesValidade.push(
+            `🚨 ${rotulo}: VENCIDA em ${mVal[1]}! Emitir nova certidão.`
+          );
+        } else if (diasRestantes <= 5) {
+          if (statusValidade === 'OK') statusValidade = 'ALERTA';
+          detalhesValidade.push(
+            `⚠️ ${rotulo}: Vence em ${diasRestantes} dia(s) (${mVal[1]}). Atenção ao prazo de contratação.`
+          );
+        } else {
+          detalhesValidade.push(
+            `✅ ${rotulo}: Vigente (Válida até ${mVal[1]} — ${diasRestantes} dias restantes).`
+          );
+        }
+      } else {
+        detalhesValidade.push(
+          `ℹ️ ${rotulo}: Presente na pasta (Confira visualmente a data de validade).`
+        );
+      }
+    };
+
+    checarValidadeCertidao(pdfCndPf, 'CND Pessoa Física');
+    checarValidadeCertidao(pdfCndtPf, 'CNDT Trabalhista');
+    checarValidadeCertidao(pdfItr, 'CND / ITR do Imóvel');
+
+    if (pdfCcir) {
+      const txtCcir = removerAcentos(pdfCcir.textoCompleto).toUpperCase();
+      const anoAtual = new Date().getFullYear();
+      const temExercicioVigente =
+        txtCcir.includes(String(anoAtual)) ||
+        txtCcir.includes(String(anoAtual - 1));
+      if (temExercicioVigente) {
+        detalhesValidade.push('✅ CCIR: Exercício vigente confirmado no PDF.');
+      } else {
+        if (statusValidade === 'OK') statusValidade = 'ALERTA';
+        detalhesValidade.push(
+          `⚠️ CCIR: Não foi localizado o ano vigente (${
+            anoAtual - 1
+          }/${anoAtual}) no texto do CCIR. Verifique se está atualizado!`
+        );
+      }
+    }
+
+    if (pdfsInteiroTeor.length > 0) {
+      const textoTodasMatriculas = pdfsInteiroTeor
+        .map((p) => p.textoCompleto)
+        .join('\n');
+      const anosEncontrados = (
+        textoTodasMatriculas.match(/\b(19[5-9]\d|20[0-2]\d)\b/g) || []
+      )
+        .map(Number)
+        .filter((a) => a >= 1950 && a <= new Date().getFullYear());
+
+      if (anosEncontrados.length > 0) {
+        const anoMaisAntigo = Math.min(...anosEncontrados);
+        const anosHistorico = new Date().getFullYear() - anoMaisAntigo;
+        if (anosHistorico >= 15) {
+          detalhesValidade.push(
+            `✅ Inteiro Teor (${pdfsInteiroTeor.length} arq.): Cadeia dominial atinge ${anosHistorico} anos (registro desde ${anoMaisAntigo} ≥ 15 anos).`
+          );
+        } else {
+          if (statusValidade === 'OK') statusValidade = 'ALERTA';
+          detalhesValidade.push(
+            `⚠️ Inteiro Teor: A data mais antiga lida nas matrículas é ${anoMaisAntigo} (${anosHistorico} anos). Verifique se faltam matrículas anteriores para completar 15 anos!`
+          );
+        }
+      } else {
+        detalhesValidade.push(
+          `ℹ️ Inteiro Teor (${pdfsInteiroTeor.length} arq.): PDF escaneado em imagem. Confira visualmente a cadeia de 15 anos e a validade de 30 dias.`
+        );
+      }
+    }
+
+    if (detalhesValidade.length > 0) {
+      const statusFinalValidade = statusValidade as NivelStatusAuditoria;
+      itensDiagnostico.push({
+        numero: 15,
+        titulo:
+          '15. Auditoria de Validade de Certidões (CND, CNDT, ITR, CCIR) e Inteiro Teor (15 Anos)',
+        status: statusFinalValidade,
+        resumo:
+          statusFinalValidade === 'ERRO'
+            ? '🚨 Detectada certidão VENCIDA na pasta! Verifique os detalhes abaixo.'
+            : statusFinalValidade === 'ALERTA'
+            ? '⚠️ Atenção aos prazos de validade / histórico de 15 anos nas certidões.'
+            : '✅ Certidões fiscais, CCIR e Inteiro Teor conferidos e dentro da validade.',
+        detalhes: detalhesValidade,
+      });
+    }
+  }
+
+  // =========================================================================
+  // 16. ITEM 2 (V98) + IDEIA 5: LEITOR AUTOMÁTICO DO PDF DA FICHA S400 E
+  //     CRUZAMENTO DE ATIVIDADE ECONÔMICA + MUNICÍPIO COM O PROJETO
+  // =========================================================================
+  const pdfS400 = extraidos.find((e) => {
+    const nUp = removerAcentos(e.nomeOriginal).toUpperCase();
+    const tUp = removerAcentos(e.textoCompleto).toUpperCase();
+    return (
+      nUp.includes('S400') ||
+      nUp.includes('FICHA CADASTRAL') ||
+      (tUp.includes('ESTADO DO CLIENTE') && tUp.includes('COMO E CONHECIDO')) ||
+      tUp.includes('ATIVIDADES ECONOMICAS')
+    );
+  });
+
+  if (pdfS400) {
+    const txtS400Norm = normalizarSemAcento(pdfS400.textoCompleto);
+    const ativProjNorm = normalizarSemAcento(
+      dadosProjetoParaParecer.atividadePrincipal
+    );
+    const munProjNorm = normalizarSemAcento(
+      (dadosProjetoParaParecer.municipioImovel || paEsperado).split('-')[0] ||
+        ''
+    );
+
+    const palavrasAtiv = ativProjNorm
+      .split(/\s+/)
+      .filter((p) => p.length > 3 && !['PARA', 'CRIACAO', 'CULTIVO'].includes(p));
+
+    const ativConstaNoS400 =
+      palavrasAtiv.length === 0 ||
+      palavrasAtiv.some((pal) => txtS400Norm.includes(pal));
+    const munConstaNoS400 =
+      !munProjNorm ||
+      munProjNorm.length < 3 ||
+      txtS400Norm.includes(munProjNorm);
+
+    // Verifica data de atualização/renovação cadastral no S400 (>= 12 meses)
+    const matchDataRenov = pdfS400.textoCompleto.match(
+      /(?:Atualiza[çc][ãa]o|Renova[çc][ãa]o|Data\s+Cadastro)[^0-9]{0,25}(\d{2}\/\d{2}\/20\d{2})/i
+    );
+    let cadastroVencido12Meses = false;
+    let mesesCadastro = 0;
+    if (matchDataRenov && matchDataRenov[1]) {
+      const [dd, mm, aaaa] = matchDataRenov[1].split('/').map(Number);
+      const dtRen = new Date(aaaa, mm - 1, dd);
+      mesesCadastro = Math.floor(
+        (Date.now() - dtRen.getTime()) / (1000 * 60 * 60 * 24 * 30.44)
+      );
+      if (mesesCadastro >= 12) cadastroVencido12Meses = true;
+    }
+
+    const okS400 =
+      ativConstaNoS400 && munConstaNoS400 && !cadastroVencido12Meses;
+
+    itensDiagnostico.push({
+      numero: 16,
+      titulo:
+        '16. Cruzamento Ficha S400 × Projeto (Atividade Econômica, Município e Renovação 12 Meses)',
+      status: okS400 ? 'OK' : 'ERRO',
+      resumo: okS400
+        ? `✅ Ficha S400 validada: Atividade e Município compatíveis com o Projeto${
+            matchDataRenov ? ` (Atualizado em ${matchDataRenov[1]})` : ''
+          }.`
+        : '🚨 Divergência entre a Ficha S400 e o Projeto ou Cadastro vencido há ≥ 12 meses!',
+      detalhes: [
+        ativConstaNoS400 && munConstaNoS400
+          ? `✅ Atividade (${
+              dadosProjetoParaParecer.atividadePrincipal || 'Rural'
+            }) e Município (${
+              dadosProjetoParaParecer.municipioImovel || 'OK'
+            }) localizados no S400.`
+          : `🚨 ATENÇÃO: A atividade (${
+              dadosProjetoParaParecer.atividadePrincipal || '?'
+            }) ou o município (${
+              dadosProjetoParaParecer.municipioImovel || '?'
+            }) do projeto NÃO foram encontrados em conjunto na Ficha S400!`,
+        cadastroVencido12Meses
+          ? `🚨 Cadastro no S400 vencido há ${mesesCadastro} meses (Data: ${matchDataRenov?.[1]}) — Necessário RENOVAR CADASTRO!`
+          : matchDataRenov
+          ? `✅ Renovação cadastral em dia (${matchDataRenov[1]} — há ${mesesCadastro} meses).`
+          : 'ℹ️ Verifique visualmente a data da última renovação cadastral no S400.',
       ],
     });
   }

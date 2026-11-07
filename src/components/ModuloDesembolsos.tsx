@@ -7,6 +7,7 @@ import {
   OperacaoBaseDesembolso,
   EventoDesembolso,
 } from '@/types/painel';
+import ModalConferenciaDesembolsoS567 from '@/components/desembolsos/ModalConferenciaDesembolsoS567';
 import {
   LISTA_PROJETISTAS_CURTOS,
   parseMoeda,
@@ -107,6 +108,18 @@ export default function ModuloDesembolsos({
 
   // Modal de Observações (Lupinha 🔎)
   const [obsModalTexto, setObsModalTexto] = useState<string | null>(null);
+
+  // Modal de Conferência Financeira de Desembolso (NFs) e Gerador S567 (V98)
+  const [modalConferenciaS567, setModalConferenciaS567] = useState<{
+    aberto: boolean;
+    operacaoInicial?: {
+      cliente: string;
+      cpf?: string;
+      op?: string;
+      valorContrato?: string;
+      porte?: string;
+    } | null;
+  }>({ aberto: false, operacaoInicial: null });
 
   // Refs de Arquivos
   const inputJsonRef = useRef<HTMLInputElement>(null);
@@ -1035,7 +1048,32 @@ export default function ModuloDesembolsos({
           </button>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', padding: '6px 0' }}>
+        <div style={{ display: 'flex', gap: '8px', padding: '6px 0', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={() =>
+              setModalConferenciaS567({
+                aberto: true,
+                operacaoInicial: evCliente
+                  ? { cliente: evCliente, op: evOp }
+                  : null,
+              })
+            }
+            style={{
+              background: '#8B1530',
+              border: '1px solid #630c26',
+              padding: '6px 14px',
+              borderRadius: '4px',
+              fontWeight: 'bold',
+              color: '#ffffff',
+              fontSize: '12px',
+              cursor: 'pointer',
+              boxShadow: '0 2px 5px rgba(139, 21, 48, 0.25)',
+            }}
+          >
+            📑 Conferência Financeira (NFs) & S567
+          </button>
+
           <input
             type="file"
             ref={inputJsonRef}
@@ -1368,7 +1406,48 @@ export default function ModuloDesembolsos({
                       <tr key={`${reg.idOp}_${idx}`}>
                         <td style={{ textAlign: 'left' }}>{reg.cliente}</td>
                         <td style={{ fontWeight: 'bold' }}>{reg.porte}</td>
-                        <td style={{ fontWeight: 'bold' }}>{reg.op}</td>
+                        <td style={{ fontWeight: 'bold' }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '6px',
+                            }}
+                          >
+                            <span>{reg.op}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setModalConferenciaS567({
+                                  aberto: true,
+                                  operacaoInicial: {
+                                    cliente: reg.cliente,
+                                    op: reg.op,
+                                    valorContrato: formatarMoedaBD(
+                                      reg.valContrato
+                                    ),
+                                    porte: reg.porte,
+                                  },
+                                })
+                              }
+                              style={{
+                                width: 'auto',
+                                background: '#fdf2f4',
+                                color: '#8B1530',
+                                border: '1px solid #f5c2c7',
+                                borderRadius: '4px',
+                                padding: '2px 6px',
+                                fontSize: '10.5px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                              title="Abrir Conferência Financeira de NFs e Resumo S567 desta Operação"
+                            >
+                              📑 S567
+                            </button>
+                          </div>
+                        </td>
                         <td style={{ textAlign: 'right' }}>R$ {formatarMoedaBD(reg.valContrato)}</td>
                         <td style={{ textAlign: 'right', fontWeight: 'bold', background: '#e8f5e9' }}>
                           R$ {formatarMoedaBD(reg.totalDesembOp)}
@@ -1586,6 +1665,25 @@ export default function ModuloDesembolsos({
                     {operacoesBaseFiltradas.map((reg, idx) => (
                       <tr key={`${reg.id}_${idx}`}>
                         <td>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setModalConferenciaS567({
+                                aberto: true,
+                                operacaoInicial: {
+                                  cliente: reg.cliente,
+                                  cpf: reg.cpf,
+                                  op: reg.op,
+                                  valorContrato: reg.valor,
+                                  porte: reg.porte,
+                                },
+                              })
+                            }
+                            style={{ background: 'none', border: 'none', padding: '2px 5px', fontSize: '14px', cursor: 'pointer' }}
+                            title="Abrir Conferência de NFs e Resumo S567"
+                          >
+                            📑
+                          </button>
                           <button
                             onClick={() => editarOpDesemb(reg.id)}
                             style={{ background: 'none', border: 'none', padding: '2px 5px', fontSize: '14px' }}
@@ -1870,6 +1968,33 @@ export default function ModuloDesembolsos({
           </div>
         )}
       </div>
+
+      <ModalConferenciaDesembolsoS567
+        aberto={modalConferenciaS567.aberto}
+        onFechar={() =>
+          setModalConferenciaS567({ aberto: false, operacaoInicial: null })
+        }
+        operacoesBase={operacoesBase}
+        contratacoes={contratacoes}
+        operacaoInicial={modalConferenciaS567.operacaoInicial}
+        onRegistrarEventoNoHistorico={(dadosEv) => {
+          const novoEv: EventoDesembolso = {
+            id: Date.now().toString(),
+            timestamp: Date.now(),
+            cliente: dadosEv.cliente,
+            op: dadosEv.op,
+            valor: dadosEv.valor,
+            parcela: dadosEv.parcela,
+            situacao: dadosEv.situacao,
+            data: getHojeBR(),
+            obs: dadosEv.obs,
+          };
+          onAtualizarEventos([...eventos, novoEv]);
+          alert(
+            `✅ Evento de desembolso (${dadosEv.parcela}ª Parcela — R$ ${dadosEv.valor}) registado com o Resumo S567 no Histórico da operação ${dadosEv.op}!`
+          );
+        }}
+      />
 
       {/* MODAL DE OBSERVAÇÕES DE DESEMBOLSOS */}
       {obsModalTexto !== null && (

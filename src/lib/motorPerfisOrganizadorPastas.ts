@@ -314,7 +314,9 @@ export function classificarArquivoUniversal(
 
   if (
     miolo.includes('PROPOSTA DE CADASTRO') ||
-    miolo.includes('FICHA CADASTRAL')
+    miolo.includes('FICHA CADASTRAL') ||
+    miolo.includes('S400') ||
+    miolo.includes('ESPELHO CADASTRO')
   ) {
     return finalizar('CAD_5_PROPOSTA_CADASTRO');
   }

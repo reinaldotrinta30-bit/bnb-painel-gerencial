@@ -42,6 +42,7 @@ import {
   getHojeBR,
   getHojeISO,
   obterListaProgramas,
+  obterListaProjetistas,
   isEnquadradoCadaVezMelhor,
 } from '@/lib/utils';
 import {
@@ -200,6 +201,13 @@ function converterCategoriaParaAuditorPdf(cat: CategoriaDocPasta): string {
     ITEM_CAPA_ANALISADOR: 'ITEM_19_CAPA_ANALISADOR',
     ITEM_PARECER_GERENCIAL: 'ITEM_20_PARECER_GERENCIAL',
     ITEM_PARECER_SEMA: 'ITEM_21_PARECER_SEMA',
+    ITEM_CND_PF: 'ITEM_CND_PF',
+    ITEM_CNDT_PF: 'ITEM_CNDT_PF',
+    ITEM_CCIR: 'ITEM_CCIR',
+    ITEM_CND_ITR_IMOVEL: 'ITEM_CND_ITR_IMOVEL',
+    ITEM_INTEIRO_TEOR: 'ITEM_INTEIRO_TEOR',
+    ITEM_LAUDO_EXTERNO: 'ITEM_LAUDO_EXTERNO',
+    ITEM_LAUDO_INTERNO: 'ITEM_LAUDO_INTERNO',
   };
   return mapa[cat] || cat;
 }
@@ -1840,6 +1848,243 @@ export default function ModalOrganizadorPastasCliente({
     setCardOverlayParecerId(novoCardKanban.id);
   };
 
+  // =========================================================================
+  // ETAPA 2: BARRA DE CONSULTAS COM AUTO-COPY (CPF / CAR) E WHATSAPP CRÍTICAS
+  // =========================================================================
+  const [alvoCpfAutoCopy, setAlvoCpfAutoCopy] = useState<'TITULAR' | 'CONJUGE'>(
+    'TITULAR'
+  );
+  const [feedbackAutoCopy, setFeedbackAutoCopy] = useState<string>('');
+
+  const cpfTitularDetectado = useMemo(() => {
+    if (auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf) {
+      return auditoriaPdf.dadosProjetoParaParecer.clienteCpf;
+    }
+    if (registroConformidadeVinculado?.cpfCliente) {
+      return registroConformidadeVinculado.cpfCliente;
+    }
+    const contr = listaContratacoes.find(
+      (c) =>
+        removerAcentos(c.cliente).toUpperCase().trim() ===
+        removerAcentos(titularNome).toUpperCase().trim()
+    );
+    return contr?.cpf || cadCpf || '';
+  }, [
+    auditoriaPdf,
+    registroConformidadeVinculado,
+    listaContratacoes,
+    titularNome,
+    cadCpf,
+  ]);
+
+  const cpfConjugeDetectado = useMemo(() => {
+    if (auditoriaPdf?.dadosProjetoParaParecer?.conjugeCpf) {
+      return auditoriaPdf.dadosProjetoParaParecer.conjugeCpf;
+    }
+    if (registroConformidadeVinculado?.conjugeCpf) {
+      return registroConformidadeVinculado.conjugeCpf;
+    }
+    return '';
+  }, [auditoriaPdf, registroConformidadeVinculado]);
+
+  const carReciboDetectado = useMemo(() => {
+    return auditoriaPdf?.carEspecificoDetectado || '';
+  }, [auditoriaPdf]);
+
+  const abrirLinkComAutoCopy = async (
+    url: string,
+    rotuloLink: string,
+    tipoDadoCopiar: 'CPF' | 'CAR' | 'NENHUM' = 'CPF'
+  ) => {
+    let valorParaCopiar = '';
+    let descricaoCopiada = '';
+
+    if (tipoDadoCopiar === 'CAR') {
+      valorParaCopiar = carReciboDetectado;
+      descricaoCopiada = valorParaCopiar
+        ? `CAR (${valorParaCopiar}) copiado!`
+        : 'Link aberto (CAR não detectado no texto)';
+    } else if (tipoDadoCopiar === 'CPF') {
+      const cpfBruto =
+        alvoCpfAutoCopy === 'CONJUGE' && cpfConjugeDetectado
+          ? cpfConjugeDetectado
+          : cpfTitularDetectado;
+      valorParaCopiar = cpfBruto.replace(/\D/g, '');
+      descricaoCopiada = valorParaCopiar
+        ? `CPF ${
+            alvoCpfAutoCopy === 'CONJUGE' ? 'Cônjuge' : 'Titular'
+          } (${cpfBruto}) copiado!`
+        : 'Link aberto (CPF ainda não identificado)';
+    } else {
+      descricaoCopiada = `Abrindo ${rotuloLink}...`;
+    }
+
+    if (valorParaCopiar && typeof navigator !== 'undefined' && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(valorParaCopiar);
+      } catch {
+        // Ignora falha de permissão de clipboard
+      }
+    }
+
+    setFeedbackAutoCopy(`⚡ ${rotuloLink}: ${descricaoCopiada}`);
+    setTimeout(() => setFeedbackAutoCopy(''), 4500);
+
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const montarTextoRelatorioCriticasWhatsApp = (): string => {
+    const hoje = new Date().toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    const cliNome = (titularNome || nomePastaSelecionada || 'CLIENTE')
+      .toUpperCase()
+      .trim();
+    const cpfTxt = cpfTitularDetectado ? ` | CPF: ${cpfTitularDetectado}` : '';
+    const escopoTxt = `${cfgPerfil.porte.replace('_', ' ')} (${cfgPerfil.escopo.replace(
+      /_/g,
+      ' '
+    )})`;
+
+    let msg = `*RELATÓRIO DE CRÍTICAS E PENDÊNCIAS - ${hoje}*\n`;
+    msg += `👤 *Cliente:* ${cliNome}${cpfTxt}\n`;
+    msg += `🚜 *Enquadramento:* ${escopoTxt}\n`;
+    if (paNome) msg += `📍 *Imóvel / P.A.:* ${paNome}\n`;
+    if (auditoriaPdf?.valorPropostaDetectado) {
+      msg += `💰 *Valor Identificado:* R$ ${auditoriaPdf.valorPropostaDetectado}\n`;
+    }
+    msg += `\n`;
+
+    // 1. Críticas e Erros da Auditoria de PDFs e KML
+    const diagsComCritica = (auditoriaPdf?.itensDiagnostico || []).filter(
+      (d) => d.status === 'ERRO' || d.status === 'ALERTA'
+    );
+
+    if (diagsComCritica.length > 0) {
+      msg += `___________________\n🚨 *CRÍTICAS DA AUDITORIA (PDFs / KML / CADASTRO):*\n___________________\n\n`;
+      diagsComCritica.forEach((d) => {
+        const icone = d.status === 'ERRO' ? '❌' : '⚠️';
+        msg += `${icone} *${d.titulo}:*\n   • ${d.resumo}\n`;
+        if (d.detalhes && d.detalhes.length > 0) {
+          d.detalhes
+            .filter(
+              (det) =>
+                det.includes('🚨') ||
+                det.includes('⚠️') ||
+                det.includes('[IMPEDIMENTO]')
+            )
+            .forEach((det) => {
+              msg += `   • ${det}\n`;
+            });
+        }
+        msg += `\n`;
+      });
+    }
+
+    // 2. Separa Documentos Faltantes do Projetista/Cliente vs Ações Internas da Agência
+    const txtsInternosAgencia: string[] = [];
+    const txtsPendentesProjetista: string[] = [];
+
+    planoLembretesTxt.forEach((lemb) => {
+      const nUp = lemb.nomeArquivoTxt.toUpperCase();
+      const limpo = lemb.nomeArquivoTxt.replace(/\.txt$/i, '');
+      const prefixoPasta = lemb.pastaRelativa ? `[${lemb.pastaRelativa}] ` : '';
+
+      const ehRotinaInternaBanco =
+        nUp.includes('FALTA PARECER GERENCIAL') ||
+        nUp.includes('VERIFICAR C-C NA CONSOLIDADA') ||
+        nUp.includes('FALTA CONSULTAR SELOS') ||
+        nUp.includes('EMITIR CNDT NO DIA') ||
+        nUp.includes('CONSULTAR EXTRATO DA CAF NO DIA') ||
+        nUp.includes('ELABORAR CADASTRO') ||
+        nUp.includes('RENOVAR CADASTRO') ||
+        nUp.includes('EMBARGOS') ||
+        nUp.includes('IMPROBIDADE') ||
+        nUp.includes('EXTRATO SICOR') ||
+        nUp.includes('ESPELHO - RELATÓRIO DA UND');
+
+      if (ehRotinaInternaBanco) {
+        txtsInternosAgencia.push(`▪️ ${prefixoPasta}${limpo}`);
+      } else {
+        txtsPendentesProjetista.push(`▪️ ${prefixoPasta}${limpo}`);
+      }
+    });
+
+    if (txtsPendentesProjetista.length > 0) {
+      msg += `___________________\n📂 *DOCUMENTOS FALTANTES NA PASTA (PROJETISTA / CLIENTE):*\n___________________\n\n`;
+      msg += `${txtsPendentesProjetista.join('\n')}\n\n`;
+    }
+
+    if (txtsInternosAgencia.length > 0) {
+      msg += `___________________\n🏦 *PENDÊNCIAS INTERNAS / EMISSÕES DO DIA (AGÊNCIA):*\n___________________\n\n`;
+      msg += `${txtsInternosAgencia.join('\n')}\n`;
+    }
+
+    if (
+      diagsComCritica.length === 0 &&
+      txtsPendentesProjetista.length === 0 &&
+      txtsInternosAgencia.length === 0
+    ) {
+      msg += `✅ *PASTA 100% EM CONFORMIDADE!* Nenhuma crítica ou pendência documental identificada.\n`;
+    }
+
+    return msg.trim();
+  };
+
+  const enviarRelatorioCriticasWhatsAppProjetista = async (
+    apenasCopiar = false
+  ) => {
+    const textoRelatorio = montarTextoRelatorioCriticasWhatsApp();
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(textoRelatorio);
+      } catch {
+        // Ignora erro
+      }
+    }
+
+    if (apenasCopiar) {
+      alert(
+        '📋 Relatório de Críticas copiado para a área de transferência no formato do WhatsApp!'
+      );
+      return;
+    }
+
+    const listaProjs = obterListaProjetistas();
+    const projAlvo = (projetistaNome || '').toUpperCase().trim();
+    const cadastroProj = listaProjs.find(
+      (p) =>
+        p.nomeCurto.toUpperCase().trim() === projAlvo ||
+        (p.nomeCompleto && p.nomeCompleto.toUpperCase().includes(projAlvo))
+    );
+
+    const foneLimpo = (cadastroProj?.telefone || '').replace(/\D/g, '');
+    if (!foneLimpo) {
+      alert(
+        `📋 O Relatório de Críticas já foi COPIADO para o seu Ctrl+V!\n\n⚠️ O projetista "${
+          projAlvo || 'Não informado'
+        }" ainda não possui número de WhatsApp cadastrado na aba Ferramentas. Abrindo o WhatsApp Web para você escolher o contato e colar!`
+      );
+      window.open(
+        `https://api.whatsapp.com/send?text=${encodeURIComponent(
+          textoRelatorio
+        )}`,
+        '_blank',
+        'noopener,noreferrer'
+      );
+      return;
+    }
+
+    const ddiFone = foneLimpo.startsWith('55') ? foneLimpo : `55${foneLimpo}`;
+    window.open(
+      `https://wa.me/${ddiFone}?text=${encodeURIComponent(textoRelatorio)}`,
+      '_blank',
+      'noopener,noreferrer'
+    );
+  };
+
   const baixarPacoteZipOrganizado = async () => {
     if (arquivosMapeados.length === 0) return;
     const zip = new PizZip();
@@ -2964,16 +3209,240 @@ export default function ModalOrganizadorPastasCliente({
                 </div>
               </div>
 
-              {/* COLUNA DIREITA: AUDITORIA DOS PDFs + LEMBRETES .TXT */}
+              {/* COLUNA DIREITA: BARRA DE CONSULTAS AUTO-COPY + AUDITORIA DOS PDFs + LEMBRETES .TXT */}
               <div
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '12px',
+                  gap: '10px',
                   overflowY: 'auto',
                 }}
               >
-                {/* AUDITORIA AUTOMÁTICA DOS PDFs */}
+                {/* CENTRAL DE CONSULTAS RÁPIDAS COM AUTO-COPY DE CPF E CAR (ITEM 4 V98 + IDEIA 3) */}
+                <div
+                  style={{
+                    background: '#ffffff',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    borderTop: '4px solid #ea580c',
+                    padding: '10px 12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '7px',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '6px',
+                    }}
+                  >
+                    <strong style={{ fontSize: '11.5px', color: '#c2410c' }}>
+                      🔗 CONSULTAS DO DIA (CLIQUE = AUTO-COPIA CPF OU CAR)
+                    </strong>
+
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setAlvoCpfAutoCopy('TITULAR')}
+                        style={{
+                          width: 'auto',
+                          padding: '2px 8px',
+                          fontSize: '10px',
+                          fontWeight: 800,
+                          borderRadius: '4px',
+                          border: '1px solid #ea580c',
+                          background:
+                            alvoCpfAutoCopy === 'TITULAR'
+                              ? '#ea580c'
+                              : '#fff7ed',
+                          color:
+                            alvoCpfAutoCopy === 'TITULAR'
+                              ? '#ffffff'
+                              : '#c2410c',
+                          cursor: 'pointer',
+                        }}
+                        title="Ao clicar em um link de consulta por CPF, copiará automaticamente o CPF do Titular"
+                      >
+                        👤 CPF Titular:{' '}
+                        {cpfTitularDetectado || 'Não lido'}
+                      </button>
+
+                      {(conjugeNome.trim() || cpfConjugeDetectado) && (
+                        <button
+                          type="button"
+                          onClick={() => setAlvoCpfAutoCopy('CONJUGE')}
+                          style={{
+                            width: 'auto',
+                            padding: '2px 8px',
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            borderRadius: '4px',
+                            border: '1px solid #9333ea',
+                            background:
+                              alvoCpfAutoCopy === 'CONJUGE'
+                                ? '#9333ea'
+                                : '#faf5ff',
+                            color:
+                              alvoCpfAutoCopy === 'CONJUGE'
+                                ? '#ffffff'
+                                : '#7e22ce',
+                            cursor: 'pointer',
+                          }}
+                          title="Ao clicar em um link de consulta por CPF, copiará automaticamente o CPF do Cônjuge"
+                        >
+                          💍 CPF Cônjuge:{' '}
+                          {cpfConjugeDetectado || 'Não lido'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {feedbackAutoCopy && (
+                    <div
+                      style={{
+                        background: '#dcfce7',
+                        color: '#166534',
+                        border: '1px solid #86efac',
+                        padding: '3px 8px',
+                        borderRadius: '4px',
+                        fontSize: '10.5px',
+                        fontWeight: 800,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {feedbackAutoCopy}
+                    </div>
+                  )}
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(4, 1fr)',
+                      gap: '5px',
+                    }}
+                  >
+                    {[
+                      {
+                        label: 'CND RF',
+                        url: 'https://servicos.receitafederal.gov.br/servico/certidoes/#/home/cpf',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'CNDT',
+                        url: 'https://cndt-certidao.tst.jus.br/inicio.faces',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'IBAMA Emb.',
+                        url: 'https://servicos.ibama.gov.br/ctf/publico/areasembargadas/',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'CNJ Improb.',
+                        url: 'https://www.cnj.jus.br/improbidade_adm/consultar_requerido.php',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'Extrato CAF',
+                        url: 'https://caf.mda.gov.br/consulta-publica/ufpa',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'Selo TJMA',
+                        url: 'https://selo.tjma.jus.br/#/',
+                        tipo: 'NENHUM' as const,
+                      },
+                      {
+                        label: 'Portal CAR',
+                        url: 'https://www.car.gov.br/#/consultar',
+                        tipo: 'CAR' as const,
+                      },
+                      {
+                        label: 'Cert. Socio.',
+                        url: 'https://apps.powerapps.com/play/e/c1f0ee77-2c47-e9c2-b736-03ded17586e4/a/eaa18c62-628b-4795-8c40-5176bc1f0a68?tenantId=efb605aa-4527-4640-9dac-65d150e949ca&hint=ea5829fb-55f8-4575-b3ab-3fdea078a70c&sourcetime=1742221966987',
+                        tipo: 'CAR' as const,
+                      },
+                      {
+                        label: 'Emitir CCIR',
+                        url: 'https://sncr.serpro.gov.br/ccir/emissao;jsessionid=cMDhZasyXEwvhyQ1wZ8Uw3kF.ccir4?windowId=db4',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'CND / ITR',
+                        url: 'https://servicos.receitafederal.gov.br/servico/certidoes/#/home/cib',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'S400 Ficha',
+                        url: 'http://d001mfp1.capgv.intra.bnb/S400-CCClientes/faces/consultarCadastros.jsp',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'CI / BACEN',
+                        url: 'http://d001mfp1.capgv.intra.bnb/S255-CentralInformacoes/faces/index.jsp',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'GED BNB',
+                        url: 'https://s1jbsp01.capgv.intra.bnb:8443/flexps/fxd/home.xhtml',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'S567 PCE',
+                        url: 'https://s1wlbp20.capgv.intra.bnb/ProcessPortal',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'S522 BPM',
+                        url: 'https://s1wlbp25.capgv.intra.bnb/BPM-Portal/',
+                        tipo: 'CPF' as const,
+                      },
+                      {
+                        label: 'Farmcheck',
+                        url: 'https://farmcheck.brainag.app/login',
+                        tipo: 'CAR' as const,
+                      },
+                    ].map((lk) => (
+                      <button
+                        key={lk.label}
+                        type="button"
+                        onClick={() =>
+                          abrirLinkComAutoCopy(lk.url, lk.label, lk.tipo)
+                        }
+                        style={{
+                          width: '100%',
+                          padding: '4px 6px',
+                          fontSize: '10px',
+                          fontWeight: 800,
+                          background: '#fff7ed',
+                          color: '#9a3412',
+                          border: '1px solid #fed7aa',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          textAlign: 'center',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                        title={`Abrir ${lk.label} (${
+                          lk.tipo === 'CAR'
+                            ? 'Copia o nº do CAR automaticamente'
+                            : lk.tipo === 'CPF'
+                            ? 'Copia o CPF automaticamente'
+                            : 'Link direto'
+                        })`}
+                      >
+                        🔗 {lk.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* AUDITORIA AUTOMÁTICA DOS PDFs + BOTÃO WHATSAPP DE CRÍTICAS */}
                 <div
                   style={{
                     background: '#ffffff',
@@ -2988,23 +3457,75 @@ export default function ModalOrganizadorPastasCliente({
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
-                      marginBottom: '6px',
+                      flexWrap: 'wrap',
+                      gap: '6px',
+                      marginBottom: '8px',
                     }}
                   >
                     <strong style={{ fontSize: '12px', color: '#0369a1' }}>
                       🧠 AUDITORIA AUTOMÁTICA DOS PDFs DA PASTA
                     </strong>
-                    {auditandoPdfs && (
-                      <span
-                        style={{
-                          fontSize: '10.5px',
-                          color: '#b45309',
-                          fontWeight: 800,
-                        }}
-                      >
-                        ⏳ Lendo PDFs...
-                      </span>
-                    )}
+
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      {auditandoPdfs && (
+                        <span
+                          style={{
+                            fontSize: '10.5px',
+                            color: '#b45309',
+                            fontWeight: 800,
+                          }}
+                        >
+                          ⏳ Lendo PDFs...
+                        </span>
+                      )}
+
+                      {arquivosMapeados.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              enviarRelatorioCriticasWhatsAppProjetista(true)
+                            }
+                            style={{
+                              width: 'auto',
+                              padding: '3px 8px',
+                              fontSize: '10.5px',
+                              fontWeight: 800,
+                              background: '#f1f5f9',
+                              color: '#334155',
+                              border: '1px solid #cbd5e1',
+                              borderRadius: '5px',
+                              cursor: 'pointer',
+                            }}
+                            title="Copiar Relatório de Críticas formatado para WhatsApp"
+                          >
+                            📋 Copiar Críticas
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              enviarRelatorioCriticasWhatsAppProjetista(false)
+                            }
+                            style={{
+                              width: 'auto',
+                              padding: '3px 10px',
+                              fontSize: '10.5px',
+                              fontWeight: 800,
+                              background: '#15803d',
+                              color: '#ffffff',
+                              border: 'none',
+                              borderRadius: '5px',
+                              cursor: 'pointer',
+                              boxShadow: '0 2px 5px rgba(21,128,61,0.25)',
+                            }}
+                            title="Enviar Relatório de Críticas e Documentos Faltantes direto para o WhatsApp do Projetista"
+                          >
+                            📲 Cobrar no WhatsApp ({projetistaNome || 'Proj.'})
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   {auditoriaPdf?.kmlCorrigidoAutomaticamente && (
