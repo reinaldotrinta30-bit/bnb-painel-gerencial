@@ -8,6 +8,8 @@ import ModuloKanban from '@/components/ModuloKanban';
 import {
   executarAuditoriaCompletaDosPdfsDaPasta,
   ResultadoAuditoriaPastaPdf,
+  limparCacheDadosProjetoParecer,
+  salvarDadosExtraidosParaParecer,
 } from '@/lib/auditorInteligentePdfPasta';
 import {
   PorteOrganizador,
@@ -1253,7 +1255,11 @@ export default function ModalOrganizadorPastasCliente({
         }
 
         const dPdf = resAuditoria.dadosProjetoParaParecer;
-        if (dPdf.imovelAvaliadoAcima600kDetectado) {
+        if (dPdf && procuradorNome.trim()) {
+          dPdf.procuradorNomeExtraido = procuradorNome.toUpperCase().trim();
+          salvarDadosExtraidosParaParecer(dPdf);
+        }
+        if (dPdf?.imovelAvaliadoAcima600kDetectado) {
           setImovelAvaliadoAcima600k(true);
         }
         if (
@@ -1383,6 +1389,28 @@ export default function ModalOrganizadorPastasCliente({
       detectados.escopoFinal,
       detectados.porteFinal
     );
+  };
+
+  // ITEM 3: Limpa completamente a pasta carregada, os campos do cliente e o cache do projeto para iniciar outra pasta do zero
+  const limparConsultaOrganizadorDoZero = () => {
+    setDirHandleRoot(null);
+    setNomePastaSelecionada('');
+    setPastaJaEraOrganizada(false);
+    setArquivosMapeados([]);
+    setAuditoriaPdf(null);
+    setAuditandoPdfs(false);
+    setJaTemSeloNaSubpastaCadastro(false);
+    setJaTemProcuracaoOuCasamentoNoCadastro(false);
+    setParecerGerencialExtraidoNaPasta(false);
+    setBuscaClienteRapida('');
+    setTitularNome('');
+    setConjugeNome('');
+    setProcuradorNome('');
+    setAvalistaNome('');
+    setCadCpf('');
+    setCadValor('');
+    setImovelAvaliadoAcima600k(false);
+    limparCacheDadosProjetoParecer();
   };
 
   const selecionarPastaNoComputador = async () => {
@@ -2543,6 +2571,30 @@ export default function ModalOrganizadorPastasCliente({
                         🔄 Re-escanear Pasta
                       </button>
                     </>
+                  )}
+
+                  {(nomePastaSelecionada ||
+                    titularNome.trim() !== '' ||
+                    arquivosMapeados.length > 0) && (
+                    <button
+                      type="button"
+                      onClick={limparConsultaOrganizadorDoZero}
+                      title="Limpar todos os dados da pasta atual e iniciar a organização de outra pasta do zero"
+                      style={{
+                        width: 'auto',
+                        height: '30px',
+                        padding: '0 12px',
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        background: '#fef2f2',
+                        color: '#b91c1c',
+                        border: '1px solid #fecaca',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      🧹 Limpar Consulta / Nova Pasta do Zero
+                    </button>
                   )}
 
                   <label

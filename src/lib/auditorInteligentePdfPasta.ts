@@ -57,6 +57,11 @@ export interface DadosExtraidosProjetoParecer {
   elaboradorCpf: string;
   projetistaNomeCurtoDetectado: string;
   valorTotalFinanciado: string;
+  valorRecursosProprios: string;
+  valorAssessoriaExtraido: string;
+  assessoriaRecursosProprios: boolean;
+  contaCorrenteExtraida: string;
+  procuradorNomeExtraido: string;
   prazoMeses: string;
   carenciaMeses: string;
   periodicidadeReembolso: string;
@@ -99,6 +104,15 @@ export interface ResultadoAuditoriaPastaPdf {
 
 export const STORAGE_KEY_DADOS_PROJETO_PARECER =
   'bnb_v2_dados_projeto_extraidos_parecer';
+
+export function limparCacheDadosProjetoParecer(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY_DADOS_PROJETO_PARECER);
+  } catch {
+    // Ignora erro
+  }
+}
 
 export function salvarDadosExtraidosParaParecer(
   dados: DadosExtraidosProjetoParecer
@@ -349,6 +363,11 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     elaboradorCpf: '',
     projetistaNomeCurtoDetectado: '',
     valorTotalFinanciado: '',
+    valorRecursosProprios: '',
+    valorAssessoriaExtraido: '',
+    assessoriaRecursosProprios: false,
+    contaCorrenteExtraida: '',
+    procuradorNomeExtraido: '',
     prazoMeses: '',
     carenciaMeses: '',
     periodicidadeReembolso: 'Anual',
@@ -626,6 +645,60 @@ export function extrairDadosDetalhadosDoPdfProjeto(
   const valExtraido = extrairValorMonetarioPrincipal(textoLimpo);
   if (valExtraido > 0) {
     resultado.valorTotalFinanciado = formatarMoedaBD(valExtraido);
+  }
+
+  // Extração automática de Recursos Próprios e Custo de Assessoria Empresarial e Técnica (Página 4 do Projeto)
+  const matchLinhaAssessoria = textoLimpo.match(
+    /Custo\s+de\s+Assessoria\s+Empresarial\s+e\s+T[ée]cnica[\s\S]{1,60}?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(?:(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+)?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i
+  );
+  if (matchLinhaAssessoria) {
+    const vAssBase = parseMoeda(
+      matchLinhaAssessoria[1].replace(/\.(?=\d{2}$)/, ',')
+    );
+    const vRecPropAss = matchLinhaAssessoria[2]
+      ? parseMoeda(matchLinhaAssessoria[2].replace(/\.(?=\d{2}$)/, ','))
+      : 0;
+    const vFinancAss = parseMoeda(
+      matchLinhaAssessoria[3].replace(/\.(?=\d{2}$)/, ',')
+    );
+
+    if (vAssBase > 0) {
+      resultado.valorAssessoriaExtraido = formatarMoedaBD(vAssBase);
+      if (vRecPropAss > 0 || vFinancAss === 0) {
+        resultado.assessoriaRecursosProprios = true;
+        resultado.valorRecursosProprios = formatarMoedaBD(
+          vRecPropAss > 0 ? vRecPropAss : vAssBase
+        );
+      }
+    }
+  }
+
+  // Fallback: Verifica a linha TOTAL ou SUBTOTAL do Investimento (Colunas: Recursos Próprios | Valor Financiam. | Investimento Total)
+  if (!resultado.valorRecursosProprios) {
+    const matchTotalRecProp = textoLimpo.match(
+      /(?:SUBTOTAL\s+do\s+Financiamento|TOTAL)[\s.:\-]*(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i
+    );
+    if (matchTotalRecProp) {
+      const recPropNum = parseMoeda(
+        matchTotalRecProp[1].replace(/\.(?=\d{2}$)/, ',')
+      );
+      const valFinNum = parseMoeda(
+        matchTotalRecProp[2].replace(/\.(?=\d{2}$)/, ',')
+      );
+      const invTotNum = parseMoeda(
+        matchTotalRecProp[3].replace(/\.(?=\d{2}$)/, ',')
+      );
+      if (
+        recPropNum > 0 &&
+        recPropNum < valFinNum &&
+        Math.abs(recPropNum + valFinNum - invTotNum) <= 5
+      ) {
+        resultado.valorRecursosProprios = formatarMoedaBD(recPropNum);
+        resultado.valorAssessoriaExtraido =
+          resultado.valorAssessoriaExtraido || formatarMoedaBD(recPropNum);
+        resultado.assessoriaRecursosProprios = true;
+      }
+    }
   }
 
   return resultado;
@@ -1438,6 +1511,16 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     });
   }
 
+  // Atualiza o cache do Parecer Gerencial com a Conta Corrente extraída da Consolidada (ou da Conformidade)
+  if (contaCorrenteConsolidada || contaConformidade) {
+    dadosProjetoParaParecer.contaCorrenteExtraida =
+      contaCorrenteConsolidada || contaConformidade || '';
+  }
+  if (pdfProjeto || pdfSolicitacaoLim || contaCorrenteConsolidada) {
+    salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
+  }
+  
+  
   return {
     valorPropostaDetectado,
     prazoMesesDetectado: dadosProjetoParaParecer.prazoMeses,

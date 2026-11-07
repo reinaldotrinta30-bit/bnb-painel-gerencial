@@ -161,11 +161,12 @@ function formatarParecerHtmlComNegrito(textoPuro: string): string {
     .replace(/>/g, '&gt;');
 
   return escapado
-    .replace(/^(PROGRAMA:)/gm, '<strong>$1</strong>')
+    .replace(/^(PROGRAMA:|CLIENTE REPRESENTADO POR PROCURAÇÃO:|Cliente representado por procuração:)/gm, '<strong>$1</strong>')
     .replace(
-      /^(Cliente:|CPF:|Valor Financiado:|Finalidade:|Prazo Total:|Carência:|Objetivo:|Garantia:)/gm,
+      /^(Cliente:|CPF:|Valor Financiado:|Finalidade:|Prazo Total:|Carência:|Objetivo:|Garantia:|Procurador:|Cônjuge do(a) Procurador(a):|- Procurador:|- Cônjuge do(a) Procurador(a):)/gm,
       '<strong>$1</strong>'
     )
+    .replace(/^(4\.1\.\s*Recursos Próprios:)/gm, '<strong>$1</strong>')
     .replace(/^(Atividade Econômica –)/gm, '<strong>$1</strong>')
     .replace(
       /^(\d+\.\s*(?:PROPOSTA DE CRÉDITO:|INFORMAÇÕES DO PLEITO:|GARANTIAS?:|HISTÓRICO DO CLIENTE:?|HISTÓRICO:|IMÓVEIS OBJETOS DO PLEITO:|IM[ÓO]VEL:|PROPOSTA:?|PARECER CONCLUSIVO:|PARECER:?))$/gm,
@@ -327,6 +328,16 @@ export default function AbaParecerTecnicoCard({
   const [valorFundoLiquidez, setValorFundoLiquidez] = useState('0,00');
   const [contaReservaFundo, setContaReservaFundo] = useState('');
   const [contaDesembolso, setContaDesembolso] = useState('');
+  const [contaCorrenteCliente, setContaCorrenteCliente] = useState('');
+
+  // Estados de Representação por Procuração (Item 1)
+  const [representadoPorProcuracao, setRepresentadoPorProcuracao] =
+    useState(false);
+  const [nomeProcurador, setNomeProcurador] = useState('');
+  const [cpfProcurador, setCpfProcurador] = useState('');
+  const [procuradorPossuiConjuge, setProcuradorPossuiConjuge] = useState(false);
+  const [nomeConjugeProcurador, setNomeConjugeProcurador] = useState('');
+  const [cpfConjugeProcurador, setCpfConjugeProcurador] = useState('');
   const [saldoDevedorEmSer, setSaldoDevedorEmSer] = useState('0,00');
   const [garantiaComprometida, setGarantiaComprometida] = useState('0,00');
 
@@ -481,6 +492,30 @@ export default function AbaParecerTecnicoCard({
     }
     if (dadosPdf.objetivoCurto) {
       setObjetivoPleito(normalizarObjetivoParaSelect(dadosPdf.objetivoCurto));
+    }
+
+    // Auto-preenche Recursos Próprios / Assessoria Técnica se constar no PDF do Projeto
+    if (
+      dadosPdf.valorRecursosProprios &&
+      parseMoeda(dadosPdf.valorRecursosProprios) > 0
+    ) {
+      setValorAssessoria(dadosPdf.valorRecursosProprios);
+      setAssessoriaPropria('SIM');
+    } else if (
+      dadosPdf.valorAssessoriaExtraido &&
+      parseMoeda(dadosPdf.valorAssessoriaExtraido) > 0
+    ) {
+      setValorAssessoria(dadosPdf.valorAssessoriaExtraido);
+      setAssessoriaPropria(dadosPdf.assessoriaRecursosProprios ? 'SIM' : 'NÃO');
+    }
+
+    if (dadosPdf.contaCorrenteExtraida) {
+      setContaCorrenteCliente(dadosPdf.contaCorrenteExtraida);
+    }
+
+    if (dadosPdf.procuradorNomeExtraido) {
+      setRepresentadoPorProcuracao(true);
+      setNomeProcurador(dadosPdf.procuradorNomeExtraido);
     }
 
     // Preenche a lista de itens de inversão separados por vírgula (para o formato do Parecer)
@@ -713,6 +748,50 @@ export default function AbaParecerTecnicoCard({
     const sufixoRelEE = gerenteRelEE ? ' e.e.' : '';
     const sufixoAgEE = gerenteAgEE ? ' e.e.' : '';
 
+    // =======================================================================
+    // BLOCOS DE PROCURAÇÃO (ITENS 1, 1.1 E 1.2) E RECURSOS PRÓPRIOS (ITEM 2)
+    // =======================================================================
+    const procNomeFmt = (nomeProcurador || '[NOME DO PROCURADOR]')
+      .toUpperCase()
+      .trim();
+    const procCpfFmt = (cpfProcurador || '[CPF]').trim();
+    const conjProcNomeFmt = (
+      nomeConjugeProcurador || '[NOME DO(A) CÔNJUGE DO PROCURADOR(A)]'
+    )
+      .toUpperCase()
+      .trim();
+    const conjProcCpfFmt = (cpfConjugeProcurador || '[CPF]').trim();
+
+    // 1.1. Formato PRONAF A
+    const blocoProcuracaoPronafA = representadoPorProcuracao
+      ? `CLIENTE REPRESENTADO POR PROCURAÇÃO:\nProcurador: ${procNomeFmt} - CPF: ${procCpfFmt}${
+          procuradorPossuiConjuge
+            ? `\nCônjuge do(a) Procurador(a): ${conjProcNomeFmt} - CPF: ${conjProcCpfFmt}`
+            : ''
+        }\n\n`
+      : '';
+
+    // 1.2. Formato Limite LCGH/LCGA
+    const blocoProcuracaoLimite = representadoPorProcuracao
+      ? `Cliente representado por procuração:\n- Procurador: ${procNomeFmt} - CPF: ${procCpfFmt}${
+          procuradorPossuiConjuge
+            ? `\n- Cônjuge do(a) Procurador(a): ${conjProcNomeFmt} - CPF: ${conjProcCpfFmt}`
+            : ''
+        }\n\n`
+      : '';
+
+    // 2. Parágrafo 4.1. Recursos Próprios (quando houver recurso próprio > 0)
+    const temRecursosPropriosAtivo =
+      assessoriaPropria === 'SIM' && parseMoeda(valorAssessoria) > 0;
+    const ccEfetivaCliente =
+      contaCorrenteCliente.trim() ||
+      contaDesembolso.trim() ||
+      '[Informar C/C]';
+
+    const paragrafoRecursosProprios41 = temRecursosPropriosAtivo
+      ? `\n\n4.1. Recursos Próprios: R$ ${valorAssessoria} - advindos da atividade ${setorAtividade.toLowerCase()} que o cliente desenvolve em suas propriedades rurais, além de suas atividades extra rurais. Tal recurso próprio será aplicado no custo de assessoria empresarial e técnica do cliente, de forma proporcional, ao longo da execução do projeto, acompanhando o cronograma das aquisições e demais investimentos previstos, através da conta corrente do cliente, de nº ${ccEfetivaCliente} da agência de Santa Inês (103).`
+      : '';
+
     if (modeloAtivo === 'PRONAF_A') {
       const imoPrincipal = imoveisBeneficiados[0] || {
         nome: '[NOME DO ASSENTAMENTO/PA]',
@@ -745,6 +824,7 @@ export default function AbaParecerTecnicoCard({
         `Objetivo: ${objetivoPleito}\n` +
         `Garantia: ${garantiaTxt}\n` +
         `Atividade Econômica – ${setorAtividade}: ${descAtiv}\n\n` +
+        blocoProcuracaoPronafA +
         `1. INFORMAÇÕES DO PLEITO:\n` +
         `O presente pleito objetiva o financiamento com recursos do FNE/PRONAF A, para aquisição de itens destinados à atividade de ${verboExplora}, nos imóveis rurais do beneficiário, constante(s) no projeto, localizado(s) no ${nomePA}, na zona de ${cidadePA}.\n` +
         `No que se refere à relação entre o proponente e funcionário do Banco, informa-se que não há vínculo de parentesco com funcionário que atue na análise, deliberação ou decisão da presente operação de crédito.\n\n` +
@@ -753,7 +833,7 @@ export default function AbaParecerTecnicoCard({
         `3. HISTÓRICO:\n` +
         `O assentado faz parte da Associação dos Produtores Rurais do(a) ${nomePA}, situado no Extensão de município de ${cidadePA}, a gleba já dispõe de uma infraestrutura básica capaz de manter as famílias como energia, água, escolas e, etc. ${txtRelacionamentoSimples}. Atualmente ${statusAdimplencia}, ${statusAtrasos} e explora a atividade de ${verboExplora}. Cliente informa que adota as orientações técnicas necessárias à sua atividade produtiva.\n\n` +
         `4. PROPOSTA\n` +
-        `Projeto Individual para a estruturação inicial no âmbito do PRONAF A, destinado ao desenvolvimento da ${verboExplora}, tais como: ${itensConcatenados}. Com a implantação do projeto o associado irá aumentar a sua capacidade produtiva e consequentemente, irá melhorar as condições de vida da família.\n\n` +
+        `Projeto Individual para a estruturação inicial no âmbito do PRONAF A, destinado ao desenvolvimento da ${verboExplora}, tais como: ${itensConcatenados}. Com a implantação do projeto o associado irá aumentar a sua capacidade produtiva e consequentemente, irá melhorar as condições de vida da família.${paragrafoRecursosProprios41}\n\n` +
         `5. IMOVEL:\n` +
         `O imóvel pertence ao INCRA, a gleba está situada em uma região que dispõe de condições favoráveis ao desenvolvimento da agropecuária, como: solos de boa fertilidade, topografia ondulada, pluviosidade entre 1.400 e 1.700mm/ano. Cada associado já possui o seu lote delimitado o que facilita a realização do negócio individual. Os lotes já dispõem de pastagens artificiais precisando ser ampliada.\n\n` +
         `6. PARECER CONCLUSIVO:\n` +
@@ -879,6 +959,7 @@ export default function AbaParecerTecnicoCard({
         `1. HISTÓRICO DO CLIENTE\n\n` +
         `${tratamento} ${nome} é produtor rural (${setorAtividade.toLowerCase()}) ${txtRelacionamentoSimples}. Atualmente ${statusAdimplencia}, ${statusAtrasos} e explora a atividade de ${verboExplora}. Cliente informa que adota as orientações técnicas necessárias à sua atividade produtiva.\n\n` +
         `Atividade Econômica – ${setorAtividade}: ${descAtiv}\n\n` +
+        blocoProcuracaoLimite +
         `2. PROPOSTA\n\n` +
         `${descTipo} (${siglaLim})\n\n` +
         `Valor de R$ ${valorOperacao || '0,00'}\n\n` +
@@ -1007,7 +1088,15 @@ export default function AbaParecerTecnicoCard({
     textoFinal += `${tratamento} ${nome} é produtor(a) rural (${setorAtividade.toLowerCase()})\n\n`;
     textoFinal += `${idx}.1) Atividade econômica a ser financiada: ${descAtiv};\n`;
     textoFinal += `${idx}.2) Finalidade: ${tipoOperacao} ${setorAtividade};\n`;
-    textoFinal += `${idx}.3) Programa: ${programaFormatado}\n\n`;
+    textoFinal += `${idx}.3) Programa: ${programaFormatado}\n`;
+    if (representadoPorProcuracao) {
+      textoFinal += `${idx}.4) Cliente representado por procuração:\n`;
+      textoFinal += `- Procurador: ${procNomeFmt} - CPF: ${procCpfFmt}\n`;
+      if (procuradorPossuiConjuge) {
+        textoFinal += `- Cônjuge do(a) Procurador(a): ${conjProcNomeFmt} - CPF: ${conjProcCpfFmt}\n`;
+      }
+    }
+    textoFinal += `\n`;
     idx++;
 
     textoFinal += `${idx}. HISTÓRICO:\n\n`;
@@ -1081,22 +1170,26 @@ export default function AbaParecerTecnicoCard({
 
     textoFinal += `${idx}. PROPOSTA:\n\n`;
     if (assessoriaPropria === 'NÃO') {
-      textoFinal += `A presente proposta abrange: ${itensConcatenados}${txtCusteioPecuario}, somando um valor de R$ ${formatarMoedaBD(
-        valItensNum
-      )}. A assessoria técnica no valor de R$ ${
-        valorAssessoria || '0,00'
-      } será financiada juntamente aos itens do plano, com sua descrição e valor devidamente determinados no projeto. Dessa forma, as inversões com o custo de assessoria a serem financiados totalizam o valor de R$ ${formatarMoedaBD(
-        valTotalFinanciadoNum
-      )}\n\n`;
+      if (valAssNum > 0) {
+        textoFinal += `A presente proposta abrange: ${itensConcatenados}${txtCusteioPecuario}, somando um valor de R$ ${formatarMoedaBD(
+          valItensNum
+        )}. A assessoria técnica no valor de R$ ${
+          valorAssessoria || '0,00'
+        } será financiada juntamente aos itens do plano, com sua descrição e valor devidamente determinados no projeto. Dessa forma, as inversões com o custo de assessoria a serem financiados totalizam o valor de R$ ${formatarMoedaBD(
+          valTotalFinanciadoNum
+        )}\n\n`;
+      } else {
+        textoFinal += `A presente proposta abrange: ${itensConcatenados}${txtCusteioPecuario}, totalizando o valor de R$ ${formatarMoedaBD(
+          valTotalFinanciadoNum
+        )}.\n\n`;
+      }
       textoFinal += `${idx}.0) Valor a ser financiado: R$ ${formatarMoedaBD(
         valTotalFinanciadoNum
       )}\n`;
     } else {
       textoFinal += `A presente proposta abrange: ${itensConcatenados}${txtCusteioPecuario}, totalizando R$ ${formatarMoedaBD(
         valorProjNum
-      )}. A assessoria técnica no valor de R$ ${
-        valorAssessoria || '0,00'
-      } será oriunda de recursos próprios advindos da atividade pecuária que o cliente desenvolve em suas propriedades rurais, além das atividades extra rurais que o mesmo desenvolve.\n\n`;
+      )}.${paragrafoRecursosProprios41}\n\n`;
       textoFinal += `${idx}.0) Valor a ser Financiado: R$ ${formatarMoedaBD(valorProjNum)}\n`;
     }
     textoFinal += `${idx}.1) Prazo: ${prazoMeses} (${numeroParaExtenso(prazoMeses)}) meses.\n`;
@@ -1179,6 +1272,13 @@ export default function AbaParecerTecnicoCard({
     valorFundoLiquidez,
     contaReservaFundo,
     contaDesembolso,
+    contaCorrenteCliente,
+    representadoPorProcuracao,
+    nomeProcurador,
+    cpfProcurador,
+    procuradorPossuiConjuge,
+    nomeConjugeProcurador,
+    cpfConjugeProcurador,
     saldoDevedorEmSer,
     garantiaComprometida,
     incluirRelacionamentoNegocial,
@@ -1875,6 +1975,248 @@ export default function AbaParecerTecnicoCard({
             />
           </div>
         )}
+
+        {/* BLOCO DE RECURSOS PRÓPRIOS (4.1) E CONTA CORRENTE DO CLIENTE */}
+        {modeloAtivo !== 'LIMITE_LCG' && (
+          <div
+            style={{
+              background: assessoriaPropria === 'SIM' && parseMoeda(valorAssessoria) > 0 ? '#f0fdf4' : '#f8fafc',
+              border: `1px solid ${
+                assessoriaPropria === 'SIM' && parseMoeda(valorAssessoria) > 0 ? '#86efac' : '#e2e8f0'
+              }`,
+              borderRadius: '8px',
+              padding: '10px 14px',
+              display: 'grid',
+              gridTemplateColumns: '1.1fr 1.1fr 1.2fr',
+              gap: '12px',
+              alignItems: 'end',
+            }}
+          >
+            <div>
+              <label style={{ ...ui.label, color: '#15803d' }}>
+                💰 Possui Recursos Próprios (Assessoria)?
+              </label>
+              <select
+                value={assessoriaPropria}
+                onChange={(e) => {
+                  setEditouTextoManualmente(false);
+                  setAssessoriaPropria(e.target.value as 'NÃO' | 'SIM');
+                }}
+                style={{ ...ui.select, fontWeight: 700 }}
+              >
+                <option value="NÃO">NÃO (Sem Recursos Próprios / Financiada)</option>
+                <option value="SIM">SIM (Inserir Parágrafo 4.1. Recursos Próprios)</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={ui.label}>
+                Valor Recursos Próprios / Assessoria (R$)
+              </label>
+              <input
+                type="text"
+                value={valorAssessoria}
+                onChange={(e) => {
+                  setEditouTextoManualmente(false);
+                  setValorAssessoria(mascaraMoedaInput(e.target.value));
+                }}
+                placeholder="Ex: 1.944,00"
+                style={{ ...ui.input, fontWeight: 700 }}
+              />
+            </div>
+
+            <div>
+              <label style={{ ...ui.label, color: '#8B1530' }}>
+                🏦 Conta Corrente do Cliente (Ag. 103)
+              </label>
+              <input
+                type="text"
+                value={contaCorrenteCliente}
+                onChange={(e) => {
+                  setEditouTextoManualmente(false);
+                  setContaCorrenteCliente(e.target.value);
+                }}
+                placeholder="Ex: 67274-8"
+                style={{ ...ui.input, fontWeight: 700 }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* BLOCO DE REPRESENTAÇÃO POR PROCURAÇÃO (+ CÔNJUGE DO PROCURADOR) */}
+        <div
+          style={{
+            background: representadoPorProcuracao ? '#fffbeb' : '#f8fafc',
+            border: `1.5px dashed ${
+              representadoPorProcuracao ? '#f59e0b' : '#cbd5e1'
+            }`,
+            borderRadius: '8px',
+            padding: '10px 14px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '12px',
+            }}
+          >
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '12px',
+                fontWeight: 800,
+                color: representadoPorProcuracao ? '#b45309' : '#334155',
+                cursor: 'pointer',
+                margin: 0,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={representadoPorProcuracao}
+                onChange={(e) => {
+                  setEditouTextoManualmente(false);
+                  setRepresentadoPorProcuracao(e.target.checked);
+                  if (!e.target.checked) {
+                    setProcuradorPossuiConjuge(false);
+                  }
+                }}
+                style={{
+                  width: '15px',
+                  height: '15px',
+                  margin: 0,
+                  cursor: 'pointer',
+                  accentColor: '#b45309',
+                }}
+              />
+              📝 Representado por procuração
+            </label>
+
+            {representadoPorProcuracao && (
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '11.5px',
+                  fontWeight: 800,
+                  color: procuradorPossuiConjuge ? '#8B1530' : '#475569',
+                  cursor: 'pointer',
+                  margin: 0,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={procuradorPossuiConjuge}
+                  onChange={(e) => {
+                    setEditouTextoManualmente(false);
+                    setProcuradorPossuiConjuge(e.target.checked);
+                  }}
+                  style={{
+                    width: '14px',
+                    height: '14px',
+                    margin: 0,
+                    cursor: 'pointer',
+                    accentColor: '#8B1530',
+                  }}
+                />
+                💍 Possui Cônjuge (Cônjuge do(a) Procurador(a))
+              </label>
+            )}
+          </div>
+
+          {representadoPorProcuracao && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: procuradorPossuiConjuge
+                  ? '1.6fr 1fr 1.6fr 1fr'
+                  : '2fr 1fr',
+                gap: '10px',
+                alignItems: 'end',
+                paddingTop: '6px',
+                borderTop: '1px solid #fde68a',
+              }}
+            >
+              <div>
+                <label style={{ ...ui.label, color: '#92400e' }}>
+                  Nome Completo do Procurador
+                </label>
+                <input
+                  type="text"
+                  value={nomeProcurador}
+                  onChange={(e) => {
+                    setEditouTextoManualmente(false);
+                    setNomeProcurador(e.target.value.toUpperCase());
+                  }}
+                  placeholder="Ex: BENEDITO DOS REIS DA SILVA"
+                  style={{ ...ui.input, fontWeight: 700 }}
+                />
+              </div>
+
+              <div>
+                <label style={{ ...ui.label, color: '#92400e' }}>
+                  CPF do Procurador
+                </label>
+                <input
+                  type="text"
+                  value={cpfProcurador}
+                  onChange={(e) => {
+                    setEditouTextoManualmente(false);
+                    setCpfProcurador(mascaraDocumento(e.target.value));
+                  }}
+                  placeholder="000.000.000-00"
+                  maxLength={14}
+                  style={ui.input}
+                />
+              </div>
+
+              {procuradorPossuiConjuge && (
+                <>
+                  <div>
+                    <label style={{ ...ui.label, color: '#8B1530' }}>
+                      Nome do Cônjuge do(a) Procurador(a)
+                    </label>
+                    <input
+                      type="text"
+                      value={nomeConjugeProcurador}
+                      onChange={(e) => {
+                        setEditouTextoManualmente(false);
+                        setNomeConjugeProcurador(e.target.value.toUpperCase());
+                      }}
+                      placeholder="Ex: FULANO DE TAL"
+                      style={{ ...ui.input, fontWeight: 700 }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ ...ui.label, color: '#8B1530' }}>
+                      CPF do Cônjuge do(a) Procurador(a)
+                    </label>
+                    <input
+                      type="text"
+                      value={cpfConjugeProcurador}
+                      onChange={(e) => {
+                        setEditouTextoManualmente(false);
+                        setCpfConjugeProcurador(mascaraDocumento(e.target.value));
+                      }}
+                      placeholder="000.000.000-00"
+                      maxLength={14}
+                      style={ui.input}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* SEÇÃO 2: IMÓVEL(IS) / ASSENTAMENTO BENEFICIADO */}
