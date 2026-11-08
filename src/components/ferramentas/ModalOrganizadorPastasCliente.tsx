@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import PizZip from 'pizzip';
 import { saveAs } from 'file-saver';
 import ModuloKanban from '@/components/ModuloKanban';
+import PainelConsultasRapidasAgrupadas from '@/components/ferramentas/PainelConsultasRapidasAgrupadas';
 import {
   executarAuditoriaCompletaDosPdfsDaPasta,
   ResultadoAuditoriaPastaPdf,
@@ -1228,22 +1229,45 @@ export default function ModalOrganizadorPastasCliente({
         if (cancelado) return;
         setAuditoriaPdf(resAuditoria);
 
-        // PASSO 3: Se o leitor de PDF detectou pelo quadro "Glebas" qual Certificação é COM KML e qual é SEM KML,
-        // atualiza automaticamente a categoria do arquivo na tabela (só dispara se houver mudança real)!
-        if (resAuditoria.reclassificacoesSocioambiental) {
-          const mapaReclass = resAuditoria.reclassificacoesSocioambiental;
+        // PARTE 7.1 + PASSO 3: Reclassificação Semântica pelo Conteúdo Interno do PDF (mesmo com nome de arquivo bagunçado!)
+        if (
+          resAuditoria.reclassificacoesPorConteudo ||
+          resAuditoria.reclassificacoesSocioambiental
+        ) {
+          const mapaConteudo = resAuditoria.reclassificacoesPorConteudo || {};
+          const mapaSocio = resAuditoria.reclassificacoesSocioambiental || {};
+
           setArquivosMapeados((prev) => {
             let mudouAlgum = false;
             const novaLista = prev.map((item) => {
-              const novaCat = mapaReclass[item.nomeOriginal];
+              if (item.categoria === 'IGNORAR' || item.isViti) return item;
+
+              const novaCatSocio = mapaSocio[item.nomeOriginal];
               if (
-                novaCat &&
+                novaCatSocio &&
                 (item.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
                   item.categoria === 'ITEM_CERT_SOCIO_SEM_KML') &&
-                item.categoria !== novaCat
+                item.categoria !== novaCatSocio
               ) {
                 mudouAlgum = true;
-                return { ...item, categoria: novaCat };
+                return { ...item, categoria: novaCatSocio };
+              }
+
+              const novaCatConteudo = mapaConteudo[
+                item.nomeOriginal
+              ] as CategoriaDocPasta | undefined;
+              // Reclassifica pelo conteúdo sempre que o nome do arquivo não tinha sido identificado (OUTROS)
+              // ou quando era uma declaração/certidão genérica!
+              if (
+                novaCatConteudo &&
+                item.categoria !== novaCatConteudo &&
+                (item.categoria === 'OUTROS_NAO_IDENTIFICADO' ||
+                  item.categoria === 'CAD_9_OUTROS_CADASTRO' ||
+                  item.categoria === 'ITEM_DEC_AMBIENTAIS' ||
+                  item.categoria === 'ITEM_DEC_OUTRA_AMBIENTAL')
+              ) {
+                mudouAlgum = true;
+                return { ...item, categoria: novaCatConteudo };
               }
               return item;
             });
@@ -1507,6 +1531,17 @@ export default function ModalOrganizadorPastasCliente({
     try {
       const gravadosPorPasta = new Map<string, Set<string>>();
 
+      const registrarArquivoPreservado = (
+        caminhoRelativo: string,
+        nomeArq: string
+      ) => {
+        const chavePasta = (caminhoRelativo || '').toUpperCase().trim();
+        if (!gravadosPorPasta.has(chavePasta)) {
+          gravadosPorPasta.set(chavePasta, new Set());
+        }
+        gravadosPorPasta.get(chavePasta)!.add(nomeArq);
+      };
+
       const gravarEmSubpasta = async (
         caminhoRelativo: string,
         nomeArq: string,
@@ -1524,15 +1559,40 @@ export default function ModalOrganizadorPastasCliente({
         await writable.write(conteudo);
         await writable.close();
 
-        const chavePasta = caminhoRelativo.toUpperCase();
-        if (!gravadosPorPasta.has(chavePasta)) {
-          gravadosPorPasta.set(chavePasta, new Set());
-        }
-        gravadosPorPasta.get(chavePasta)!.add(nomeSeguro);
+        registrarArquivoPreservado(caminhoRelativo, nomeSeguro);
         return nomeSeguro;
       };
 
-      // 1. Limpa antigos .txt de lembretes vazios na raiz e nas subpastas conhecidas
+      // Função de leitura resiliente: se o File em cache expirou após uma organização anterior,
+      // busca o File atualizado diretamente pelo FileHandle da pasta!
+      const lerBufferSeguroDoItem = async (
+        item: ArquivoMapeadoItem
+      ): Promise<ArrayBuffer | null> => {
+        try {
+          return await item.fileObj.arrayBuffer();
+        } catch {
+          try {
+            const pastaOrigemHandle = await obterSubpastaHandle(
+              dirHandleRoot,
+              item.origemSubpasta || ''
+            );
+            const fh = await pastaOrigemHandle.getFileHandle(
+              item.nomeOriginal,
+              { create: false }
+            );
+            const freshFile = await fh.getFile();
+            return await freshFile.arrayBuffer();
+          } catch (errReleitura) {
+            console.warn(
+              `Arquivo já movido ou inacessível (${item.nomeOriginal}):`,
+              errReleitura
+            );
+            return null;
+          }
+        }
+      };
+
+      // 1. Limpa antigos .txt de lembretes vazios na raiz e nas subpastas conhecidas (preservando o Parecer Gerencial real!)
       const limparTxtsAntigosDeHandle = async (hPasta: any) => {
         for await (const [entryName, entryHandle] of hPasta.entries()) {
           if (
@@ -1567,23 +1627,69 @@ export default function ModalOrganizadorPastasCliente({
         }
       }
 
-      // 2. Grava cada arquivo em TODOS os destinos exigidos pelo Perfil (copiando entre Limite, Derivada, Cadastro e Socioambiental!)
+      // 2. Processa cada arquivo, PULANDO os destinos que já estão organizados no lugar certo!
+      let qtdArquivosMovidosOuRenomeados = 0;
+
       for (const item of arquivosMapeados) {
         if (item.categoria === 'IGNORAR') continue;
         const destinos = calcularTodosDestinosDoArquivo(item, cfgPerfil);
         if (destinos.length === 0) continue;
 
-        const buffer = await item.fileObj.arrayBuffer();
+        const pastaOrigemNorm = (item.origemSubpasta || '')
+          .toUpperCase()
+          .trim();
 
+        // Verifica quais destinos realmente precisam ser gravados
+        const destinosPendentes: typeof destinos = [];
         for (const dest of destinos) {
-          await gravarEmSubpasta(
-            dest.pastaRelativa,
-            dest.nomeArquivoFinal,
-            buffer
-          );
+          const nomeSeguro = dest.nomeArquivoFinal.replace(/[/:*?"<>|]/g, '-');
+          const pastaDestNorm = (dest.pastaRelativa || '').toUpperCase().trim();
+
+          // Se o arquivo já está exatamente nessa pasta e com esse mesmo nome, não regrava!
+          if (
+            !item.origemGaveta &&
+            pastaOrigemNorm === pastaDestNorm &&
+            item.nomeOriginal === nomeSeguro
+          ) {
+            registrarArquivoPreservado(dest.pastaRelativa, nomeSeguro);
+            continue;
+          }
+
+          // Se for um arquivo da Gaveta e já existir na subpasta de destino, não precisa sobrescrever
+          if (item.origemGaveta) {
+            try {
+              const pH = await obterSubpastaHandle(
+                dirHandleRoot,
+                dest.pastaRelativa
+              );
+              await pH.getFileHandle(nomeSeguro, { create: false });
+              registrarArquivoPreservado(dest.pastaRelativa, nomeSeguro);
+              continue;
+            } catch {
+              // Ainda não existe na pasta, vai gravar abaixo
+            }
+          }
+
+          destinosPendentes.push(dest);
         }
 
-        // No PRONAF A, mantém também a cópia "- CERT. SOCIOAMBIENTAL - NOME.pdf"
+        let bufferCache: ArrayBuffer | null = null;
+
+        if (destinosPendentes.length > 0) {
+          bufferCache = await lerBufferSeguroDoItem(item);
+          if (bufferCache) {
+            for (const dest of destinosPendentes) {
+              await gravarEmSubpasta(
+                dest.pastaRelativa,
+                dest.nomeArquivoFinal,
+                bufferCache
+              );
+              qtdArquivosMovidosOuRenomeados++;
+            }
+          }
+        }
+
+        // No PRONAF A, garante a cópia "- CERT. SOCIOAMBIENTAL - NOME.pdf" se ainda não existir
         if (
           cfgPerfil.porte === 'PRONAF_A' &&
           (item.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
@@ -1592,19 +1698,31 @@ export default function ModalOrganizadorPastasCliente({
         ) {
           const nomeExtra = `- CERT. SOCIOAMBIENTAL - ${nomesCurtos.titular}.${
             item.extensao || 'pdf'
-          }`;
-          await gravarEmSubpasta('', nomeExtra, buffer);
-          await gravarEmSubpasta(
-            'CERTIFICAÇÃO SOCIOAMBIENTAL',
-            nomeExtra,
-            buffer
-          );
+          }`.replace(/[/:*?"<>|]/g, '-');
+
+          for (const subCert of ['', 'CERTIFICAÇÃO SOCIOAMBIENTAL']) {
+            let jaExisteCopia = false;
+            try {
+              const pH = await obterSubpastaHandle(dirHandleRoot, subCert);
+              await pH.getFileHandle(nomeExtra, { create: false });
+              jaExisteCopia = true;
+              registrarArquivoPreservado(subCert, nomeExtra);
+            } catch {
+              jaExisteCopia = false;
+            }
+
+            if (!jaExisteCopia) {
+              if (!bufferCache) bufferCache = await lerBufferSeguroDoItem(item);
+              if (bufferCache) {
+                await gravarEmSubpasta(subCert, nomeExtra, bufferCache);
+              }
+            }
+          }
         }
 
-        // Remove o arquivo original antigo se o nome mudou ou se saiu da Raiz para subpastas
+        // Remove o arquivo original antigo APENAS se ele mudou de nome ou mudou de pasta
         if (!item.origemGaveta) {
-          const pastaOrigemKey = (item.origemSubpasta || '').toUpperCase();
-          const conjSalvosNaOrigem = gravadosPorPasta.get(pastaOrigemKey);
+          const conjSalvosNaOrigem = gravadosPorPasta.get(pastaOrigemNorm);
           if (
             !conjSalvosNaOrigem ||
             !conjSalvosNaOrigem.has(item.nomeOriginal)
@@ -1616,18 +1734,35 @@ export default function ModalOrganizadorPastasCliente({
               );
               await handleOrigem.removeEntry(item.nomeOriginal);
             } catch {
-              // Ignora
+              // Ignora se já removido
             }
           }
         }
       }
 
-      // 3. Grava os .TXT vazios de pendências nas respectivas pastas (segurando o FALTA PARECER GERENCIAL até fechar o overlay)
-      const jaTemParecerGerencialNaPasta =
+      // 3. Verifica se já existe Parecer Gerencial real na pasta
+      let jaTemParecerGerencialNaPasta =
         arquivosMapeados.some(
           (a) => a.categoria === 'ITEM_PARECER_GERENCIAL'
         ) || parecerGerencialExtraidoNaPasta;
 
+      if (!jaTemParecerGerencialNaPasta) {
+        try {
+          for await (const [entryName, entryH] of dirHandleRoot.entries()) {
+            if (
+              entryH.kind === 'file' &&
+              isArquivoParecerGerencialReal(entryName)
+            ) {
+              jaTemParecerGerencialNaPasta = true;
+              break;
+            }
+          }
+        } catch {
+          // Ignora
+        }
+      }
+
+      // 4. Grava os .TXT vazios apenas do que ainda faltar na pasta
       if (gerarTxtsLembretesFaltantes) {
         for (const lemb of planoLembretesTxt) {
           if (
@@ -1640,14 +1775,58 @@ export default function ModalOrganizadorPastasCliente({
         }
       }
 
+      // Re-escaneia a pasta para atualizar todos os FileHandles com os nomes novos
       await escanearHandleDaPasta(dirHandleRoot);
 
-      // 4. Abre o fluxo de Cadastro no Kanban e Parecer Gerencial
+      // 5. ITEM 1.1: Verifica se o cliente já possui Card no Kanban / Contratações
+      const nomeTitNorm = removerAcentos(titularNome).toUpperCase().trim();
+      const cpfTitLimpo = (
+        auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+        registroConformidadeVinculado?.cpfCliente ||
+        cadCpf ||
+        ''
+      ).replace(/\D/g, '');
+
+      const cardExistenteNoKanban = listaCards.find((c) => {
+        const cNome = removerAcentos(c.clienteVinculado || '')
+          .toUpperCase()
+          .trim();
+        const cCpf = (c.cpfVinculado || '').replace(/\D/g, '');
+        return (
+          (cpfTitLimpo.length === 11 && cCpf === cpfTitLimpo) ||
+          (nomeTitNorm.length >= 4 && cNome === nomeTitNorm)
+        );
+      });
+
+      const jaEstaNasContratacoes = listaContratacoes.some((r) => {
+        const rNome = removerAcentos(r.cliente || '')
+          .toUpperCase()
+          .trim();
+        const rCpf = (r.cpf || '').replace(/\D/g, '');
+        return (
+          (cpfTitLimpo.length === 11 && rCpf === cpfTitLimpo) ||
+          (nomeTitNorm.length >= 4 && rNome === nomeTitNorm)
+        );
+      });
+
+      const jaCadastradoNoPainel = Boolean(
+        cardExistenteNoKanban || jaEstaNasContratacoes
+      );
+
+      // Se a pasta já tem o cliente no Kanban E já tem o Parecer Gerencial na pasta,
+      // não abre novamente os modais de Kanban/Parecer — finaliza direto!
+      if (jaCadastradoNoPainel && jaTemParecerGerencialNaPasta) {
+        alert(
+          `✅ Organização complementar concluída!\n\n• ${qtdArquivosMovidosOuRenomeados} arquivo(s) novo(s)/restante(s) organizado(s).\n• Cliente já consta no Kanban e o Parecer Gerencial já está salvo na pasta.`
+        );
+        return;
+      }
+
       const itemConfBase: ItemConformidadePronafA =
         registroConformidadeVinculado || {
           id: `temp_${Date.now()}`,
           nomeCliente: titularNome.toUpperCase().trim(),
-          cpfCliente: '',
+          cpfCliente: cpfTitLimpo,
           visitado: 'SIM',
           cadastroClienteOk: 'OK',
           dataRefCadastral: getHojeBR(),
@@ -1672,9 +1851,13 @@ export default function ModalOrganizadorPastasCliente({
       );
       const resClassif = classificados[0];
 
-      if (resClassif && !resClassif.jaCadastradoNoPainel) {
+      if (!jaCadastradoNoPainel && resClassif) {
         setModalIniciarProposta(resClassif);
-        setCadCpf(resClassif.item.cpfCliente || '');
+        setCadCpf(
+          auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+            resClassif.item.cpfCliente ||
+            ''
+        );
         setCadValor(auditoriaPdf?.valorPropostaDetectado || '');
         setCadTipo(
           cfgPerfil.escopo === 'LIMITE_PURO'
@@ -1709,26 +1892,16 @@ export default function ModalOrganizadorPastasCliente({
         );
         return;
       } else if (
-        resClassif &&
-        resClassif.jaCadastradoNoPainel &&
-        !jaTemParecerGerencialNaPasta
+        jaCadastradoNoPainel &&
+        !jaTemParecerGerencialNaPasta &&
+        cardExistenteNoKanban
       ) {
-        const cpfLimpo = itemConfBase.cpfCliente.replace(/\D/g, '');
-        const nomeUp = itemConfBase.nomeCliente.toUpperCase().trim();
-        const cardVinc = listaCards.find(
-          (c) =>
-            (cpfLimpo.length === 11 &&
-              (c.cpfVinculado || '').replace(/\D/g, '') === cpfLimpo) ||
-            (c.clienteVinculado || '').toUpperCase().trim() === nomeUp
-        );
-        if (cardVinc) {
-          setCardOverlayParecerId(cardVinc.id);
-          return;
-        }
+        setCardOverlayParecerId(cardExistenteNoKanban.id);
+        return;
       }
 
       alert(
-        `✅ Pasta "${nomePastaSelecionada}" organizada e validada com sucesso no perfil [${cfgPerfil.porte} — ${cfgPerfil.escopo}]!`
+        `✅ Pasta "${nomePastaSelecionada}" organizada e atualizada com sucesso (${qtdArquivosMovidosOuRenomeados} arquivo(s) ajustado(s))!`
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro desconhecido';
@@ -3218,229 +3391,30 @@ export default function ModalOrganizadorPastasCliente({
                   overflowY: 'auto',
                 }}
               >
-                {/* CENTRAL DE CONSULTAS RÁPIDAS COM AUTO-COPY DE CPF E CAR (ITEM 4 V98 + IDEIA 3) */}
-                <div
-                  style={{
-                    background: '#ffffff',
-                    borderRadius: '8px',
-                    border: '1px solid #cbd5e1',
-                    borderTop: '4px solid #ea580c',
-                    padding: '10px 12px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '7px',
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                      gap: '6px',
-                    }}
-                  >
-                    <strong style={{ fontSize: '11.5px', color: '#c2410c' }}>
-                      🔗 CONSULTAS DO DIA (CLIQUE = AUTO-COPIA CPF OU CAR)
-                    </strong>
-
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      <button
-                        type="button"
-                        onClick={() => setAlvoCpfAutoCopy('TITULAR')}
-                        style={{
-                          width: 'auto',
-                          padding: '2px 8px',
-                          fontSize: '10px',
-                          fontWeight: 800,
-                          borderRadius: '4px',
-                          border: '1px solid #ea580c',
-                          background:
-                            alvoCpfAutoCopy === 'TITULAR'
-                              ? '#ea580c'
-                              : '#fff7ed',
-                          color:
-                            alvoCpfAutoCopy === 'TITULAR'
-                              ? '#ffffff'
-                              : '#c2410c',
-                          cursor: 'pointer',
-                        }}
-                        title="Ao clicar em um link de consulta por CPF, copiará automaticamente o CPF do Titular"
-                      >
-                        👤 CPF Titular:{' '}
-                        {cpfTitularDetectado || 'Não lido'}
-                      </button>
-
-                      {(conjugeNome.trim() || cpfConjugeDetectado) && (
-                        <button
-                          type="button"
-                          onClick={() => setAlvoCpfAutoCopy('CONJUGE')}
-                          style={{
-                            width: 'auto',
-                            padding: '2px 8px',
-                            fontSize: '10px',
-                            fontWeight: 800,
-                            borderRadius: '4px',
-                            border: '1px solid #9333ea',
-                            background:
-                              alvoCpfAutoCopy === 'CONJUGE'
-                                ? '#9333ea'
-                                : '#faf5ff',
-                            color:
-                              alvoCpfAutoCopy === 'CONJUGE'
-                                ? '#ffffff'
-                                : '#7e22ce',
-                            cursor: 'pointer',
-                          }}
-                          title="Ao clicar em um link de consulta por CPF, copiará automaticamente o CPF do Cônjuge"
-                        >
-                          💍 CPF Cônjuge:{' '}
-                          {cpfConjugeDetectado || 'Não lido'}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {feedbackAutoCopy && (
-                    <div
-                      style={{
-                        background: '#dcfce7',
-                        color: '#166534',
-                        border: '1px solid #86efac',
-                        padding: '3px 8px',
-                        borderRadius: '4px',
-                        fontSize: '10.5px',
-                        fontWeight: 800,
-                        textAlign: 'center',
-                      }}
-                    >
-                      {feedbackAutoCopy}
-                    </div>
-                  )}
-
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(4, 1fr)',
-                      gap: '5px',
-                    }}
-                  >
-                    {[
-                      {
-                        label: 'CND RF',
-                        url: 'https://servicos.receitafederal.gov.br/servico/certidoes/#/home/cpf',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'CNDT',
-                        url: 'https://cndt-certidao.tst.jus.br/inicio.faces',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'IBAMA Emb.',
-                        url: 'https://servicos.ibama.gov.br/ctf/publico/areasembargadas/',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'CNJ Improb.',
-                        url: 'https://www.cnj.jus.br/improbidade_adm/consultar_requerido.php',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'Extrato CAF',
-                        url: 'https://caf.mda.gov.br/consulta-publica/ufpa',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'Selo TJMA',
-                        url: 'https://selo.tjma.jus.br/#/',
-                        tipo: 'NENHUM' as const,
-                      },
-                      {
-                        label: 'Portal CAR',
-                        url: 'https://www.car.gov.br/#/consultar',
-                        tipo: 'CAR' as const,
-                      },
-                      {
-                        label: 'Cert. Socio.',
-                        url: 'https://apps.powerapps.com/play/e/c1f0ee77-2c47-e9c2-b736-03ded17586e4/a/eaa18c62-628b-4795-8c40-5176bc1f0a68?tenantId=efb605aa-4527-4640-9dac-65d150e949ca&hint=ea5829fb-55f8-4575-b3ab-3fdea078a70c&sourcetime=1742221966987',
-                        tipo: 'CAR' as const,
-                      },
-                      {
-                        label: 'Emitir CCIR',
-                        url: 'https://sncr.serpro.gov.br/ccir/emissao;jsessionid=cMDhZasyXEwvhyQ1wZ8Uw3kF.ccir4?windowId=db4',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'CND / ITR',
-                        url: 'https://servicos.receitafederal.gov.br/servico/certidoes/#/home/cib',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'S400 Ficha',
-                        url: 'http://d001mfp1.capgv.intra.bnb/S400-CCClientes/faces/consultarCadastros.jsp',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'CI / BACEN',
-                        url: 'http://d001mfp1.capgv.intra.bnb/S255-CentralInformacoes/faces/index.jsp',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'GED BNB',
-                        url: 'https://s1jbsp01.capgv.intra.bnb:8443/flexps/fxd/home.xhtml',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'S567 PCE',
-                        url: 'https://s1wlbp20.capgv.intra.bnb/ProcessPortal',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'S522 BPM',
-                        url: 'https://s1wlbp25.capgv.intra.bnb/BPM-Portal/',
-                        tipo: 'CPF' as const,
-                      },
-                      {
-                        label: 'Farmcheck',
-                        url: 'https://farmcheck.brainag.app/login',
-                        tipo: 'CAR' as const,
-                      },
-                    ].map((lk) => (
-                      <button
-                        key={lk.label}
-                        type="button"
-                        onClick={() =>
-                          abrirLinkComAutoCopy(lk.url, lk.label, lk.tipo)
-                        }
-                        style={{
-                          width: '100%',
-                          padding: '4px 6px',
-                          fontSize: '10px',
-                          fontWeight: 800,
-                          background: '#fff7ed',
-                          color: '#9a3412',
-                          border: '1px solid #fed7aa',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          textAlign: 'center',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                        title={`Abrir ${lk.label} (${
-                          lk.tipo === 'CAR'
-                            ? 'Copia o nº do CAR automaticamente'
-                            : lk.tipo === 'CPF'
-                            ? 'Copia o CPF automaticamente'
-                            : 'Link direto'
-                        })`}
-                      >
-                        🔗 {lk.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                {/* ITEM 2: CENTRAL DE CONSULTAS DO DIA COM AGRUPAMENTO (9 GUIAS TITULAR / 6 GUIAS ENVOLVIDOS) */}
+                <PainelConsultasRapidasAgrupadas
+                  cpfTitular={cpfTitularDetectado}
+                  dataNascTitular={
+                    auditoriaPdf?.dadosProjetoParaParecer
+                      ?.clienteDataNascimento || ''
+                  }
+                  cpfConjuge={cpfConjugeDetectado}
+                  dataNascConjuge={
+                    auditoriaPdf?.dadosProjetoParaParecer
+                      ?.conjugeDataNascimento || ''
+                  }
+                  cpfProcuradorOuAvalista={
+                    auditoriaPdf?.dadosProjetoParaParecer
+                      ?.procuradorCpfExtraido ||
+                    registroConformidadeVinculado?.procuradorCpf ||
+                    ''
+                  }
+                  dataNascProcuradorOuAvalista={
+                    auditoriaPdf?.dadosProjetoParaParecer
+                      ?.procuradorDataNascimento || ''
+                  }
+                  carRecibo={carReciboDetectado}
+                />
 
                 {/* AUDITORIA AUTOMÁTICA DOS PDFs + BOTÃO WHATSAPP DE CRÍTICAS */}
                 <div

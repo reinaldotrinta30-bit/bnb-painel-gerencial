@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import ModalOrganizadorPastasCliente from '@/components/ferramentas/ModalOrganizadorPastasCliente';
 import ModalVerificadorKmlGeodesico from '@/components/ferramentas/ModalVerificadorKmlGeodesico';
 import ModalVerificarConformidadeSocioambiental from '@/components/ferramentas/ModalVerificarConformidadeSocioambiental';
+import TelaConformidadeProjetoCompleta from '@/components/ferramentas/TelaConformidadeProjetoCompleta';
 import {
   salvarFerramentasSync,
   carregarFerramentasSync,
@@ -93,6 +94,8 @@ export default function ModuloFerramentas({
   );
 
   const [modalOrganizadorPastasAberto, setModalOrganizadorPastasAberto] =
+    useState(false);
+  const [telaConformidadeProjetoAberta, setTelaConformidadeProjetoAberta] =
     useState(false);
 
   // Carrega localmente e sincroniza direto com o nó /ferramentas do Firebase Realtime Database
@@ -620,24 +623,45 @@ export default function ModuloFerramentas({
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setModalOrganizadorPastasAberto(true)}
-            style={{
-              width: 'auto',
-              background: '#0369a1',
-              color: '#ffffff',
-              padding: '10px 20px',
-              fontSize: '12.5px',
-              fontWeight: 800,
-              borderRadius: '8px',
-              border: 'none',
-              cursor: 'pointer',
-              boxShadow: '0 4px 12px rgba(3, 105, 161, 0.25)',
-            }}
-          >
-            📂 Abrir Organizador de Pastas
-          </button>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setModalOrganizadorPastasAberto(true)}
+              style={{
+                width: 'auto',
+                background: '#0369a1',
+                color: '#ffffff',
+                padding: '10px 20px',
+                fontSize: '12.5px',
+                fontWeight: 800,
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                boxShadow: '0 4px 12px rgba(3, 105, 161, 0.25)',
+              }}
+            >
+              📂 Abrir Organizador de Pastas
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTelaConformidadeProjetoAberta(true)}
+              style={{
+                width: 'auto',
+                background: '#004C27',
+                color: '#ffffff',
+                padding: '10px 20px',
+                fontSize: '12.5px',
+                fontWeight: 800,
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                boxShadow: '0 4px 12px rgba(0, 76, 39, 0.25)',
+              }}
+            >
+              🛡️ Verificar Conformidade do Projeto
+            </button>
+          </div>
         </div>
 
         {/* BLOCO DE DESTAQUE: GEOPROCESSAMENTO KML & CONFORMIDADE SOCIOAMBIENTAL */}
@@ -952,6 +976,12 @@ export default function ModuloFerramentas({
       <ModalOrganizadorPastasCliente
         aberto={modalOrganizadorPastasAberto}
         onFechar={() => setModalOrganizadorPastasAberto(false)}
+        contratacoes={contratacoes}
+      />
+
+      <TelaConformidadeProjetoCompleta
+        aberto={telaConformidadeProjetoAberta}
+        onFechar={() => setTelaConformidadeProjetoAberta(false)}
         contratacoes={contratacoes}
       />
 

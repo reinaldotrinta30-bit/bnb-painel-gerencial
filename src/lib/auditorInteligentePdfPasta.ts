@@ -41,8 +41,12 @@ export interface ImovelExtraidoProjetoPdf {
 export interface DadosExtraidosProjetoParecer {
   clienteNome: string;
   clienteCpf: string;
+  clienteDataNascimento: string;
   conjugeNome: string;
   conjugeCpf: string;
+  conjugeDataNascimento: string;
+  procuradorCpfExtraido: string;
+  procuradorDataNascimento: string;
   estadoCivil: string;
   porteSugeridoPeloPdf: 'PRONAF_A' | 'PRONAF_V' | 'MINI_PEQUENO' | '';
   modalidadeSugeridaPeloPdf: 'INVESTIMENTO' | 'CUSTEIO' | '';
@@ -94,6 +98,7 @@ export interface ResultadoAuditoriaPastaPdf {
     string,
     'ITEM_CERT_SOCIO_COM_KML' | 'ITEM_CERT_SOCIO_SEM_KML'
   >;
+  reclassificacoesPorConteudo?: Record<string, string>;
   kmlCorrigidoAutomaticamente?: {
     nomeArquivo: string;
     conteudoKml: string;
@@ -174,6 +179,7 @@ interface PdfExtraidoInfo {
   nomeOriginal: string;
   isViti: boolean;
   textoCompleto: string;
+  textoStreamBruto?: string;
   numPaginas: number;
   possuiAssinaturaDigital: boolean;
   ehProvavelEscaneadoImagem: boolean;
@@ -289,6 +295,7 @@ async function extrairTextoEAssinaturaDoPdf(
   const possuiAssinaturaDigital = detectarAssinaturaDigitalNoBinarioPdf(buffer);
 
   let textoCompleto = '';
+  let textoStreamBruto = '';
   let numPaginas = 1;
 
   try {
@@ -299,18 +306,66 @@ async function extrairTextoEAssinaturaDoPdf(
       numPaginas = pdf.numPages || 1;
 
       const limitePags = Math.min(numPaginas, 35);
-      const textosPaginas: string[] = [];
+      const textosPaginasOrdenados: string[] = [];
+      const textosPaginasStream: string[] = [];
 
       for (let p = 1; p <= limitePags; p++) {
         const page = await pdf.getPage(p);
         const content = await page.getTextContent();
-        const strings = (content.items || []).map((it: any) => it.str || '');
-        textosPaginas.push(`[PÁG ${p}] ` + strings.join(' '));
+        const rawItems = (content.items || []) as Array<any>;
+
+        // 1. Mantém o stream original da página para buscas de proximidade intra-quadrinho
+        const streamPag = rawItems.map((it) => it.str || '').join(' ');
+        textosPaginasStream.push(`[PÁG ${p}] ` + streamPag);
+
+        // 2. Reconstrução Espacial por Coordenadas (X, Y) para corrigir PDFs "de baixo para cima" ou em quadrinhos
+        const tokensEspaciais: Array<{ str: string; x: number; y: number }> = [];
+        for (const it of rawItems) {
+          const s = (it.str || '').trim();
+          if (!s) continue;
+          const tr = Array.isArray(it.transform) ? it.transform : [1, 0, 0, 1, 0, 0];
+          tokensEspaciais.push({
+            str: s,
+            x: Number(tr[4]) || 0,
+            y: Number(tr[5]) || 0,
+          });
+        }
+
+        // Agrupa tokens que estão na mesma linha horizontal visual (tolerância de ±3.5 pt no eixo Y)
+        // No PDF, Y cresce de baixo para cima, portanto ordenamos Y decrescente (topo -> rodapé)
+        tokensEspaciais.sort((a, b) => b.y - a.y || a.x - b.x);
+
+        const linhasVisuais: Array<{ yMedio: number; itens: typeof tokensEspaciais }> = [];
+        const TOLERANCIA_Y = 3.5;
+
+        for (const tok of tokensEspaciais) {
+          const linhaExistente = linhasVisuais.find(
+            (l) => Math.abs(l.yMedio - tok.y) <= TOLERANCIA_Y
+          );
+          if (linhaExistente) {
+            linhaExistente.itens.push(tok);
+          } else {
+            linhasVisuais.push({ yMedio: tok.y, itens: [tok] });
+          }
+        }
+
+        // Ordena as linhas de cima para baixo e cada palavra da esquerda para a direita (X crescente)
+        linhasVisuais.sort((a, b) => b.yMedio - a.yMedio);
+        const textoPagVisual = linhasVisuais
+          .map((linha) => {
+            linha.itens.sort((a, b) => a.x - b.x);
+            return linha.itens.map((i) => i.str).join(' ');
+          })
+          .join('\n');
+
+        textosPaginasOrdenados.push(`[PÁG ${p}]\n` + textoPagVisual);
       }
-      textoCompleto = textosPaginas.join('\n');
+
+      textoCompleto = textosPaginasOrdenados.join('\n');
+      textoStreamBruto = textosPaginasStream.join('\n');
     }
   } catch {
-    // Ignora erro
+    // Ignora erro de parse PDF
   }
 
   const normTexto = removerAcentos(textoCompleto).toUpperCase();
@@ -335,20 +390,461 @@ async function extrairTextoEAssinaturaDoPdf(
     nomeOriginal: file.name,
     isViti,
     textoCompleto,
+    textoStreamBruto,
     numPaginas,
     possuiAssinaturaDigital: possuiAssinaturaDigital || assinaturaPeloTexto,
     ehProvavelEscaneadoImagem: mediaCharsPorPagina < 45,
   };
 }
 
+// PARTE 7.1: Identificador Semântico de Documentos pelo Conteúdo Interno do PDF (Fingerprinting)
+export function identificarCategoriaRealPeloConteudoPdf(params: {
+  nomeOriginal: string;
+  categoriaAtual: string;
+  isVitiAtual: boolean;
+  textoExtraido: string;
+  titularNome: string;
+  conjugeNome: string;
+}): {
+  categoriaUniversal?: string;
+  codigoAuditor?: string;
+  isVitiDetectado?: boolean;
+} {
+  const {
+    categoriaAtual,
+    isVitiAtual,
+    textoExtraido,
+    titularNome,
+    conjugeNome,
+  } = params;
+
+  if (!textoExtraido || textoExtraido.trim().length < 50) {
+    return {};
+  }
+
+  const tUp = removerAcentos(textoExtraido).toUpperCase();
+  const tCabecalho = tUp.substring(0, 4500);
+
+  // 1. Verifica se é um Relatório de Conformidade do Validador ITI (VITI)
+  if (
+    isVitiAtual ||
+    tCabecalho.includes('VALIDADOR DE DOCUMENTOS DIGITAIS') ||
+    (tCabecalho.includes('INSTITUTO NACIONAL DE TECNOLOGIA DA INFORMACAO') &&
+      tCabecalho.includes('ASSINATURA'))
+  ) {
+    return { isVitiDetectado: true };
+  }
+
+  const primTit = normalizarSemAcento(titularNome.split(/\s+/)[0] || '');
+  const primConj = normalizarSemAcento(conjugeNome.split(/\s+/)[0] || '');
+  const pertenceAoConjuge =
+    primConj.length >= 3 &&
+    tCabecalho.includes(primConj) &&
+    (!primTit || !tCabecalho.includes(primTit));
+
+  // 2. Projeto Técnico do BNB (PRONAF / FNE Rural / Custeio / Investimento)
+  if (
+    (tCabecalho.includes('DADOS CADASTRAIS DO(A) CLIENTE') &&
+      (tUp.includes('CALCULO DO FINANCIAMENTO') ||
+        tUp.includes('PROGRAMA DE INVESTIMENTOS') ||
+        tUp.includes('CRONOGRAMA DE REEMBOLSO'))) ||
+    (tCabecalho.includes('BANCO DO NORDESTE') &&
+      tUp.includes('SUBTOTAL DO FINANCIAMENTO') &&
+      tUp.includes('ELABORADOR:'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_PROJETO_PDF',
+      codigoAuditor: 'ITEM_12_PROJETO_PDF',
+    };
+  }
+
+  // 3. Solicitação de Abertura de Limite (LCGH / LCGA)
+  if (
+    tCabecalho.includes('SOLICITACAO DE ABERTURA DE LIMITE') ||
+    tCabecalho.includes('PROPOSTA DE LIMITE DE CREDITO GARANTIDO')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_SOLICITACAO_LIMITE',
+      codigoAuditor: 'ITEM_SOLICITACAO_LIMITE',
+    };
+  }
+
+  // 4. Certificação Socioambiental (Distingue COM KML vs SEM KML pela presença do bloco "Glebas")
+  if (
+    tCabecalho.includes('RELATORIO DE CERTIFICACAO SOCIOAMBIENTAL') ||
+    (tUp.includes('DESMATAMENTO PRODES:') &&
+      tUp.includes('SOBREPOSICOES DO CAR:'))
+  ) {
+    const temGlebas = /NOME(?:\s*DA\s*GLEBA)?:\s*AREA\s*\d+/i.test(tUp);
+    return {
+      categoriaUniversal: temGlebas
+        ? 'ITEM_CERT_SOCIO_COM_KML'
+        : 'ITEM_CERT_SOCIO_SEM_KML',
+      codigoAuditor: 'ITEM_5_CERT_SOCIOAMBIENTAL',
+    };
+  }
+
+  // 5. Declarações Consolidadas (PF ou PRONAF)
+  if (
+    tCabecalho.includes('DECLARACAO CONSOLIDADA') ||
+    tCabecalho.includes('DECLARACOES CONSOLIDADAS') ||
+    (tUp.includes('AUTORIZACAO PARA DEBITO EM CONTA') &&
+      tUp.includes('FINALIDADE DO CREDITO'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_CONSOLIDADAS',
+      codigoAuditor: 'ITEM_9_CONSOLIDADAS',
+    };
+  }
+
+  // 6. Contrato de Assessoria Técnica
+  if (
+    tCabecalho.includes('CONTRATO DE PRESTACAO DE SERVICOS DE ASSESSORIA') ||
+    tCabecalho.includes('CONTRATO DE ASSESSORIA TECNICA') ||
+    (tCabecalho.includes('CONTRATO PARTICULAR DE PRESTACAO DE SERVICOS') &&
+      tUp.includes('PROJETO TECNICO'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_CONTRATO_ASSESSORIA',
+      codigoAuditor: 'ITEM_8_CONTRATO_ASSESSORIA',
+    };
+  }
+
+  // 7. Autorização para Alteração de Proposta / Projeto
+  if (
+    tCabecalho.includes('AUTORIZACAO PARA ALTERACAO DE PROPOSTA') ||
+    tCabecalho.includes('AUTORIZACAO DE MODIFICACAO DO PROJETO') ||
+    tCabecalho.includes('DECLARACAO DE ALTERACAO DA PROPOSTA')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_AUT_ALTERACAO',
+      codigoAuditor: 'ITEM_2_AUT_ALTERACAO',
+    };
+  }
+
+  // 8. Declarações Ambientais Específicas
+  if (tCabecalho.includes('DECLARACAO DE NAO DESMATAMENTO')) {
+    return {
+      categoriaUniversal: 'ITEM_DEC_NAO_DESMATAMENTO',
+      codigoAuditor: 'ITEM_10_2_NAO_DESMATAMENTO',
+    };
+  }
+  if (
+    tCabecalho.includes('DECLARACAO DE RECOMPOSICAO') ||
+    tCabecalho.includes('TERMO DE COMPROMISSO DE RECOMPOSICAO')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_DEC_RECOMPOSICAO',
+      codigoAuditor: 'ITEM_10_3_RECOMPOSICAO',
+    };
+  }
+  if (
+    tCabecalho.includes('REGULARIDADE AMBIENTAL') &&
+    tCabecalho.includes('IMOVEL GARANTIDOR')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_DEC_REG_AMB_GARANTIDOR',
+      codigoAuditor: 'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
+    };
+  }
+  if (tCabecalho.includes('DECLARACAO DE REGULARIDADE AMBIENTAL')) {
+    return {
+      categoriaUniversal: 'ITEM_DEC_REG_AMBIENTAL',
+      codigoAuditor: 'ITEM_10_1_REG_AMBIENTAL',
+    };
+  }
+
+  // 9. CAF / DAP vs Extrato Consulta Pública CAF
+  if (
+    tCabecalho.includes('EXTRATO DA CONSULTA PUBLICA DO CAF') ||
+    (tCabecalho.includes('CONSULTA PUBLICA') &&
+      tCabecalho.includes('UNIDADE FAMILIAR DE PRODUCAO AGRARIA'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_EXTRATO_CAF',
+      codigoAuditor: 'ITEM_14_EXTRATO_CAF',
+    };
+  }
+  if (
+    tCabecalho.includes('CADASTRO NACIONAL DA AGRICULTURA FAMILIAR') ||
+    tCabecalho.includes('EXTRATO DO CAF') ||
+    tCabecalho.includes('DECLARACAO DE APTIDAO AO PRONAF')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_CAF',
+      codigoAuditor: 'ITEM_14_CAF',
+    };
+  }
+
+  // 10. CAR (Recibo vs Demonstrativo)
+  if (tCabecalho.includes('DEMONSTRATIVO DA SITUACAO DAS INFORMACOES DECLARADAS NO CAR')) {
+    return {
+      categoriaUniversal: 'ITEM_CONSULTA_CAR',
+      codigoAuditor: 'ITEM_13_CONSULTA_CAR',
+    };
+  }
+  if (tCabecalho.includes('RECIBO DE INSCRICAO DO IMOVEL RURAL NO CAR')) {
+    return {
+      categoriaUniversal: 'ITEM_CAR',
+      codigoAuditor: 'ITEM_13_CAR',
+    };
+  }
+
+  // 11. DCAA e Parecer SEMA
+  if (
+    tCabecalho.includes(
+      'DECLARACAO DE CONFORMIDADE DE ATIVIDADE AGROPECUARIA'
+    ) ||
+    tCabecalho.includes('DISPENSA DE LICENCIAMENTO AMBIENTAL')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_DCAA',
+      codigoAuditor: 'ITEM_15_DCAA',
+    };
+  }
+  if (
+    tCabecalho.includes('PARECER') &&
+    tUp.includes('SECRETARIA DE ESTADO DO MEIO AMBIENTE') &&
+    tUp.includes('120/2023')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_PARECER_SEMA',
+      codigoAuditor: 'ITEM_21_PARECER_SEMA',
+    };
+  }
+
+  // 12. Embargos IBAMA e Improbidade CNJ (Titular vs Cônjuge)
+  if (
+    tCabecalho.includes('CERTIDAO NEGATIVA DE EMBARGOS') ||
+    (tCabecalho.includes('INSTITUTO BRASILEIRO DO MEIO AMBIENTE') &&
+      tUp.includes('EMBARGO'))
+  ) {
+    return pertenceAoConjuge
+      ? {
+          categoriaUniversal: 'ITEM_EMBARGOS_CONJUGE',
+          codigoAuditor: 'ITEM_3_EMBARGOS_CONJUGE',
+        }
+      : {
+          categoriaUniversal: 'ITEM_EMBARGOS_TITULAR',
+          codigoAuditor: 'ITEM_3_EMBARGOS_TITULAR',
+        };
+  }
+  if (
+    tCabecalho.includes('CONDENACOES CIVEIS POR ATO DE IMPROBIDADE') ||
+    (tCabecalho.includes('CONSELHO NACIONAL DE JUSTICA') &&
+      tUp.includes('IMPROBIDADE'))
+  ) {
+    return pertenceAoConjuge
+      ? {
+          categoriaUniversal: 'ITEM_IMPROBIDADE_CONJUGE',
+          codigoAuditor: 'ITEM_4_IMPROBIDADE_CONJUGE',
+        }
+      : {
+          categoriaUniversal: 'ITEM_IMPROBIDADE_TITULAR',
+          codigoAuditor: 'ITEM_4_IMPROBIDADE_TITULAR',
+        };
+  }
+
+  // 13. Certidões Fiscais (CND PF, CND/ITR Imóvel, CNDT, CCIR)
+  if (
+    tCabecalho.includes('CERTIDAO NEGATIVA DE DEBITOS RELATIVOS A TRIBUTOS FEDERAIS') ||
+    tCabecalho.includes('CERTIDAO POSITIVA COM EFEITOS DE NEGATIVA DE DEBITOS RELATIVOS AOS TRIBUTOS FEDERAIS') ||
+    tCabecalho.includes('CERTIDAO NEGATIVA DE DEBITOS RELATIVOS AOS TRIBUTOS FEDERAIS')
+  ) {
+    if (
+      tCabecalho.includes('IMOVEL RURAL') ||
+      tCabecalho.includes('PROPRIEDADE TERRITORIAL RURAL') ||
+      /\bCIB\s*:|\bNIRF\s*:/i.test(tCabecalho)
+    ) {
+      return {
+        categoriaUniversal: 'ITEM_CND_ITR_IMOVEL',
+        codigoAuditor: 'ITEM_CND_ITR_IMOVEL',
+      };
+    }
+    return {
+      categoriaUniversal: 'ITEM_CND_PF',
+      codigoAuditor: 'ITEM_CND_PF',
+    };
+  }
+
+  if (tCabecalho.includes('CERTIDAO NEGATIVA DE DEBITOS TRABALHISTAS')) {
+    return {
+      categoriaUniversal: 'ITEM_CNDT_PF',
+      codigoAuditor: 'ITEM_CNDT_PF',
+    };
+  }
+
+  if (tCabecalho.includes('CERTIFICADO DE CADASTRO DE IMOVEL RURAL')) {
+    return {
+      categoriaUniversal: 'ITEM_CCIR',
+      codigoAuditor: 'ITEM_CCIR',
+    };
+  }
+
+  // 14. Inteiro Teor / Matrícula, Selo TJMA, Procuração e Casamento
+  if (
+    tCabecalho.includes('CERTIDAO DE INTEIRO TEOR') ||
+    (tCabecalho.includes('REGISTRO DE IMOVEIS') &&
+      tUp.includes('LIVRO N 2'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_INTEIRO_TEOR',
+      codigoAuditor: 'ITEM_INTEIRO_TEOR',
+    };
+  }
+
+  if (
+    tCabecalho.includes('CONSULTA DE SELO') ||
+    (tCabecalho.includes('TRIBUNAL DE JUSTICA') &&
+      tCabecalho.includes('SELO DE FISCALIZACAO'))
+  ) {
+    return {
+      categoriaUniversal: 'CAD_8_SELO_CARTORIO',
+      codigoAuditor: 'CAD_8_SELO_CARTORIO',
+    };
+  }
+
+  if (
+    tCabecalho.includes('INSTRUMENTO PUBLICO DE PROCURACAO') ||
+    (tCabecalho.includes('PROCURACAO PUBLICA') && tUp.includes('OUTORGANTE'))
+  ) {
+    return {
+      categoriaUniversal: 'CAD_6_PROCURACAO',
+      codigoAuditor: 'CAD_6_PROCURACAO',
+    };
+  }
+
+  if (tCabecalho.includes('CERTIDAO DE CASAMENTO')) {
+    return {
+      categoriaUniversal: 'CAD_2_CERTIDAO_CASAMENTO',
+      codigoAuditor: 'CAD_2_CERTIDAO_CASAMENTO',
+    };
+  }
+
+  // 15. RB do P.A., Espelho da UND, SICOR, CREA e Ficha S400
+  if (
+    tCabecalho.includes('RELACAO DE BENEFICIARIOS') &&
+    tUp.includes('INCRA')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_RB_PA',
+      codigoAuditor: 'ITEM_17_RB_PA',
+    };
+  }
+
+  if (
+    tCabecalho.includes('ESPELHO DO PROJETO') ||
+    tCabecalho.includes('RELATORIO DA UND') ||
+    (tCabecalho.includes('UNIDADE FAMILIAR') && tUp.includes('MEMBROS'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_ESPELHO_UND',
+      codigoAuditor: 'ITEM_11_ESPELHO_UND',
+    };
+  }
+
+  if (
+    tCabecalho.includes('SISTEMA DE OPERACOES DO CREDITO RURAL') ||
+    (tCabecalho.includes('SICOR') && tCabecalho.includes('BANCO CENTRAL'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_EXTRATO_SICOR',
+      codigoAuditor: 'ITEM_7_EXTRATO_SICOR',
+    };
+  }
+
+  if (
+    tCabecalho.includes('CONSELHO REGIONAL DE ENGENHARIA') ||
+    tCabecalho.includes('CONSELHO FEDERAL DOS TECNICOS AGRICOLAS')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_CREA',
+      codigoAuditor: 'ITEM_6_CREA',
+    };
+  }
+
+  if (
+    (tCabecalho.includes('ESTADO DO CLIENTE') &&
+      tCabecalho.includes('COMO E CONHECIDO')) ||
+    tCabecalho.includes('PROPOSTA DE CADASTRO')
+  ) {
+    return {
+      categoriaUniversal: 'CAD_5_PROPOSTA_CADASTRO',
+      codigoAuditor: 'CAD_5_PROPOSTA_CADASTRO',
+    };
+  }
+
+  // 16. CLASSIFICAÇÃO HÍBRIDA (CONTEÚDO + PISTA DO NOME DO ARQUIVO) PARA IDENTIDADES (RG / CNH / CIN)
+  const nUp = removerAcentos(params.nomeOriginal).toUpperCase();
+  const pareceIdentidadePeloNome =
+    /\b(IDENTIDADE|RG|CNH|CIN|DOC\s+DE\s+IDENTIFICACAO|DOCUMENTO\s+DE\s+IDENTIFICACAO)\b/.test(
+      nUp
+    );
+  const pareceIdentidadePeloConteudo =
+    tCabecalho.includes('CARTEIRA NACIONAL DE HABILITACAO') ||
+    tCabecalho.includes('REPUBLICA FEDERATIVA DO BRASIL') ||
+    tCabecalho.includes('CARTEIRA DE IDENTIDADE') ||
+    tCabecalho.includes('SECRETARIA DE ESTADO DA SEGURANCA PUBLICA');
+
+  if (pareceIdentidadePeloNome || pareceIdentidadePeloConteudo) {
+    const nomeIndicaConjuge =
+      nUp.includes('CONJUGE') ||
+      nUp.includes('ESPOSA') ||
+      nUp.includes('MARIDO') ||
+      nUp.includes('COMPANHEIR') ||
+      (primConj.length >= 3 && nUp.includes(primConj));
+
+    const nomeIndicaOutroPessoaDiferenteDoTitular =
+      pareceIdentidadePeloNome &&
+      primTit.length >= 3 &&
+      !nUp.includes(primTit) &&
+      /[A-Z]{3,}/.test(
+        nUp
+          .replace(
+            /\b(IDENTIDADE|RG|CNH|CIN|PDF|CADASTRO|ASSINADO|DOC|DOCUMENTO)\b/g,
+            ''
+          )
+          .trim()
+      );
+
+    if (
+      nomeIndicaConjuge ||
+      pertenceAoConjuge ||
+      nomeIndicaOutroPessoaDiferenteDoTitular
+    ) {
+      return {
+        categoriaUniversal: 'CAD_1_IDENTIDADE_CONJUGE',
+        codigoAuditor: 'CAD_1_IDENTIDADE_CONJUGE',
+      };
+    }
+
+    return {
+      categoriaUniversal: 'CAD_1_IDENTIDADE_TITULAR',
+      codigoAuditor: 'CAD_1_IDENTIDADE_TITULAR',
+    };
+  }
+
+  // Se o arquivo já tinha uma categoria válida atribuída pelo nome do arquivo, preserva-a!
+  if (categoriaAtual && categoriaAtual !== 'OUTROS_NAO_IDENTIFICADO') {
+    return {};
+  }
+
+  return {};
+}
+
 export function extrairDadosDetalhadosDoPdfProjeto(
-  textoProjeto: string
+  textoProjeto: string,
+  textoStreamBrutoOpcional?: string
 ): DadosExtraidosProjetoParecer {
   const resultado: DadosExtraidosProjetoParecer = {
     clienteNome: '',
     clienteCpf: '',
+    clienteDataNascimento: '',
     conjugeNome: '',
     conjugeCpf: '',
+    conjugeDataNascimento: '',
+    procuradorCpfExtraido: '',
+    procuradorDataNascimento: '',
     estadoCivil: '',
     porteSugeridoPeloPdf: '',
     modalidadeSugeridaPeloPdf: '',
@@ -478,37 +974,128 @@ export function extrairDadosDetalhadosDoPdfProjeto(
       resultado.elaboradorNomeCompleto.split(/\s+/)[0];
   }
 
-  const matchEstCivil = textoLimpo.match(
-    /Estado\s+Civil:\s*(Solteiro\(a\)|Casado\(a\)|Uni[ãa]o\s+Est[áa]vel|Vi[úu]vo\(a\)|Divorciado\(a\))/i
+  const textoCombinado =
+    textoLimpo + ' \n ' + (textoStreamBrutoOpcional || '').replace(/\s+/g, ' ');
+
+  // Isola o Bloco do Titular ("Dados Cadastrais do(a) Cliente") vs Bloco do Cônjuge ("Cônjuge / Companheira(o) do(a) Cliente")
+  const idxBlocoConjuge = textoCombinado.search(
+    /(?:Dados\s+Cadastrais\s+)?C[ôo]njuge\s*\/?\s*Companheira\(o\)\s+do\(a\)\s+Cliente/i
   );
+  const trechoTitular =
+    idxBlocoConjuge !== -1
+      ? textoCombinado.substring(0, idxBlocoConjuge)
+      : textoCombinado.substring(0, 3500);
+
+  const trechoConjuge =
+    idxBlocoConjuge !== -1
+      ? textoCombinado.substring(idxBlocoConjuge, idxBlocoConjuge + 1600)
+      : '';
+
+  // 1. Estado Civil do Titular
+  const matchEstCivil =
+    textoCombinado.match(
+      /Estado\s+Civil\s*:?\s*(Solteiro\(a\)|Casado\(a\)|Uni[ãa]o\s+Est[áa]vel|Vi[úu]vo\(a\)|Divorciado\(a\)|Separado\(a\))/i
+    ) ||
+    textoCombinado.match(
+      /\b(Casado\(a\)|Uni[ãa]o\s+Est[áa]vel|Solteiro\(a\)|Vi[úu]vo\(a\)|Divorciado\(a\))\b/i
+    );
   if (matchEstCivil && matchEstCivil[1]) {
     resultado.estadoCivil = matchEstCivil[1].trim().toUpperCase();
   }
 
-  const matchConjuge = textoLimpo.match(
-    /Companheira\(o\)\s+do\(a\)\s+Cliente\s+(?:Dados\s+)?Nome:\s*([A-ZÀ-Ú\s]{4,60}?)\s+C\.?P\.?F\.?\s*C[ôo]njuge\/Comp\.?:\s*([0-9.\-]{8,14})/i
-  );
-  if (matchConjuge) {
-    const candConj = matchConjuge[1].trim().toUpperCase();
-    if (!candConj.includes('DATA DE') && !candConj.includes('SEXO')) {
-      resultado.conjugeNome = candConj;
-      resultado.conjugeCpf = matchConjuge[2].trim();
-    }
-  }
-
-  // Extrai Nome e CPF do Titular na Página 1 do Projeto (ex: "C.P.F.: 932526763-20")
-  const matchNomeCli = textoLimpo.match(
-    /Dados\s+Cadastrais\s+do\(a\)\s+Cliente[\s\S]{1,80}?Nome:\s*([A-ZÀ-Ú\s]{5,65}?)\s+(?:Apelido:|C\.?P\.?F)/i
-  );
+  // 2. Nome, CPF e Data de Nascimento do Titular
+  const matchNomeCli =
+    trechoTitular.match(
+      /Dados\s+Cadastrais\s+do\(a\)\s+Cliente[\s\S]{1,120}?Nome\s*:?\s*([A-ZÀ-Ú][A-ZÀ-Ú\s]{4,65}?)\s+(?:Apelido|C\.?P\.?F|Data\s+de\s+Nasc|Sexo)/i
+    ) ||
+    trechoTitular.match(
+      /Proponente\s*:?\s*([A-ZÀ-Ú][A-ZÀ-Ú\s]{4,65}?)\s+(?:CPF|C\.?P\.?F)/i
+    );
   if (matchNomeCli && matchNomeCli[1]) {
     resultado.clienteNome = matchNomeCli[1].trim().toUpperCase();
   }
 
-  const matchCpfCli = textoLimpo.match(
-    /C\.?P\.?F\.?:\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i
+  const matchCpfCli = trechoTitular.match(
+    /C\.?P\.?F\.?\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i
   );
   if (matchCpfCli && matchCpfCli[1]) {
     resultado.clienteCpf = matchCpfCli[1].trim();
+  }
+
+  const matchNascCli =
+    trechoTitular.match(
+      /Data\s+de\s+Nascimento\s*:?\s*(?:Sexo\s*:?\s*[A-Za-z]+\s*)?(\d{2}\/\d{2}\/(?:19\d{2}|20[01]\d))/i
+    ) ||
+    trechoTitular.match(/\b(\d{2}\/\d{2}\/(?:19[3-9]\d|200\d))\b/);
+  if (matchNascCli && matchNascCli[1]) {
+    resultado.clienteDataNascimento = matchNascCli[1].trim();
+  }
+
+  // 3. Quadro "Dados Cadastrais Cônjuge / Companheira(o) do(a) Cliente": Nome, CPF e Data de Nascimento
+  if (trechoConjuge) {
+    // Limpa até o próximo quadro ("Dados da Propriedade" / "Imóveis" / "Referências" / "Fonte de Recursos")
+    const fimQuadroConj = trechoConjuge.search(
+      /(?:Denomina[çc][ãa]o\s+do\s+im[óo]vel|Dados\s+do\s+Im[óo]vel|Im[óo]veis\s+Vinculados|Programa\s*:|Fonte\s+de\s+Recursos| Experi[êe]ncia\s+na\s+Atividade)/i
+    );
+    const blocoConjIsolado =
+      fimQuadroConj !== -1
+        ? trechoConjuge.substring(0, fimQuadroConj)
+        : trechoConjuge.substring(0, 750);
+
+    // Extrai CPF do Cônjuge (suporta quadrinhos onde o CPF vem separado do rótulo)
+    const matchCpfConj =
+      blocoConjIsolado.match(
+        /C\.?P\.?F\.?\s*(?:C[ôo]njuge\/Comp\.?)?\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i
+      ) ||
+      blocoConjIsolado.match(/\b(\d{3}\.?\d{3}\.?\d{3}-?\d{2})\b/);
+
+    if (matchCpfConj && matchCpfConj[1]) {
+      const cpfCand = matchCpfConj[1].trim();
+      if (
+        cpfCand.replace(/\D/g, '') !== resultado.clienteCpf.replace(/\D/g, '')
+      ) {
+        resultado.conjugeCpf = cpfCand;
+      }
+    }
+
+    // Extrai Nome do Cônjuge (linear ou em quadrinhos)
+    const matchNomeConj =
+      blocoConjIsolado.match(
+        /Nome\s*:?\s*(?:C\.?P\.?F\.?\s*C[ôo]njuge\/Comp\.?\s*:?\s*)?([A-ZÀ-Ú][A-ZÀ-Ú\s]{4,60}?)(?:\s+C\.?P\.?F|\s+\d{3}\.?\d{3}|\s+Data\s+de\s+Nasc|\s+Sexo|\s+RG|\s+Nacionalidade|\s+Naturalidade|$)/i
+      ) ||
+      blocoConjIsolado.match(
+        /Companheira\(o\)\s+do\(a\)\s+Cliente[\s\S]{1,90}?([A-ZÀ-Ú]{3,}(?:\s+[A-ZÀ-Ú]{2,}){1,6})/
+      );
+
+    if (matchNomeConj && matchNomeConj[1]) {
+      const candConj = matchNomeConj[1]
+        .replace(
+          /\b(?:DADOS|NOME|CPF|CONJUGE|COMPANHEIRA|CLIENTE|DATA|NASCIMENTO|SEXO|FEMININO|MASCULINO|RG|ORGAO|EXPEDIDOR)\b/gi,
+          ''
+        )
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toUpperCase();
+
+      if (
+        candConj.length >= 5 &&
+        candConj !== resultado.clienteNome &&
+        !candConj.includes('SOLTEIR')
+      ) {
+        resultado.conjugeNome = candConj;
+      }
+    }
+
+    // Extrai Data de Nascimento do Cônjuge
+    const matchNascConj =
+      blocoConjIsolado.match(
+        /Data\s+de\s+Nascimento\s*:?\s*(?:Sexo\s*:?\s*[A-Za-z]+\s*)?(\d{2}\/\d{2}\/(?:19\d{2}|20[01]\d))/i
+      ) ||
+      blocoConjIsolado.match(/\b(\d{2}\/\d{2}\/(?:19[3-9]\d|200\d))\b/);
+
+    if (matchNascConj && matchNascConj[1]) {
+      resultado.conjugeDataNascimento = matchNascConj[1].trim();
+    }
   }
 
   const matchDenom = textoLimpo.match(
@@ -594,36 +1181,96 @@ export function extrairDadosDetalhadosDoPdfProjeto(
     }
   }
 
+  // =========================================================================
+  // MOTOR MULTI-ESTÁGIO PARA PRAZO, CARÊNCIA E JUROS (QUADRINHOS E TABELAS)
+  // =========================================================================
   const idxCalcFin = normSemAcento.indexOf('CALCULO DO FINANCIAMENTO');
   const trechoFin =
     idxCalcFin !== -1
-      ? normSemAcento.substring(idxCalcFin, idxCalcFin + 900)
+      ? normSemAcento.substring(idxCalcFin, idxCalcFin + 1400)
       : normSemAcento;
 
-  const matchBlocoTabelaFin = trechoFin.match(
-    /\b(12|24|36|48|60|72|84|96|108|120|144)\s+(ANUAL|MENSAL|SEMESTRAL)\s+(\d{4,7}(?:[.,]\d{2})?)\s+CARENCIA:\s+JUROS\s*\(A\.A\.\):\s*(\d{1,2})\s+([0-9.,]+%)/i
-  );
-  if (matchBlocoTabelaFin) {
-    resultado.prazoMeses = matchBlocoTabelaFin[1];
-    resultado.periodicidadeReembolso = matchBlocoTabelaFin[2];
-    resultado.carenciaMeses = matchBlocoTabelaFin[4];
-    resultado.taxaJurosAa = matchBlocoTabelaFin[5];
-  } else {
-    const mPrazo =
-      trechoFin.match(/PRAZO\s*:?\s*(\d{2,3})\b/i) ||
-      trechoFin.match(/\b(120|96|84|72|60|36|24)\s+(?:ANUAL|MENSAL)\b/i);
-    if (mPrazo && mPrazo[1]) resultado.prazoMeses = mPrazo[1];
+  // Estágio 1: Padrão clássico de linha única ou colunar
+  const matchBlocoTabelaFin =
+    trechoFin.match(
+      /\b(12|18|24|36|48|60|72|84|96|108|120|144)\s+(ANUAL|MENSAL|SEMESTRAL)\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d{4,7}(?:[.,]\d{2})?)\s+(?:CARENCIA:\s+)?(?:JUROS\s*\(A\.A\.\):\s*)?(\d{1,2})\s+([0-9.,]+%)/i
+    ) ||
+    trechoFin.match(
+      /PRAZO\s*(?:\(MESES\))?\s*:?\s*(\d{2,3})[\s\S]{1,120}?CARENCIA\s*(?:\(MESES\))?\s*:?\s*(\d{1,2})/i
+    );
 
-    const mCarencia =
-      trechoFin.match(
-        /CARENCIA\s*:?\s*(?:JUROS[^0-9]{0,15})?\b(0|6|12|24|36|48|60)\b/i
-      ) || trechoFin.match(/\b(36|24|12|48)\s+[0-9.,]+%/i);
-    if (mCarencia && mCarencia[1]) resultado.carenciaMeses = mCarencia[1];
+  if (matchBlocoTabelaFin) {
+    if (matchBlocoTabelaFin.length >= 6 && matchBlocoTabelaFin[4]) {
+      resultado.prazoMeses = matchBlocoTabelaFin[1];
+      resultado.periodicidadeReembolso = matchBlocoTabelaFin[2];
+      resultado.carenciaMeses = matchBlocoTabelaFin[4];
+      resultado.taxaJurosAa = matchBlocoTabelaFin[5];
+    } else {
+      resultado.prazoMeses = matchBlocoTabelaFin[1];
+      resultado.carenciaMeses = matchBlocoTabelaFin[2];
+    }
   }
 
-  const matchObjCurto = textoLimpo.match(
-    /Objetivo\s+do\s+Cr[ée]dito:\s*(?:\d{2}\/\d{2}\/\d{4}\s+)?(Amplia[çc][ãa]o|Implanta[çc][ãa]o|Moderniza[çc][ãa]o|Reforma|Custeio|Manuten[çc][ãa]o|Expans[ãa]o)/i
-  );
+  // Estágio 2: Quando "Prazo:" e "Carência:" estão em quadrinhos invertidos (valor acima ou abaixo do rótulo)
+  if (!resultado.prazoMeses) {
+    const mPrazo =
+      trechoFin.match(
+        /(?:PRAZO\s*(?:TOTAL|DE\s+REEMBOLSO|\(MESES\))?\s*:?\s*)(\d{2,3})\s*(?:MESES)?\b/i
+      ) ||
+      trechoFin.match(
+        /\b(144|120|108|96|84|72|60|48|36|24|12)\s+(?:ANUAL|MENSAL|SEMESTRAL)\b/i
+      ) ||
+      normSemAcento.match(
+        /PRAZO\s+TOTAL\s*:?\s*(\d{2,3})\s*MESES/i
+      ) ||
+      normSemAcento.match(
+        /\b(120|96|84|72|60)\s*MESES\b/i
+      );
+    if (mPrazo && mPrazo[1]) {
+      resultado.prazoMeses = mPrazo[1];
+    } else {
+      // Verifica se o prazo foi expresso em ANOS (ex: "10 anos")
+      const mPrazoAnos = trechoFin.match(/PRAZO\s*:?\s*(\d{1,2})\s*ANOS\b/i);
+      if (mPrazoAnos && mPrazoAnos[1]) {
+        resultado.prazoMeses = String(Number(mPrazoAnos[1]) * 12);
+      }
+    }
+  }
+
+  if (!resultado.carenciaMeses) {
+    const mCarencia =
+      trechoFin.match(
+        /CARENCIA\s*(?:\(MESES\))?\s*:?\s*(?:JUROS\s*\(A\.A\.\)\s*:?\s*)?\b(0|6|12|18|24|36|48|60)\b/i
+      ) ||
+      trechoFin.match(
+        /\b(48|36|24|12|6|0)\s+[0-9]{1,2}[.,][0-9]{2}\s*%/i
+      ) ||
+      normSemAcento.match(
+        /CARENCIA\s*:?\s*(\d{1,2})\s*MESES/i
+      );
+    if (mCarencia && mCarencia[1]) {
+      resultado.carenciaMeses = mCarencia[1];
+    } else {
+      const mCarAnos = trechoFin.match(/CARENCIA\s*:?\s*(\d{1})\s*ANOS?\b/i);
+      if (mCarAnos && mCarAnos[1]) {
+        resultado.carenciaMeses = String(Number(mCarAnos[1]) * 12);
+      }
+    }
+  }
+
+  // Fallback padrão PRONAF A se identificou porte PRONAF A e não achou prazo/carência explícitos
+  if (resultado.porteSugeridoPeloPdf === 'PRONAF_A') {
+    if (!resultado.prazoMeses) resultado.prazoMeses = '120';
+    if (!resultado.carenciaMeses) resultado.carenciaMeses = '36';
+  }
+
+  const matchObjCurto =
+    textoLimpo.match(
+      /Objetivo\s+do\s+Cr[ée]dito\s*:?\s*(?:\d{2}\/\d{2}\/\d{4}\s+)?(Amplia[çc][ãa]o|Implanta[çc][ãa]o|Moderniza[çc][ãa]o|Reforma|Custeio|Manuten[çc][ãa]o|Expans[ãa]o)/i
+    ) ||
+    textoLimpo.match(
+      /(?:\d{2}\/\d{2}\/\d{4})\s+(Amplia[çc][ãa]o|Implanta[çc][ãa]o|Moderniza[çc][ãa]o|Reforma|Custeio)\s+Objetivo\s+do\s+Cr[ée]dito/i
+    );
   if (matchObjCurto && matchObjCurto[1]) {
     resultado.objetivoCurto = matchObjCurto[1].trim().toUpperCase();
   }
@@ -638,34 +1285,76 @@ export function extrairDadosDetalhadosDoPdfProjeto(
       .trim();
   }
 
+  // =========================================================================
+  // MOTOR DE EXTRAÇÃO DE ITENS DE INVERSÃO (POR LINHAS ESPACIAIS X,Y + REGEX)
+  // =========================================================================
+  const adicionarItemUnico = (itemCand: ItemInversaoExtraidoPdf) => {
+    const discLimpa = itemCand.discriminacao
+      .replace(
+        /^(?:Investimento\s+Total|Valor\s+Financiam\.|Programa\s+de\s+Investimentos|Comp[õo]e\s+Garantia\??|Discrimina[çc][ãa]o|Or[çc]amento|Unid\.|Quant\.|Valor\s+Unit\.?)\s+/gi,
+        ''
+      )
+      .replace(/^\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase();
+
+    if (
+      discLimpa.length < 4 ||
+      discLimpa.includes('SUBTOTAL') ||
+      discLimpa.includes('TOTAL FINANCIADO') ||
+      discLimpa.includes('CUSTO DE ASSESSORIA') ||
+      discLimpa.includes('DISCRIMINACAO') ||
+      discLimpa.startsWith('PAG ')
+    ) {
+      return;
+    }
+
+    const chave = `${discLimpa}_${itemCand.valorFinanciado}`;
+    const jaExiste = resultado.itensInversao.some(
+      (x) => `${x.discriminacao}_${x.valorFinanciado}` === chave
+    );
+    if (!jaExiste) {
+      resultado.itensInversao.push({
+        ...itemCand,
+        discriminacao: discLimpa,
+      });
+    }
+  };
+
+  // Estágio A: Varredura linha a linha nas linhas reconstruídas por coordenadas (X, Y)
+  const linhasReconstruidas = textoProjeto.split(/\r?\n/);
+  const regexLinhaEspacialItem =
+    /^([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s.,\/\-º°()]{4,95}?)\s+(?:(?:Sim|N[ãa]o)\s+)?(\d+(?:[.,]\d+)?)\s+(Ha|Hectares?|Unidade|Unid\.?|Und\.?|UA|Cab\.?|Cabe[çc]as?|m|m2|m²|m3|m³|km|vb|Verba|Conjunto|Conj\.?|Serv\.?|Servi[çc]o|Ton\.?|kg|lt|sc|Sacos?|M[êe]s|Meses)\b.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+)?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})(?:\s+\d{1,3}(?:[.,]\d{3})*[.,]\d{2})?$/i;
+
+  for (const linhaBruta of linhasReconstruidas) {
+    const l = linhaBruta.replace(/\[PÁG \d+\]/g, '').trim();
+    if (l.length < 15) continue;
+    const mEsp = l.match(regexLinhaEspacialItem);
+    if (mEsp) {
+      adicionarItemUnico({
+        discriminacao: mEsp[1],
+        quantidade: mEsp[2].replace('.', ','),
+        unidade: mEsp[3].trim(),
+        valorUnitario: mEsp[4].replace(/\.(?=\d{2}$)/, ','),
+        valorFinanciado: mEsp[5].replace(/\.(?=\d{2}$)/, ','),
+      });
+    }
+  }
+
+  // Estágio B: Fallback com Regex Global no stream contínuo (caso itens estejam colados na mesma linha)
   const regexItensPag4 =
-    /([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s.,\/\-º°]{5,85}?)\s+(?:N[ãa]o|Sim)\s+(\d+(?:[.,]\d+)?)\s+(Ha|Unidade|unid|m|m2|m³|km|vb|Verba|Conjunto|Cabe[çc]a)\s+(?:Cobertura\s+do\s+Solo|Semovente\s*s?|Edifica[çc][õo]es|M[áa]quinas|Instala[çc][õo]es| Outros|[A-Za-zÀ-ú\s]+?)\s+\d+\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+)?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi;
+    /([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s.,\/\-º°]{5,85}?)\s+(?:N[ãa]o|Sim)\s+(\d+(?:[.,]\d+)?)\s+(Ha|Unidade|unid|und|UA|Cab|Cabe[çc]a|m|m2|m³|km|vb|Verba|Conjunto)\s+(?:Cobertura\s+do\s+Solo|Semovente\s*s?|Edifica[çc][õo]es|M[áa]quinas|Instala[çc][õo]es|Outros|[A-Za-zÀ-ú\s]+?)\s+\d+\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(?:\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+)?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/gi;
 
   let mItem: RegExpExecArray | null;
   while ((mItem = regexItensPag4.exec(textoLimpo)) !== null) {
-    let disc = mItem[1]
-      .replace(
-        /^(?:Investimento\s+Total|Valor\s+Financiam\.|Programa\s+de\s+Investimentos|Comp[õo]e\s+Garantia\??|Discrimina[çc][ãa]o)\s+/gi,
-        ''
-      )
-      .replace(/\s+/g, ' ')
-      .trim();
-    disc = disc.replace(/^\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s+/, '').trim();
-
-    const qtd = mItem[2].replace('.', ',');
-    const unid = mItem[3].trim();
-    const vrUnit = mItem[4].replace(/\.(?=\d{2}$)/, ',');
-    const vrFin = mItem[5].replace(/\.(?=\d{2}$)/, ',');
-
-    if (disc.length >= 4 && !disc.toUpperCase().includes('SUBTOTAL')) {
-      resultado.itensInversao.push({
-        discriminacao: disc.toUpperCase(),
-        quantidade: qtd,
-        unidade: unid,
-        valorUnitario: vrUnit,
-        valorFinanciado: vrFin,
-      });
-    }
+    adicionarItemUnico({
+      discriminacao: mItem[1],
+      quantidade: mItem[2].replace('.', ','),
+      unidade: mItem[3].trim(),
+      valorUnitario: mItem[4].replace(/\.(?=\d{2}$)/, ','),
+      valorFinanciado: mItem[5].replace(/\.(?=\d{2}$)/, ','),
+    });
   }
 
   if (resultado.itensInversao.length > 0) {
@@ -820,12 +1509,36 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   );
 
   const extraidos: PdfExtraidoInfo[] = [];
+  const reclassificacoesPorConteudo: Record<string, string> = {};
+
   for (const item of pdfsParaLer) {
     const info = await extrairTextoEAssinaturaDoPdf(
       item.fileObj,
       item.categoria,
       item.isViti
     );
+
+    // PARTE 7.1: Identifica o documento pelo conteúdo interno do PDF mesmo que o nome esteja bagunçado!
+    const idConteudo = identificarCategoriaRealPeloConteudoPdf({
+      nomeOriginal: item.nomeOriginal,
+      categoriaAtual: item.categoria,
+      isVitiAtual: item.isViti,
+      textoExtraido: info.textoCompleto + '\n' + (info.textoStreamBruto || ''),
+      titularNome,
+      conjugeNome,
+    });
+
+    if (idConteudo.isVitiDetectado) {
+      info.isViti = true;
+    }
+    if (idConteudo.codigoAuditor && !info.isViti) {
+      info.categoria = idConteudo.codigoAuditor;
+    }
+    if (idConteudo.categoriaUniversal && !info.isViti) {
+      reclassificacoesPorConteudo[item.nomeOriginal] =
+        idConteudo.categoriaUniversal;
+    }
+
     extraidos.push(info);
   }
 
@@ -843,23 +1556,106 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   const pdfSolicitacaoLim = obterPorCat('ITEM_SOLICITACAO_LIMITE', false);
   const pdfProcuracao = obterPorCat('CAD_6_PROCURACAO', false);
   const pdfCasamento = obterPorCat('CAD_2_CERTIDAO_CASAMENTO', false);
-  const pdfIdTitular = obterPorCat('CAD_1_IDENTIDADE_TITULAR', false);
-  const pdfIdConjuge = obterPorCat('CAD_1_IDENTIDADE_CONJUGE', false);
-
   const dadosProjetoParaParecer = extrairDadosDetalhadosDoPdfProjeto(
     (pdfProjeto?.textoCompleto || '') +
       '\n' +
-      (pdfSolicitacaoLim?.textoCompleto || '')
+      (pdfSolicitacaoLim?.textoCompleto || ''),
+    (pdfProjeto?.textoStreamBruto || '') +
+      '\n' +
+      (pdfSolicitacaoLim?.textoStreamBruto || '')
   );
+  if (titularNome && !dadosProjetoParaParecer.clienteNome) {
+    dadosProjetoParaParecer.clienteNome = titularNome;
+  }
+
+  const conjugeEfetivo =
+    conjugeNome.trim() || dadosProjetoParaParecer.conjugeNome || '';
+
+  // Se houver um 2º arquivo de Identidade na pasta (ou uma Identidade cujo nome não é o do Titular)
+  // e ainda não havia sido marcado como CAD_1_IDENTIDADE_CONJUGE, promove-o automaticamente!
+  const todosPdfsIdentidade = extraidos.filter(
+    (e) =>
+      !e.isViti &&
+      (e.categoria === 'CAD_1_IDENTIDADE_TITULAR' ||
+        e.categoria === 'CAD_1_IDENTIDADE_CONJUGE' ||
+        e.categoria === 'CAD_1_IDENTIDADE_OUTRO' ||
+        /\b(IDENTIDADE|RG|CNH|CIN)\b/i.test(e.nomeOriginal))
+  );
+
+  const primTitNorm = normalizarSemAcento(
+    (dadosProjetoParaParecer.clienteNome || titularNome).split(/\s+/)[0] || ''
+  );
+  const primConjNorm = normalizarSemAcento(
+    conjugeEfetivo.split(/\s+/)[0] || ''
+  );
+
+  for (const docId of todosPdfsIdentidade) {
+    const nUp = normalizarSemAcento(docId.nomeOriginal);
+    const tUp = normalizarSemAcento(docId.textoCompleto);
+    if (
+      (primConjNorm.length >= 3 &&
+        (nUp.includes(primConjNorm) || tUp.includes(primConjNorm))) ||
+      (primTitNorm.length >= 3 &&
+        !nUp.includes(primTitNorm) &&
+        todosPdfsIdentidade.length >= 2)
+    ) {
+      docId.categoria = 'CAD_1_IDENTIDADE_CONJUGE';
+      reclassificacoesPorConteudo[docId.nomeOriginal] =
+        'CAD_1_IDENTIDADE_CONJUGE';
+    }
+  }
+
+  const pdfIdTitular = obterPorCat('CAD_1_IDENTIDADE_TITULAR', false);
+  const pdfIdConjuge = obterPorCat('CAD_1_IDENTIDADE_CONJUGE', false);
+  const pdfIdOutro = obterPorCat('CAD_1_IDENTIDADE_OUTRO', false);
+
+  // Fallback de Datas de Nascimento (para consulta de CND na Receita Federal) a partir dos PDFs de Identidade, CAF e Procuração
+  const extrairDataNascDeDoc = (txt: string): string => {
+    if (!txt) return '';
+    const m =
+      txt.match(
+        /(?:NASCIMENTO|DATA\s+DE\s+NASC\.?|NASC\.?)\s*:?\s*(\d{2}\/\d{2}\/(?:19[2-9]\d|200\d))/i
+      ) || txt.match(/\b(\d{2}\/\d{2}\/(?:19[3-9]\d|200\d))\b/);
+    return m && m[1] ? m[1] : '';
+  };
+
+  if (!dadosProjetoParaParecer.clienteDataNascimento) {
+    dadosProjetoParaParecer.clienteDataNascimento =
+      extrairDataNascDeDoc(pdfIdTitular?.textoCompleto || '') ||
+      extrairDataNascDeDoc(pdfCaf?.textoCompleto || '') ||
+      extrairDataNascDeDoc(pdfEspelho?.textoCompleto || '');
+  }
+
+  if (!dadosProjetoParaParecer.conjugeDataNascimento) {
+    dadosProjetoParaParecer.conjugeDataNascimento =
+      extrairDataNascDeDoc(pdfIdConjuge?.textoCompleto || '') ||
+      extrairDataNascDeDoc(pdfCasamento?.textoCompleto || '');
+  }
+
+  if (pdfIdOutro || pdfProcuracao) {
+    const txtProc =
+      (pdfIdOutro?.textoCompleto || '') +
+      '\n' +
+      (pdfProcuracao?.textoCompleto || '');
+    if (!dadosProjetoParaParecer.procuradorDataNascimento) {
+      dadosProjetoParaParecer.procuradorDataNascimento =
+        extrairDataNascDeDoc(txtProc);
+    }
+    const mCpfProc = txtProc.match(/\b(\d{3}\.?\d{3}\.?\d{3}-?\d{2})\b/);
+    if (mCpfProc && !dadosProjetoParaParecer.procuradorCpfExtraido) {
+      dadosProjetoParaParecer.procuradorCpfExtraido = mCpfProc[1];
+    }
+  }
+
+  if (pdfProjeto || pdfSolicitacaoLim || pdfIdTitular || pdfIdConjuge) {
+    salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
+  }
   if (titularNome && !dadosProjetoParaParecer.clienteNome) {
     dadosProjetoParaParecer.clienteNome = titularNome;
   }
   if (pdfProjeto || pdfSolicitacaoLim) {
     salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
   }
-
-  const conjugeEfetivo =
-    conjugeNome.trim() || dadosProjetoParaParecer.conjugeNome || '';
 
   const itensDiagnostico: ItemDiagnosticoPdf[] = [];
 
@@ -1278,25 +2074,44 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     estadoCivilNoProj.includes('UNIAO') ||
     /\b(CONJUGE|COMPANHEIRO|COMPANHEIRA)\b/.test(txtTodosCadastro);
 
-  const temDocConjugeNaPasta =
-    Boolean(pdfIdConjuge) || Boolean(conjugeEfetivo);
+  const ehCasadoFormal =
+    estadoCivilNoProj.includes('CASAD') || Boolean(pdfCasamento);
+  const ehUniaoEstavel =
+    !ehCasadoFormal &&
+    (estadoCivilNoProj.includes('UNIAO') || Boolean(conjugeEfetivo));
 
-  const estadoCivilDetectado =
-    estadoCivilNoProj ||
-    (possuiConjugeReal ? 'CASADO(A) / UNIÃO ESTÁVEL' : 'SOLTEIRO(A)');
+  const temDocIdConjugeFisico = Boolean(pdfIdConjuge);
+  const faltaCertidaoCasamento = ehCasadoFormal && !pdfCasamento;
+
+  const estadoCivilDetectado = ehCasadoFormal
+    ? 'CASADO(A)'
+    : ehUniaoEstavel
+    ? 'UNIÃO ESTÁVEL'
+    : estadoCivilNoProj || 'SOLTEIRO(A)';
+
+  const erroItem10 =
+    (possuiConjugeReal && !temDocIdConjugeFisico) || faltaCertidaoCasamento;
 
   itensDiagnostico.push({
     numero: 10,
-    titulo: '10. Consistência de Estado Civil e Documentação do Cônjuge',
-    status: possuiConjugeReal && !temDocConjugeNaPasta ? 'ERRO' : 'OK',
-    resumo:
-      possuiConjugeReal && !temDocConjugeNaPasta
-        ? '🚨 ALERTA: O Projeto/Documentos indicam Cônjuge ou União Estável, mas NÃO HÁ documento de identificação do Cônjuge na pasta!'
-        : possuiConjugeReal
-        ? `Estado civil (${estadoCivilDetectado}) consistente e Cônjuge (${
-            conjugeEfetivo || 'Identificado'
-          }) validado.`
-        : 'Titular Solteiro(a) / Sem Cônjuge (Não exige certidões nem documentos de cônjuge).',
+    titulo:
+      '10. Consistência de Estado Civil, Identidade do Cônjuge e Certidão de Casamento',
+    status: erroItem10 ? 'ERRO' : 'OK',
+    resumo: !possuiConjugeReal
+      ? 'Titular Solteiro(a) / Sem Cônjuge (Não exige certidões nem documentos de cônjuge).'
+      : !temDocIdConjugeFisico
+      ? `🚨 ALERTA: Consta Cônjuge/Companheiro(a) (${
+          conjugeEfetivo || estadoCivilDetectado
+        }), mas FALTA o Documento de Identificação do Cônjuge na pasta!`
+      : faltaCertidaoCasamento
+      ? `🚨 ALERTA: Estado civil é CASADO(A), mas FALTA a Certidão de Casamento na pasta!`
+      : ehUniaoEstavel
+      ? `✅ União Estável (${
+          conjugeEfetivo || 'Companheiro(a)'
+        }): Identidade do(a) companheiro(a) validada (Isento de Certidão de Casamento).`
+      : `✅ Casado(a) (${
+          conjugeEfetivo || 'Cônjuge'
+        }): Identidade do Cônjuge e Certidão de Casamento validadas na pasta.`,
   });
 
   // 12. EXCLUSIVO PRONAF A: PRESENÇA DO CLIENTE NA RB DO P.A.
@@ -1874,6 +2689,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     arquivosComAssinaturaDigital,
     arquivosSemAssinaturaDigital,
     reclassificacoesSocioambiental,
+    reclassificacoesPorConteudo,
     kmlCorrigidoAutomaticamente,
     exigenciasSocioambientaisDetectadas,
     itensDiagnostico: itensDiagnostico.sort((a, b) => a.numero - b.numero),
