@@ -7,6 +7,7 @@ import { obterListaProjetistas } from '@/lib/utils';
 import {
   carregarFerramentasSync,
   carregarCoringasGavetaSync,
+  salvarCoringaGavetaSync,
 } from '@/lib/firebaseSync';
 import {
   PorteOrganizador,
@@ -14,7 +15,18 @@ import {
   EscopoOperacaoPasta,
   CategoriaDocPasta,
   classificarArquivoUniversal,
+  isArquivoParecerGerencialReal,
 } from '@/lib/motorPerfisOrganizadorPastas';
+import {
+  ItemConformidadePronafA,
+  ListaSalvaConformidadePronafA,
+  STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A,
+} from '@/components/ferramentas/ModalConformidadePronafA';
+import {
+  aplicarMascaraCPF,
+  aplicarMascaraDataBR,
+  aplicarMascaraMoedaInput,
+} from '@/lib/utils';
 import {
   executarAuditoriaCompletaDosPdfsDaPasta,
   ResultadoAuditoriaPastaPdf,
@@ -196,6 +208,125 @@ function extrairPrimeiroNome(nome: string): string {
   return removerAcentos((nome || '').trim().split(/\s+/)[0] || '').toUpperCase();
 }
 
+const STORAGE_KEY_RAIOX_MANUAL_CLIENTES =
+  'bnb_v2_raiox_manual_clientes_conformidade';
+
+interface DadosRaioXManualCliente {
+  chaveCliente: string;
+  titularNome: string;
+  titularCpf: string;
+  titularDataNasc: string;
+  estadoCivil: string;
+  conjugeNome: string;
+  conjugeCpf: string;
+  conjugeDataNasc: string;
+  procuradorNome: string;
+  procuradorCpf: string;
+  procuradorDataNasc: string;
+  valorFinanciado: string;
+  prazoMeses: string;
+  carenciaMeses: string;
+  contaCorrente: string;
+  projetista: string;
+  imovelPa: string;
+  areaHa: string;
+  reciboCar: string;
+  atualizadoEm: string;
+}
+
+function obterMapaRaioXLocal(): Record<string, DadosRaioXManualCliente> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_RAIOX_MANUAL_CLIENTES);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function buscarRaioXSalvoDoCliente(
+  nomeCliente: string,
+  cpfCliente: string,
+  nomePasta: string,
+  coringasNuvem?: CoringaGavetaItem[]
+): DadosRaioXManualCliente | null {
+  const mapa = obterMapaRaioXLocal();
+  const cpfLimpo = (cpfCliente || '').replace(/\D/g, '');
+  const nomeNorm = normalizarSemAcento(nomeCliente);
+  const pastaNorm = normalizarSemAcento(
+    (nomePasta || '').replace(/^\d+\s*[-–.]\s*/, '')
+  );
+
+  if (cpfLimpo.length >= 9 && mapa[`CPF_${cpfLimpo}`]) {
+    return mapa[`CPF_${cpfLimpo}`];
+  }
+  if (nomeNorm.length >= 3 && mapa[`NOME_${nomeNorm}`]) {
+    return mapa[`NOME_${nomeNorm}`];
+  }
+  if (pastaNorm.length >= 3 && mapa[`NOME_${pastaNorm}`]) {
+    return mapa[`NOME_${pastaNorm}`];
+  }
+
+  // Fallback: busca nos itens sincronizados na nuvem Firebase (tipo RAIOX_CLIENTE_CACHE)
+  if (coringasNuvem && coringasNuvem.length > 0) {
+    const itemNuvem = coringasNuvem.find((c) => {
+      if (c.tipo !== 'RAIOX_CLIENTE_CACHE') return false;
+      const refNorm = normalizarSemAcento(c.chaveReferencia);
+      return (
+        (cpfLimpo.length >= 9 && refNorm.includes(cpfLimpo)) ||
+        (nomeNorm.length >= 4 && refNorm === nomeNorm) ||
+        (pastaNorm.length >= 4 && refNorm === pastaNorm)
+      );
+    });
+    if (itemNuvem && itemNuvem.base64Dados) {
+      try {
+        const jsonStr = decodeURIComponent(
+          escape(window.atob(itemNuvem.base64Dados))
+        );
+        return JSON.parse(jsonStr) as DadosRaioXManualCliente;
+      } catch {
+        // Ignora erro de decode
+      }
+    }
+  }
+
+  return null;
+}
+
+async function salvarRaioXDoClienteLocalENuvem(
+  dados: DadosRaioXManualCliente
+): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    const mapa = obterMapaRaioXLocal();
+    const cpfLimpo = (dados.titularCpf || '').replace(/\D/g, '');
+    const nomeNorm = normalizarSemAcento(dados.titularNome);
+
+    if (cpfLimpo.length >= 9) mapa[`CPF_${cpfLimpo}`] = dados;
+    if (nomeNorm.length >= 3) mapa[`NOME_${nomeNorm}`] = dados;
+
+    window.localStorage.setItem(
+      STORAGE_KEY_RAIOX_MANUAL_CLIENTES,
+      JSON.stringify(mapa)
+    );
+
+    const refChave = nomeNorm || cpfLimpo || 'CLIENTE';
+    const jsonStr = JSON.stringify(dados);
+    const b64 = window.btoa(unescape(encodeURIComponent(jsonStr)));
+
+    await salvarCoringaGavetaSync({
+      id: `RAIOX_CLIENTE_${refChave.replace(/[^A-Z0-9]/g, '_')}`,
+      tipo: 'RAIOX_CLIENTE_CACHE' as any,
+      chaveReferencia: `${refChave}${cpfLimpo ? `_${cpfLimpo}` : ''}`,
+      nomeArquivoOriginal: `RAIOX_${refChave}.json`,
+      base64Dados: b64,
+      dataAtualizacao: new Date().toISOString(),
+    });
+  } catch {
+    // Fallback local garantido
+  }
+}
+
 export default function TelaConformidadeProjetoCompleta({
   aberto,
   onFechar,
@@ -237,46 +368,404 @@ export default function TelaConformidadeProjetoCompleta({
   );
   const [painelEdicaoRapidaAberto, setPainelEdicaoRapidaAberto] =
     useState(false);
+  // Estados Editáveis do "📋 RAIO-X EXTRAÍDO DO PROJETO" (Sincronizados com Nuvem + Cache Parecer)
+  const [editCpfTitular, setEditCpfTitular] = useState('');
+  const [editNascTitular, setEditNascTitular] = useState('');
+  const [editEstadoCivil, setEditEstadoCivil] = useState('');
+  const [editCpfConjuge, setEditCpfConjuge] = useState('');
+  const [editNascConjuge, setEditNascConjuge] = useState('');
+  const [editProcuradorNome, setEditProcuradorNome] = useState('');
+  const [editCpfProcurador, setEditCpfProcurador] = useState('');
+  const [editNascProcurador, setEditNascProcurador] = useState('');
   const [editValorProj, setEditValorProj] = useState('');
   const [editPrazoProj, setEditPrazoProj] = useState('');
   const [editCarenciaProj, setEditCarenciaProj] = useState('');
   const [editCcConsol, setEditCcConsol] = useState('');
+  const [editAreaHa, setEditAreaHa] = useState('');
+  const [editCarRecibo, setEditCarRecibo] = useState('');
   const [editItensTexto, setEditItensTexto] = useState('');
+  const [statusSalvoRaioX, setStatusSalvoRaioX] = useState('');
 
+  // Carrega todos os registros do Modal de Conformidade PRONAF A
+  const todosItensConformidadePronafA = useMemo(() => {
+    if (typeof window === 'undefined') return [];
+    const acumulados: ItemConformidadePronafA[] = [];
+    try {
+      const raw = window.localStorage.getItem(
+        STORAGE_KEY_LISTAS_CONFORMIDADE_PRONAF_A
+      );
+      if (raw) {
+        const listas: ListaSalvaConformidadePronafA[] = JSON.parse(raw);
+        listas.forEach((l) => {
+          (l.itens || []).forEach((it) => {
+            if (it.nomeCliente && it.nomeCliente.trim()) {
+              acumulados.push(it);
+            }
+          });
+        });
+      }
+    } catch {
+      // Ignora erro
+    }
+    return acumulados;
+  }, [aberto, nomePasta]);
+
+  // Cruza o cliente atual com a Planilha de Conformidade PRONAF A
+  const registroConformidadePronafAVinculado = useMemo(() => {
+    const nomeLimpo = normalizarSemAcento(titularDetectado || nomePasta);
+    const cpfLimpo = (
+      editCpfTitular ||
+      auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+      ''
+    ).replace(/\D/g, '');
+
+    if (nomeLimpo.length < 3 && cpfLimpo.length < 9) return null;
+
+    return (
+      todosItensConformidadePronafA.find((it) => {
+        const itCpf = (it.cpfCliente || '').replace(/\D/g, '');
+        if (cpfLimpo.length >= 9 && itCpf === cpfLimpo) return true;
+
+        const nIt = normalizarSemAcento(it.nomeCliente);
+        const primIt = extrairPrimeiroNome(nIt);
+        return (
+          nIt === nomeLimpo ||
+          (nomeLimpo.length >= 5 &&
+            (nIt.startsWith(nomeLimpo) || nomeLimpo.startsWith(nIt))) ||
+          (nomeLimpo.split(/\s+/).length === 1 && primIt === nomeLimpo)
+        );
+      }) || null
+    );
+  }, [
+    titularDetectado,
+    nomePasta,
+    editCpfTitular,
+    auditoriaPdf,
+    todosItensConformidadePronafA,
+  ]);
+
+  // Diagnóstico de Restrições e Pendências vindas do Modal de Conformidade PRONAF A
+  const alertasConformidadePronafA = useMemo(() => {
+    const reg = registroConformidadePronafAVinculado;
+    if (!reg) return [];
+
+    const apontamentos: Array<{
+      id: string;
+      nivel: 'ERRO' | 'ALERTA' | 'OK';
+      texto: string;
+      responsavel: 'ANALISTA_BANCO' | 'PROJETISTA_CLIENTE';
+    }> = [];
+
+    // 1. Visita Técnica / Gerencial
+    if (
+      reg.visitado &&
+      (reg.visitado.toUpperCase() === 'NAO' ||
+        reg.visitado.toUpperCase() === 'NÃO')
+    ) {
+      apontamentos.push({
+        id: 'CONF_VISITA',
+        nivel: 'ALERTA',
+        texto:
+          '⚠️ Conformidade PRONAF A: Cliente consta como NÃO VISITADO na planilha de conformidade.',
+        responsavel: 'ANALISTA_BANCO',
+      });
+    }
+
+    // 2. Situação Cadastral do Titular (S400)
+    const cadCliUp = (reg.cadastroClienteOk || '').toUpperCase().trim();
+    if (cadCliUp && cadCliUp !== 'OK') {
+      apontamentos.push({
+        id: 'CONF_CAD_TITULAR',
+        nivel: 'ERRO',
+        texto: `🚨 Conformidade PRONAF A: Cadastro do Titular consta como "${
+          reg.cadastroClienteOk
+        }"${
+          reg.dataRefCadastral ? ` (Data ref.: ${reg.dataRefCadastral})` : ''
+        }.`,
+        responsavel: 'ANALISTA_BANCO',
+      });
+    }
+
+    // 3. Restrições do Titular
+    const restCliUp = (reg.restricaoClienteNivel || '').toUpperCase().trim();
+    if (restCliUp && restCliUp !== 'SEM_RESTRICAO') {
+      const ehGrave =
+        restCliUp.includes('GRAVE') || restCliUp.includes('IMPEDITIV');
+      apontamentos.push({
+        id: 'CONF_REST_TITULAR',
+        nivel: ehGrave ? 'ERRO' : 'ALERTA',
+        texto: `${
+          ehGrave ? '🚨 IMPEDIMENTO' : '⚠️ RESTRIÇÃO LEVE'
+        } na Conformidade PRONAF A (Titular): ${
+          reg.restricaoClienteDetalhe || reg.restricaoClienteNivel
+        }${
+          !ehGrave
+            ? ' (Incluir justificativa no item 2.2 do Parecer Gerencial)'
+            : ''
+        }.`,
+        responsavel: ehGrave ? 'PROJETISTA_CLIENTE' : 'ANALISTA_BANCO',
+      });
+    }
+
+    // 4. Cadastro e Restrições do Cônjuge
+    if (reg.conjugeNome && reg.conjugeNome.trim()) {
+      const cadConjUp = (reg.cadastroConjugeOk || '').toUpperCase().trim();
+      if (
+        cadConjUp &&
+        cadConjUp !== 'OK' &&
+        cadConjUp !== 'NAO_SE_APLICA' &&
+        cadConjUp !== 'NÃO SE APLICA'
+      ) {
+        apontamentos.push({
+          id: 'CONF_CAD_CONJUGE',
+          nivel: 'ERRO',
+          texto: `🚨 Conformidade PRONAF A: Cadastro do Cônjuge (${reg.conjugeNome}) consta como "${reg.cadastroConjugeOk}".`,
+          responsavel: 'ANALISTA_BANCO',
+        });
+      }
+
+      const restConjUp = (reg.restricaoConjugeNivel || '').toUpperCase().trim();
+      if (
+        restConjUp &&
+        restConjUp !== 'SEM_RESTRICAO' &&
+        restConjUp !== 'NAO_SE_APLICA'
+      ) {
+        const ehGrave =
+          restConjUp.includes('GRAVE') || restConjUp.includes('IMPEDITIV');
+        apontamentos.push({
+          id: 'CONF_REST_CONJUGE',
+          nivel: ehGrave ? 'ERRO' : 'ALERTA',
+          texto: `${
+            ehGrave ? '🚨 IMPEDIMENTO' : '⚠️ RESTRIÇÃO LEVE'
+          } na Conformidade PRONAF A (Cônjuge - ${reg.conjugeNome}): ${
+            reg.restricaoConjugeDetalhe || reg.restricaoConjugeNivel
+          }.`,
+          responsavel: ehGrave ? 'PROJETISTA_CLIENTE' : 'ANALISTA_BANCO',
+        });
+      }
+    }
+
+    // 5. Cadastro e Restrições do Procurador
+    if (reg.procuradorNome && reg.procuradorNome.trim()) {
+      const cadProcUp = (reg.cadastroProcuradorOk || '').toUpperCase().trim();
+      if (
+        cadProcUp &&
+        cadProcUp !== 'OK' &&
+        cadProcUp !== 'NAO_SE_APLICA' &&
+        cadProcUp !== 'NÃO SE APLICA'
+      ) {
+        apontamentos.push({
+          id: 'CONF_CAD_PROC',
+          nivel: 'ERRO',
+          texto: `🚨 Conformidade PRONAF A: Cadastro do Procurador (${reg.procuradorNome}) consta como "${reg.cadastroProcuradorOk}".`,
+          responsavel: 'ANALISTA_BANCO',
+        });
+      }
+
+      const restProcUp = (reg.restricaoProcuradorNivel || '')
+        .toUpperCase()
+        .trim();
+      if (
+        restProcUp &&
+        restProcUp !== 'SEM_RESTRICAO' &&
+        restProcUp !== 'NAO_SE_APLICA'
+      ) {
+        const ehGrave =
+          restProcUp.includes('GRAVE') || restProcUp.includes('IMPEDITIV');
+        apontamentos.push({
+          id: 'CONF_REST_PROC',
+          nivel: ehGrave ? 'ERRO' : 'ALERTA',
+          texto: `${
+            ehGrave ? '🚨 IMPEDIMENTO' : '⚠️ RESTRIÇÃO LEVE'
+          } na Conformidade PRONAF A (Procurador - ${reg.procuradorNome}): ${
+            reg.restricaoProcuradorDetalhe || reg.restricaoProcuradorNivel
+          }.`,
+          responsavel: ehGrave ? 'PROJETISTA_CLIENTE' : 'ANALISTA_BANCO',
+        });
+      }
+    }
+
+    // 6. Conta Corrente na Planilha de Conformidade
+    const ccReg = (reg.contaCorrente || '').toUpperCase().trim();
+    if (!ccReg || ccReg.includes('SEM CONTA') || ccReg.includes('ABRIR')) {
+      apontamentos.push({
+        id: 'CONF_SEM_CONTA',
+        nivel: 'ERRO',
+        texto: `🚨 Conformidade PRONAF A: Cliente está "${
+          reg.contaCorrente || 'SEM CONTA CORRENTE'
+        }" na planilha de conformidade!`,
+        responsavel: 'ANALISTA_BANCO',
+      });
+    }
+
+    return apontamentos;
+  }, [registroConformidadePronafAVinculado]);
+
+  // Sincroniza os campos do Raio-X sempre que a auditoria de PDF terminar,
+  // mesclando com a Conformidade PRONAF A e com o Cache Salvo na Nuvem do Cliente!
   useEffect(() => {
     if (!auditoriaPdf) return;
-    setEditValorProj(auditoriaPdf.valorPropostaDetectado || '');
-    setEditPrazoProj(auditoriaPdf.prazoMesesDetectado || '');
-    setEditCarenciaProj(auditoriaPdf.carenciaMesesDetectada || '');
-    setEditCcConsol(auditoriaPdf.contaCorrenteConsolidada || '');
-    setEditItensTexto(auditoriaPdf.textoItensInversaoFormatado || '');
-  }, [auditoriaPdf]);
+    const d = auditoriaPdf.dadosProjetoParaParecer;
+    const regConf = registroConformidadePronafAVinculado;
 
-  const salvarAjustesManuaisDaLupinha = () => {
-    if (!auditoriaPdf) return;
-    const novosDadosProj = {
-      ...auditoriaPdf.dadosProjetoParaParecer,
-      valorTotalFinanciado: editValorProj,
+    const contr = contratacoes.find(
+      (c) =>
+        removerAcentos(c.cliente).toUpperCase().trim() ===
+        removerAcentos(d?.clienteNome || titularDetectado)
+          .toUpperCase()
+          .trim()
+    );
+
+    const cpfInicial =
+      d?.clienteCpf || regConf?.cpfCliente || contr?.cpf || '';
+    const salvoManual = buscarRaioXSalvoDoCliente(
+      d?.clienteNome || titularDetectado,
+      cpfInicial,
+      nomePasta
+    );
+
+    if (salvoManual?.titularNome && !titularDetectado) {
+      setTitularDetectado(salvoManual.titularNome);
+    }
+    if (
+      (salvoManual?.conjugeNome || regConf?.conjugeNome) &&
+      !conjugeDetectado
+    ) {
+      setConjugeDetectado(
+        salvoManual?.conjugeNome || regConf?.conjugeNome || ''
+      );
+    }
+    if (salvoManual?.projetista && !projetistaDetectado) {
+      setProjetistaDetectado(salvoManual.projetista);
+    }
+    if (salvoManual?.imovelPa && !paDetectado) {
+      setPaDetectado(salvoManual.imovelPa);
+    }
+
+    setEditCpfTitular(salvoManual?.titularCpf || cpfInicial);
+    setEditNascTitular(
+      salvoManual?.titularDataNasc || d?.clienteDataNascimento || ''
+    );
+    setEditEstadoCivil(
+      salvoManual?.estadoCivil || auditoriaPdf.estadoCivilDetectado || ''
+    );
+    setEditCpfConjuge(
+      salvoManual?.conjugeCpf || d?.conjugeCpf || regConf?.conjugeCpf || ''
+    );
+    setEditNascConjuge(
+      salvoManual?.conjugeDataNasc || d?.conjugeDataNascimento || ''
+    );
+    setEditProcuradorNome(
+      salvoManual?.procuradorNome ||
+        d?.procuradorNomeExtraido ||
+        regConf?.procuradorNome ||
+        ''
+    );
+    setEditCpfProcurador(
+      salvoManual?.procuradorCpf ||
+        d?.procuradorCpfExtraido ||
+        regConf?.procuradorCpf ||
+        ''
+    );
+    setEditNascProcurador(
+      salvoManual?.procuradorDataNasc || d?.procuradorDataNascimento || ''
+    );
+    setEditValorProj(
+      salvoManual?.valorFinanciado || auditoriaPdf.valorPropostaDetectado || ''
+    );
+    setEditPrazoProj(
+      salvoManual?.prazoMeses || auditoriaPdf.prazoMesesDetectado || ''
+    );
+    setEditCarenciaProj(
+      salvoManual?.carenciaMeses || auditoriaPdf.carenciaMesesDetectada || ''
+    );
+    setEditCcConsol(
+      salvoManual?.contaCorrente ||
+        auditoriaPdf.contaCorrenteConsolidada ||
+        regConf?.contaCorrente ||
+        ''
+    );
+    setEditAreaHa(salvoManual?.areaHa || d?.areaImovelHa || '');
+    setEditCarRecibo(
+      salvoManual?.reciboCar || auditoriaPdf.carEspecificoDetectado || ''
+    );
+    setEditItensTexto(auditoriaPdf.textoItensInversaoFormatado || '');
+  }, [auditoriaPdf, registroConformidadePronafAVinculado]);
+
+  const salvarAjustesManuaisDaLupinha = async (silencioso = false) => {
+    const pacoteRaioX: DadosRaioXManualCliente = {
+      chaveCliente: normalizarSemAcento(titularDetectado || nomePasta),
+      titularNome: titularDetectado,
+      titularCpf: editCpfTitular,
+      titularDataNasc: editNascTitular,
+      estadoCivil: editEstadoCivil,
+      conjugeNome: conjugeDetectado,
+      conjugeCpf: editCpfConjuge,
+      conjugeDataNasc: editNascConjuge,
+      procuradorNome: editProcuradorNome,
+      procuradorCpf: editCpfProcurador,
+      procuradorDataNasc: editNascProcurador,
+      valorFinanciado: editValorProj,
       prazoMeses: editPrazoProj,
       carenciaMeses: editCarenciaProj,
-      contaCorrenteExtraida: editCcConsol,
-      textoItensInversaoFormatado: editItensTexto,
+      contaCorrente: editCcConsol,
+      projetista: projetistaDetectado,
+      imovelPa: paDetectado,
+      areaHa: editAreaHa,
+      reciboCar: editCarRecibo,
+      atualizadoEm: new Date().toISOString(),
     };
-    salvarDadosExtraidosParaParecer(novosDadosProj);
 
-    setAuditoriaPdf({
-      ...auditoriaPdf,
-      valorPropostaDetectado: editValorProj,
-      prazoMesesDetectado: editPrazoProj,
-      carenciaMesesDetectada: editCarenciaProj,
-      contaCorrenteConsolidada: editCcConsol,
-      textoItensInversaoFormatado: editItensTexto,
-      dadosProjetoParaParecer: novosDadosProj,
-    });
-    setPainelEdicaoRapidaAberto(false);
-    alert(
-      '✅ Dados do Projeto atualizados e sincronizados com o Gerador de Parecer!'
-    );
+    await salvarRaioXDoClienteLocalENuvem(pacoteRaioX);
+
+    if (auditoriaPdf) {
+      const novosDadosProj = {
+        ...auditoriaPdf.dadosProjetoParaParecer,
+        clienteNome: titularDetectado,
+        clienteCpf: editCpfTitular,
+        clienteDataNascimento: editNascTitular,
+        estadoCivil: editEstadoCivil,
+        conjugeNome: conjugeDetectado,
+        conjugeCpf: editCpfConjuge,
+        conjugeDataNascimento: editNascConjuge,
+        procuradorNomeExtraido: editProcuradorNome,
+        procuradorCpfExtraido: editCpfProcurador,
+        procuradorDataNascimento: editNascProcurador,
+        valorTotalFinanciado: editValorProj,
+        prazoMeses: editPrazoProj,
+        carenciaMeses: editCarenciaProj,
+        contaCorrenteExtraida: editCcConsol,
+        denominacaoImovelPa: paDetectado,
+        areaImovelHa: editAreaHa,
+        textoItensInversaoFormatado: editItensTexto,
+      };
+      salvarDadosExtraidosParaParecer(novosDadosProj);
+
+      setAuditoriaPdf({
+        ...auditoriaPdf,
+        valorPropostaDetectado: editValorProj,
+        prazoMesesDetectado: editPrazoProj,
+        carenciaMesesDetectada: editCarenciaProj,
+        contaCorrenteConsolidada: editCcConsol,
+        carEspecificoDetectado: editCarRecibo,
+        estadoCivilDetectado: editEstadoCivil,
+        conjugeDetectadoNosPdfs: conjugeDetectado,
+        projetistaCurtoDetectado: projetistaDetectado,
+        paDetectadoNoProjeto: paDetectado,
+        textoItensInversaoFormatado: editItensTexto,
+        dadosProjetoParaParecer: novosDadosProj,
+      });
+    }
+
+    setStatusSalvoRaioX('☁️ Salvo na Nuvem!');
+    setTimeout(() => setStatusSalvoRaioX(''), 3500);
+
+    if (!silencioso) {
+      setPainelEdicaoRapidaAberto(false);
+      alert(
+        '✅ Dados do Raio-X salvos na Nuvem do cliente e sincronizados com o Parecer!'
+      );
+    }
   };
 
   useEffect(() => {
@@ -458,16 +947,10 @@ if (!titDet && handle.name) {
       ({ file, subpasta }, idx) => {
         const partes = file.name.split('.');
         const ext = partes.length > 1 ? (partes.pop() || '').toLowerCase() : '';
-        const upName = removerAcentos(file.name).toUpperCase().trim();
+        // QUALQUER arquivo .TXT criado pelo Organizador (Embargos, Improbidade, CNDT, SICOR, Falta..., etc.)
+        // é um lembrete de pendência, EXCETO o Parecer Gerencial quando já for o parecer real sem "FALTA"!
         const ehTxtPendencia =
-          ext === 'txt' &&
-          !upName.includes('PARECER GERENCIAL') &&
-          (upName.startsWith('FALTA ') ||
-            upName.startsWith('VERIFICAR ') ||
-            upName.startsWith('EMITIR ') ||
-            upName.startsWith('CONSULTAR ') ||
-            upName.startsWith('ELABORAR ') ||
-            upName.startsWith('RENOVAR '));
+          ext === 'txt' && !isArquivoParecerGerencialReal(file.name);
 
         const classif = classificarArquivoUniversal(
           file.name,
@@ -755,10 +1238,18 @@ if (!titDet && handle.name) {
   // ITENS 5, 5.1 E 5.2: VARREDURA COMPLETA DE TODOS OS DOCUMENTOS FALTANTES
   // SEPARADOS ENTRE "TAREFAS DO ANALISTA" E "PENDÊNCIAS DO PROJETISTA/CLIENTE"
   // ===========================================================================
+  const lembretesTxtRestantes = useMemo(
+    () => arquivosLidos.filter((a) => a.ehTxtPendencia),
+    [arquivosLidos]
+  );
+
   const matrizCompletaDocumentos = useMemo((): ItemVerificacaoCompletaPasta[] => {
     if (arquivosLidos.length === 0) return [];
 
-    const validos = arquivosLidos.filter((a) => !a.ehTxtPendencia);
+    // Documentos reais entregues (exclui todo e qualquer .txt de lembrete!)
+    const validos = arquivosLidos.filter(
+      (a) => !a.ehTxtPendencia && a.extensao !== 'txt'
+    );
     const buscarArqs = (
       categorias: CategoriaDocPasta[],
       termosNome: string[] = []
@@ -988,9 +1479,12 @@ if (!titDet && handle.name) {
       arquivosRelacionados: arqsConsol,
     });
 
-    const arqsParecerGer = buscarArqs(['ITEM_PARECER_GERENCIAL'], [
-      'PARECER GERENCIAL',
-    ]);
+    const arqsParecerGer = arquivosLidos.filter(
+      (a) =>
+        !a.ehTxtPendencia &&
+        (isArquivoParecerGerencialReal(a.nomeOriginal) ||
+          a.categoria === 'ITEM_PARECER_GERENCIAL')
+    );
     itens.push({
       id: 'AN_PARECER_GERENCIAL',
       titulo: '20. Parecer Gerencial (.TXT)',
@@ -1365,12 +1859,69 @@ if (!titDet && handle.name) {
       }
     }
 
+    // Inclui todos os arquivos .TXT de lembrete encontrados na pasta (criados pelo Organizador) como PENDENTES!
+    lembretesTxtRestantes.forEach((txtArq, idxTxt) => {
+      const nUp = removerAcentos(txtArq.nomeOriginal).toUpperCase();
+      const limpo = txtArq.nomeOriginal.replace(/\.txt$/i, '');
+      const ehTarefaAnalista =
+        nUp.includes('PARECER GERENCIAL') ||
+        nUp.includes('VERIFICAR C-C') ||
+        nUp.includes('CONSULTAR SELO') ||
+        nUp.includes('SELO') ||
+        nUp.includes('CNDT') ||
+        nUp.includes('CND ') ||
+        nUp.includes('CND-') ||
+        nUp.includes('EXTRATO DA CAF') ||
+        nUp.includes('ELABORAR CADASTRO') ||
+        nUp.includes('RENOVAR CADASTRO') ||
+        nUp.includes('EMBARGO') ||
+        nUp.includes('IMPROBIDADE') ||
+        nUp.includes('SICOR') ||
+        nUp.includes('CERTIFICACAO SOCIOAMBIENTAL') ||
+        nUp.includes('SOCIOAMBIENTAL') ||
+        nUp.includes('CAPA') ||
+        nUp.includes('VITI') ||
+        nUp.includes('VALIDAR ITI');
+
+      itens.push({
+        id: `TXT_PEND_${idxTxt}_${txtArq.id}`,
+        titulo: `📌 Lembrete .TXT na Pasta: ${
+          txtArq.caminhoSubpasta ? `[${txtArq.caminhoSubpasta}] ` : ''
+        }${limpo}`,
+        obrigatorio: true,
+        presente: false,
+        responsavel: ehTarefaAnalista
+          ? 'ANALISTA_BANCO'
+          : 'PROJETISTA_CLIENTE',
+        detalheStatus:
+          'Arquivo .TXT de lembrete criado pelo Organizador ainda consta na pasta (substituir pelo documento definitivo).',
+        arquivosRelacionados: [],
+      });
+    });
+
+    // Inclui também os alertas e restrições vindos do Modal de Conformidade PRONAF A!
+    alertasConformidadePronafA.forEach((al) => {
+      itens.push({
+        id: al.id,
+        titulo: al.texto,
+        obrigatorio: true,
+        presente: false,
+        responsavel: al.responsavel,
+        detalheStatus:
+          'Identificado no cruzamento com a Planilha de Conformidade PRONAF A.',
+        arquivosRelacionados: [],
+      });
+    });
+
     return itens;
   }, [
     arquivosLidos,
+    lembretesTxtRestantes,
+    alertasConformidadePronafA,
     porteAtivo,
     escopoAtivo,
     modalidadeAtiva,
+    titularDetectado,
     conjugeDetectado,
     auditoriaPdf,
   ]);
@@ -1536,21 +2087,17 @@ if (!titDet && handle.name) {
     arquivosLidos.length,
   ]);
 
-  const cpfTitular = useMemo(() => {
-    if (auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf) {
-      return auditoriaPdf.dadosProjetoParaParecer.clienteCpf;
-    }
-    const contr = contratacoes.find(
-      (c) =>
-        removerAcentos(c.cliente).toUpperCase().trim() ===
-        removerAcentos(titularDetectado).toUpperCase().trim()
-    );
-    return contr?.cpf || '';
-  }, [auditoriaPdf, contratacoes, titularDetectado]);
+  const cpfTitular =
+    editCpfTitular ||
+    auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+    registroConformidadePronafAVinculado?.cpfCliente ||
+    '';
 
-  const cpfConjuge = useMemo(() => {
-    return auditoriaPdf?.dadosProjetoParaParecer?.conjugeCpf || '';
-  }, [auditoriaPdf]);
+  const cpfConjuge =
+    editCpfConjuge ||
+    auditoriaPdf?.dadosProjetoParaParecer?.conjugeCpf ||
+    registroConformidadePronafAVinculado?.conjugeCpf ||
+    '';
 
   const montarRelatorioConformidadeWhatsApp = (): string => {
     const hoje = new Date().toLocaleDateString('pt-BR');
@@ -2053,159 +2600,521 @@ if (!titDet && handle.name) {
             )}
           </div>
 
-          {/* RAIO-X DOS DADOS EXTRAÍDOS DOS PDFs */}
+         {/* RAIO-X EDITÁVEL DO PROJETO COM SALVAMENTO AUTOMÁTICO NA NUVEM + CRUZAMENTO CONFORMIDADE PRONAF A */}
           <div
             style={{
               background: '#ffffff',
               borderRadius: '10px',
-              padding: '14px 16px',
+              padding: '12px 14px',
               border: '1px solid #cbd5e1',
               display: 'flex',
               flexDirection: 'column',
-              gap: '6px',
-              fontSize: '11.5px',
+              gap: '7px',
+              fontSize: '11px',
             }}
           >
-            <strong
+            <div
               style={{
-                fontSize: '12px',
-                color: '#004C27',
-                borderBottom: '1px dashed #e2e8f0',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                borderBottom: '1px dashed #cbd5e1',
                 paddingBottom: '6px',
               }}
             >
-              📋 RAIO-X EXTRAÍDO DO PROJETO
-            </strong>
+              <strong style={{ fontSize: '11.5px', color: '#004C27' }}>
+                📋 RAIO-X DO PROJETO (EDITÁVEL)
+              </strong>
+              <button
+                type="button"
+                onClick={() => salvarAjustesManuaisDaLupinha(true)}
+                style={{
+                  width: 'auto',
+                  padding: '3px 8px',
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  background: '#004C27',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+                title="Salva os dados preenchidos abaixo no Cache do Parecer e na Nuvem deste cliente"
+              >
+                {statusSalvoRaioX || '☁️ Salvar Raio-X'}
+              </button>
+            </div>
 
-            <div>
-              <strong>📁 Pasta:</strong> {nomePasta || '-'}
-            </div>
-            <div>
-              <strong>👤 Titular:</strong> {titularDetectado || '-'}
-            </div>
-            <div>
-              <strong>🪪 CPF / Nasc. Titular:</strong> {cpfTitular || '-'}{' '}
-              {dProj?.clienteDataNascimento && (
-                <span
+            {registroConformidadePronafAVinculado && (
+              <div
+                style={{
+                  background:
+                    alertasConformidadePronafA.length > 0
+                      ? '#fffbeb'
+                      : '#f0fdf4',
+                  border: `1px solid ${
+                    alertasConformidadePronafA.length > 0
+                      ? '#fcd34d'
+                      : '#86efac'
+                  }`,
+                  borderRadius: '6px',
+                  padding: '6px 8px',
+                  fontSize: '10.5px',
+                }}
+              >
+                <strong
                   style={{
-                    background: '#ecfdf5',
-                    color: '#047857',
-                    padding: '1px 6px',
-                    borderRadius: '4px',
-                    fontWeight: 800,
-                    fontSize: '10.5px',
-                    marginLeft: '4px',
+                    color:
+                      alertasConformidadePronafA.length > 0
+                        ? '#b45309'
+                        : '#15803d',
+                    display: 'block',
                   }}
                 >
-                  🎂 {dProj.clienteDataNascimento}
+                  🔗 Vinculado à Conformidade PRONAF A:
+                </strong>
+                <span>
+                  Visita: <b>{registroConformidadePronafAVinculado.visitado}</b>{' '}
+                  • Cad:{' '}
+                  <b>{registroConformidadePronafAVinculado.cadastroClienteOk}</b>{' '}
+                  • C/C:{' '}
+                  <b>
+                    {registroConformidadePronafAVinculado.contaCorrente || '-'}
+                  </b>
                 </span>
-              )}
-            </div>
-            <div>
-              <strong>💍 Estado Civil:</strong>{' '}
-              <span style={{ fontWeight: 800, color: '#8B1530' }}>
-                {auditoriaPdf?.estadoCivilDetectado || '-'}
-              </span>
-            </div>
-            {(conjugeDetectado || cpfConjuge) && (
-              <div
-                style={{
-                  background: '#faf5ff',
-                  border: '1px solid #e9d5ff',
-                  borderRadius: '6px',
-                  padding: '5px 8px',
-                }}
-              >
-                <div>
-                  <strong style={{ color: '#6b21a8' }}>
-                    👥 Cônjuge / Comp.:
-                  </strong>{' '}
-                  {conjugeDetectado || '-'}
-                </div>
-                <div>
-                  <strong style={{ color: '#6b21a8' }}>🪪 CPF / Nasc.:</strong>{' '}
-                  {cpfConjuge || 'Não informado'}{' '}
-                  {dProj?.conjugeDataNascimento && (
-                    <span
+              </div>
+            )}
+
+            {(() => {
+              const estiloCampoRaioX = (val: string): React.CSSProperties => ({
+                width: '100%',
+                height: '26px',
+                padding: '2px 6px',
+                fontSize: '11px',
+                fontWeight: 700,
+                borderRadius: '4px',
+                border: val.trim()
+                  ? '1px solid #cbd5e1'
+                  : '1px dashed #f59e0b',
+                background: val.trim() ? '#f8fafc' : '#fffbeb',
+                color: '#0f172a',
+              });
+
+              return (
+                <>
+                  <div>
+                    <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                      👤 Nome do Titular:
+                    </label>
+                    <input
+                      type="text"
+                      value={titularDetectado}
+                      onChange={(e) =>
+                        setTitularDetectado(e.target.value.toUpperCase())
+                      }
+                      onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                      placeholder="Não identificado — digite..."
+                      style={estiloCampoRaioX(titularDetectado)}
+                    />
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1.15fr 1fr',
+                      gap: '6px',
+                    }}
+                  >
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        🪪 CPF Titular:
+                      </label>
+                      <input
+                        type="text"
+                        value={editCpfTitular}
+                        onChange={(e) =>
+                          setEditCpfTitular(aplicarMascaraCPF(e.target.value))
+                        }
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="000.000.000-00"
+                        maxLength={14}
+                        style={estiloCampoRaioX(editCpfTitular)}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        🎂 Nasc. Titular (CND):
+                      </label>
+                      <input
+                        type="text"
+                        value={editNascTitular}
+                        onChange={(e) =>
+                          setEditNascTitular(
+                            aplicarMascaraDataBR(e.target.value)
+                          )
+                        }
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="DD/MM/AAAA"
+                        maxLength={10}
+                        style={estiloCampoRaioX(editNascTitular)}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                      💍 Estado Civil:
+                    </label>
+                    <select
+                      value={editEstadoCivil}
+                      onChange={(e) => {
+                        setEditEstadoCivil(e.target.value);
+                        setTimeout(
+                          () => salvarAjustesManuaisDaLupinha(true),
+                          50
+                        );
+                      }}
+                      style={estiloCampoRaioX(editEstadoCivil)}
+                    >
+                      <option value="">Não identificado — selecione...</option>
+                      <option value="SOLTEIRO(A)">SOLTEIRO(A)</option>
+                      <option value="CASADO(A)">
+                        CASADO(A) (Exige Cert. Casamento)
+                      </option>
+                      <option value="UNIÃO ESTÁVEL">
+                        UNIÃO ESTÁVEL (Dispensa Cert. Casamento)
+                      </option>
+                      <option value="DIVORCIADO(A)">DIVORCIADO(A)</option>
+                      <option value="VIÚVO(A)">VIÚVO(A)</option>
+                    </select>
+                  </div>
+
+                  {/* DADOS DO CÔNJUGE / COMPANHEIRO(A) */}
+                  <div
+                    style={{
+                      background: '#faf5ff',
+                      border: '1px solid #e9d5ff',
+                      borderRadius: '6px',
+                      padding: '6px 8px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '5px',
+                    }}
+                  >
+                    <div>
+                      <label
+                        style={{
+                          fontSize: '10px',
+                          fontWeight: 800,
+                          color: '#6b21a8',
+                        }}
+                      >
+                        👥 Nome do Cônjuge / Companheiro(a):
+                      </label>
+                      <input
+                        type="text"
+                        value={conjugeDetectado}
+                        onChange={(e) =>
+                          setConjugeDetectado(e.target.value.toUpperCase())
+                        }
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="Sem cônjuge ou digite aqui..."
+                        style={estiloCampoRaioX(conjugeDetectado)}
+                      />
+                    </div>
+
+                    <div
                       style={{
-                        background: '#f3e8ff',
-                        color: '#6b21a8',
-                        padding: '1px 6px',
-                        borderRadius: '4px',
-                        fontWeight: 800,
-                        fontSize: '10.5px',
-                        marginLeft: '4px',
+                        display: 'grid',
+                        gridTemplateColumns: '1.15fr 1fr',
+                        gap: '6px',
                       }}
                     >
-                      🎂 {dProj.conjugeDataNascimento}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-            {(dProj?.procuradorNomeExtraido ||
-              dProj?.procuradorCpfExtraido ||
-              dProj?.procuradorDataNascimento) && (
-              <div
-                style={{
-                  background: '#f0f9ff',
-                  border: '1px solid #bae6fd',
-                  borderRadius: '6px',
-                  padding: '5px 8px',
-                }}
-              >
-                <div>
-                  <strong style={{ color: '#0369a1' }}>
-                    🤝 Procurador / Aval.:
-                  </strong>{' '}
-                  {dProj?.procuradorNomeExtraido || 'Identificado'}
-                </div>
-                <div>
-                  <strong style={{ color: '#0369a1' }}>🪪 CPF / Nasc.:</strong>{' '}
-                  {dProj?.procuradorCpfExtraido || '-'}{' '}
-                  {dProj?.procuradorDataNascimento && (
-                    <span style={{ fontWeight: 800, marginLeft: '4px' }}>
-                      🎂 {dProj.procuradorDataNascimento}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-            <div>
-              <strong>💰 Valor Financiado:</strong>{' '}
-              <span style={{ color: '#15803d', fontWeight: 800 }}>
-                {auditoriaPdf?.valorPropostaDetectado
-                  ? `R$ ${auditoriaPdf.valorPropostaDetectado}`
-                  : '-'}
-              </span>
-            </div>
-            <div>
-              <strong>⏱️ Prazo / Carência:</strong>{' '}
-              {auditoriaPdf?.prazoMesesDetectado
-                ? `${auditoriaPdf.prazoMesesDetectado}m / ${
-                    auditoriaPdf.carenciaMesesDetectada || '0'
-                  }m`
-                : '-'}
-            </div>
-            <div>
-              <strong>🏦 C/C Consolidada:</strong>{' '}
-              {auditoriaPdf?.contaCorrenteConsolidada || '-'}
-            </div>
-            <div>
-              <strong>👨‍💼 Projetista:</strong>{' '}
-              {projetistaDetectado || auditoriaPdf?.elaboradorDetectado || '-'}
-            </div>
-            <div>
-              <strong>📍 Imóvel / P.A.:</strong> {paDetectado || '-'}
-            </div>
-            {auditoriaPdf?.carEspecificoDetectado && (
-              <div style={{ wordBreak: 'break-all' }}>
-                <strong>🗺️ Recibo CAR:</strong>{' '}
-                <span style={{ fontSize: '10.5px', color: '#0369a1' }}>
-                  {auditoriaPdf.carEspecificoDetectado}
-                </span>
-              </div>
-            )}
+                      <div>
+                        <label
+                          style={{
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            color: '#6b21a8',
+                          }}
+                        >
+                          🪪 CPF Cônjuge:
+                        </label>
+                        <input
+                          type="text"
+                          value={editCpfConjuge}
+                          onChange={(e) =>
+                            setEditCpfConjuge(aplicarMascaraCPF(e.target.value))
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="000.000.000-00"
+                          maxLength={14}
+                          style={estiloCampoRaioX(editCpfConjuge)}
+                        />
+                      </div>
+                      <div>
+                        <label
+                          style={{
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            color: '#6b21a8',
+                          }}
+                        >
+                          🎂 Nasc. Cônjuge:
+                        </label>
+                        <input
+                          type="text"
+                          value={editNascConjuge}
+                          onChange={(e) =>
+                            setEditNascConjuge(
+                              aplicarMascaraDataBR(e.target.value)
+                            )
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="DD/MM/AAAA"
+                          maxLength={10}
+                          style={estiloCampoRaioX(editNascConjuge)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* DADOS DE PROCURADOR / AVALISTA */}
+                  <div
+                    style={{
+                      background: '#f0f9ff',
+                      border: '1px solid #bae6fd',
+                      borderRadius: '6px',
+                      padding: '6px 8px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '5px',
+                    }}
+                  >
+                    <div>
+                      <label
+                        style={{
+                          fontSize: '10px',
+                          fontWeight: 800,
+                          color: '#0369a1',
+                        }}
+                      >
+                        🤝 Procurador / Avalista (Se houver):
+                      </label>
+                      <input
+                        type="text"
+                        value={editProcuradorNome}
+                        onChange={(e) =>
+                          setEditProcuradorNome(e.target.value.toUpperCase())
+                        }
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="Nome do Procurador/Avalista..."
+                        style={estiloCampoRaioX(editProcuradorNome)}
+                      />
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1.15fr 1fr',
+                        gap: '6px',
+                      }}
+                    >
+                      <div>
+                        <label
+                          style={{
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            color: '#0369a1',
+                          }}
+                        >
+                          🪪 CPF Proc./Aval.:
+                        </label>
+                        <input
+                          type="text"
+                          value={editCpfProcurador}
+                          onChange={(e) =>
+                            setEditCpfProcurador(
+                              aplicarMascaraCPF(e.target.value)
+                            )
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="000.000.000-00"
+                          maxLength={14}
+                          style={estiloCampoRaioX(editCpfProcurador)}
+                        />
+                      </div>
+                      <div>
+                        <label
+                          style={{
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            color: '#0369a1',
+                          }}
+                        >
+                          🎂 Nasc. Proc./Aval.:
+                        </label>
+                        <input
+                          type="text"
+                          value={editNascProcurador}
+                          onChange={(e) =>
+                            setEditNascProcurador(
+                              aplicarMascaraDataBR(e.target.value)
+                            )
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="DD/MM/AAAA"
+                          maxLength={10}
+                          style={estiloCampoRaioX(editNascProcurador)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* VALOR, PRAZO, CARÊNCIA E CONTA CORRENTE */}
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1.2fr 0.7fr 0.7fr',
+                      gap: '5px',
+                    }}
+                  >
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        💰 Valor (R$):
+                      </label>
+                      <input
+                        type="text"
+                        value={editValorProj}
+                        onChange={(e) =>
+                          setEditValorProj(
+                            aplicarMascaraMoedaInput(e.target.value)
+                          )
+                        }
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="0,00"
+                        style={estiloCampoRaioX(editValorProj)}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        ⏱️ Prazo (m):
+                      </label>
+                      <input
+                        type="text"
+                        value={editPrazoProj}
+                        onChange={(e) => setEditPrazoProj(e.target.value)}
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="120"
+                        style={estiloCampoRaioX(editPrazoProj)}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        ⏳ Carên.(m):
+                      </label>
+                      <input
+                        type="text"
+                        value={editCarenciaProj}
+                        onChange={(e) => setEditCarenciaProj(e.target.value)}
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="36"
+                        style={estiloCampoRaioX(editCarenciaProj)}
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '6px',
+                    }}
+                  >
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        🏦 C/C Consolidada:
+                      </label>
+                      <input
+                        type="text"
+                        value={editCcConsol}
+                        onChange={(e) => setEditCcConsol(e.target.value)}
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="Ex: 67274-8"
+                        style={estiloCampoRaioX(editCcConsol)}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        👨‍💼 Projetista:
+                      </label>
+                      <input
+                        type="text"
+                        value={projetistaDetectado}
+                        onChange={(e) =>
+                          setProjetistaDetectado(e.target.value.toUpperCase())
+                        }
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="Projetista..."
+                        style={estiloCampoRaioX(projetistaDetectado)}
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1.4fr 0.7fr',
+                      gap: '6px',
+                    }}
+                  >
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        📍 Imóvel / P.A.:
+                      </label>
+                      <input
+                        type="text"
+                        value={paDetectado}
+                        onChange={(e) =>
+                          setPaDetectado(e.target.value.toUpperCase())
+                        }
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="P.A. / Fazenda..."
+                        style={estiloCampoRaioX(paDetectado)}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        📐 Área (ha):
+                      </label>
+                      <input
+                        type="text"
+                        value={editAreaHa}
+                        onChange={(e) => setEditAreaHa(e.target.value)}
+                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                        placeholder="ha"
+                        style={estiloCampoRaioX(editAreaHa)}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                      🗺️ Recibo CAR:
+                    </label>
+                    <input
+                      type="text"
+                      value={editCarRecibo}
+                      onChange={(e) =>
+                        setEditCarRecibo(e.target.value.toUpperCase())
+                      }
+                      onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                      placeholder="MA-210..."
+                      style={estiloCampoRaioX(editCarRecibo)}
+                    />
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </aside>
 
@@ -2455,7 +3364,7 @@ if (!titDet && handle.name) {
                     </div>
                     <button
                       type="button"
-                      onClick={salvarAjustesManuaisDaLupinha}
+                      onClick={() => salvarAjustesManuaisDaLupinha(false)}
                       style={{
                         width: 'auto',
                         height: '28px',
@@ -2989,12 +3898,25 @@ if (!titDet && handle.name) {
           {/* CARD 1: CONSULTAS DO DIA COM AGRUPAMENTO (ITEM 2 E 4) */}
           <PainelConsultasRapidasAgrupadas
             cpfTitular={cpfTitular}
-            dataNascTitular={dProj?.clienteDataNascimento || ''}
+            dataNascTitular={
+              editNascTitular || dProj?.clienteDataNascimento || ''
+            }
             cpfConjuge={cpfConjuge}
-            dataNascConjuge={dProj?.conjugeDataNascimento || ''}
-            cpfProcuradorOuAvalista={dProj?.procuradorCpfExtraido || ''}
-            dataNascProcuradorOuAvalista={dProj?.procuradorDataNascimento || ''}
-            carRecibo={auditoriaPdf?.carEspecificoDetectado || ''}
+            dataNascConjuge={
+              editNascConjuge || dProj?.conjugeDataNascimento || ''
+            }
+            cpfProcuradorOuAvalista={
+              editCpfProcurador ||
+              dProj?.procuradorCpfExtraido ||
+              registroConformidadePronafAVinculado?.procuradorCpf ||
+              ''
+            }
+            dataNascProcuradorOuAvalista={
+              editNascProcurador || dProj?.procuradorDataNascimento || ''
+            }
+            carRecibo={
+              editCarRecibo || auditoriaPdf?.carEspecificoDetectado || ''
+            }
           />
 
           {/* CARD 2: BOTÃO EXCLUSIVO DE AUDITORIA DE DOCUMENTAÇÃO DE IMÓVEIS */}
