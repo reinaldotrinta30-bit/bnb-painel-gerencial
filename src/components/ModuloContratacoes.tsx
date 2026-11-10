@@ -4,6 +4,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { RegistroContratacao, CardKanban } from '@/types/painel';
 import { localizarCardDoClienteNoKanban } from '@/lib/integradorSincronizado';
+import { carregarFerramentasSync } from '@/lib/firebaseSync';
 import {
   META_PRONAF,
   META_MINI,
@@ -73,7 +74,7 @@ export default function ModuloContratacoes({
   const [programa, setPrograma] = useState('');
   const listaProgramas = useMemo(() => obterListaProgramas(), []);
 
-  // ITEM 5 e 5.1: Lê em tempo real as Metas e o Realizado Efetivo do Banco configurados na Planilha da Carteira
+  // Lê em tempo real as Metas, o Realizado Oficial e o Cenário Hipotético configurados na Planilha da Carteira
   const [paramsBancoOficial, setParamsBancoOficial] = useState({
     pronafRealizadoOficial: 986005.0,
     pronafMetaPeriodo: 2801400.0,
@@ -86,24 +87,92 @@ export default function ModuloContratacoes({
     cvmMetaAnual: 1488900.0,
   });
 
+  const [simulacaoCarteira, setSimulacaoCarteira] = useState<{
+    idsDesmarcados: string[];
+    valoresCustomizados: Record<string, string>;
+    modoFlexivelAtivo: boolean;
+  }>({
+    idsDesmarcados: [],
+    valoresCustomizados: {},
+    modoFlexivelAtivo: false,
+  });
+
+  const [baseMetaTermometro, setBaseMetaTermometro] = useState<
+    'ANUAL' | 'PERIODO'
+  >('ANUAL');
+
   useEffect(() => {
-    const carregarParamsCarteira = () => {
+    const carregarParamsESimulacaoCarteira = () => {
       if (typeof window === 'undefined') return;
       try {
-        const raw = window.localStorage.getItem('bnb_v2_parametros_oficiais_carteira');
-        if (raw) {
-          setParamsBancoOficial((prev) => ({ ...prev, ...JSON.parse(raw) }));
+        const rawParams = window.localStorage.getItem(
+          'bnb_v2_parametros_oficiais_carteira'
+        );
+        if (rawParams) {
+          setParamsBancoOficial((prev) => ({
+            ...prev,
+            ...JSON.parse(rawParams),
+          }));
+        }
+        const rawSim = window.localStorage.getItem(
+          'bnb_v2_simulacao_hipotetica_carteira'
+        );
+        if (rawSim) {
+          setSimulacaoCarteira((prev) => ({
+            ...prev,
+            ...JSON.parse(rawSim),
+          }));
         }
       } catch {
         // Ignora erro de leitura
       }
     };
-    carregarParamsCarteira();
-    window.addEventListener('bnb_parametros_carteira_atualizados', carregarParamsCarteira);
-    window.addEventListener('storage', carregarParamsCarteira);
+
+    carregarParamsESimulacaoCarteira();
+
+    // Sincroniza também da nuvem Firebase caso o usuário abra Contratações direto
+    carregarFerramentasSync()
+      .then((dadosNuvem) => {
+        if (
+          dadosNuvem?.parametrosCarteira &&
+          typeof dadosNuvem.parametrosCarteira === 'object'
+        ) {
+          setParamsBancoOficial((prev) => ({
+            ...prev,
+            ...(dadosNuvem.parametrosCarteira as Record<string, number>),
+          }));
+        }
+        if (
+          dadosNuvem?.simulacaoEstoqueCarteira &&
+          typeof dadosNuvem.simulacaoEstoqueCarteira === 'object'
+        ) {
+          setSimulacaoCarteira((prev) => ({
+            ...prev,
+            ...(dadosNuvem.simulacaoEstoqueCarteira as typeof prev),
+          }));
+        }
+      })
+      .catch(() => {});
+
+    window.addEventListener(
+      'bnb_parametros_carteira_atualizados',
+      carregarParamsESimulacaoCarteira
+    );
+    window.addEventListener(
+      'bnb_simulacao_carteira_atualizados',
+      carregarParamsESimulacaoCarteira
+    );
+    window.addEventListener('storage', carregarParamsESimulacaoCarteira);
     return () => {
-      window.removeEventListener('bnb_parametros_carteira_atualizados', carregarParamsCarteira);
-      window.removeEventListener('storage', carregarParamsCarteira);
+      window.removeEventListener(
+        'bnb_parametros_carteira_atualizados',
+        carregarParamsESimulacaoCarteira
+      );
+      window.removeEventListener(
+        'bnb_simulacao_carteira_atualizados',
+        carregarParamsESimulacaoCarteira
+      );
+      window.removeEventListener('storage', carregarParamsESimulacaoCarteira);
     };
   }, []);
 
@@ -352,6 +421,203 @@ const matchPorte =
       maxVolumeStatus,
     };
   }, [dadosFiltradosDash, dashFiltroPorte, cardsKanban, paramsBancoOficial]);
+
+  // =========================================================================
+  // ITEM 1 E 1.1: CÁLCULO DOS 4 CÍRCULOS DO TERMÔMETRO DA META
+  // (Realizado Oficial em Vermelho + Projeção com Estoque Hipotético em Verde Claro)
+  // =========================================================================
+  const indicadoresTermometro = useMemo(() => {
+    const idsDesmarcadosSet = new Set(simulacaoCarteira.idsDesmarcados || []);
+    const mapaValoresCustom = simulacaoCarteira.valoresCustomizados || {};
+
+    // Filtra as propostas aplicando os filtros superiores de Cliente, Tipo, Situação e Projetista
+    const buscaCli = dashFiltroCliente.toUpperCase().trim();
+    const baseFiltradaSemPorte = registros.filter((r) => {
+      const matchCli =
+        !buscaCli ||
+        (r.cliente || '').toUpperCase().includes(buscaCli) ||
+        (r.cpf || '').includes(buscaCli);
+      const matchTipo =
+        dashFiltroTipo.length === 0 || dashFiltroTipo.includes(r.tipo);
+      const matchSit =
+        dashFiltroSituacao.length === 0 ||
+        dashFiltroSituacao.includes(r.situacao);
+      const matchProj =
+        dashFiltroProjetista.length === 0 ||
+        dashFiltroProjetista.includes((r.projetista || '').toUpperCase());
+      return matchCli && matchTipo && matchSit && matchProj;
+    });
+
+    let estoqueHipoteticoPronaf = 0;
+    let estoqueHipoteticoCvm = 0;
+    let estoqueHipoteticoMini = 0;
+    let estoqueHipoteticoPronafA = 0;
+
+    let contratadoSistemaPronafA = 0;
+
+    baseFiltradaSemPorte.forEach((reg) => {
+      const tipoUp = (reg.tipo || '').toUpperCase().trim();
+      if (tipoUp === 'LCGH' || tipoUp === 'LCGA') return;
+
+      const porteUp = (reg.porte || '').toUpperCase().trim();
+      const isPronafA = porteUp === 'PRONAF A';
+      const isPronafGeral = porteUp.includes('PRONAF');
+      const isMini = porteUp === 'MINI';
+      const isCVM =
+        isPronafGeral &&
+        isEnquadradoCadaVezMelhor(reg.programa, reg.cadaVezMelhor);
+
+      if (reg.situacao === 'Contratado') {
+        if (isPronafA) contratadoSistemaPronafA += parseMoeda(reg.valor);
+        return;
+      }
+
+      const card = localizarCardDoClienteNoKanban(reg, cardsKanban);
+      if (card?.statusCor === 'roxo') return;
+
+      const idStr = String(reg.id);
+      // Respeita as marcações do Cenário Hipotético da Planilha da Carteira!
+      if (idsDesmarcadosSet.has(idStr)) return;
+
+      const valEfetivoStr =
+        mapaValoresCustom[idStr] !== undefined
+          ? mapaValoresCustom[idStr]
+          : reg.valor;
+      const val = parseMoeda(valEfetivoStr);
+      if (val <= 0) return;
+
+      if (isPronafGeral) estoqueHipoteticoPronaf += val;
+      if (isCVM) estoqueHipoteticoCvm += val;
+      if (isMini) estoqueHipoteticoMini += val;
+      if (isPronafA) estoqueHipoteticoPronafA += val;
+    });
+
+    const usarAnual = baseMetaTermometro === 'ANUAL';
+
+    const metaPronaf = usarAnual
+      ? Number(paramsBancoOficial.pronafMetaAnual) || META_PRONAF
+      : Number(paramsBancoOficial.pronafMetaPeriodo) || 2801400;
+    const realPronaf = Number(paramsBancoOficial.pronafRealizadoOficial) || 0;
+
+    const metaCvm = usarAnual
+      ? Number(paramsBancoOficial.cvmMetaAnual) || 1488900
+      : Number(paramsBancoOficial.cvmMetaPeriodo) || 1027341;
+    const realCvm = Number(paramsBancoOficial.cvmRealizadoOficial) || 0;
+
+    const metaMini = usarAnual
+      ? Number(paramsBancoOficial.miniMetaAnual) || META_MINI
+      : Number(paramsBancoOficial.miniMetaPeriodo) || 2090700;
+    const realMini = Number(paramsBancoOficial.miniRealizadoOficial) || 0;
+
+    const montarIndicador = (cfg: {
+      id: 'PRONAF' | 'CVM' | 'MINI' | 'PRONAF_A';
+      titulo: string;
+      subtitulo: string;
+      corDestaque: string;
+      realizado: number;
+      estoque: number;
+      meta: number;
+      notaExtra?: string;
+    }) => {
+      const totalProjetado = cfg.realizado + cfg.estoque;
+      const percRealizado =
+        cfg.meta > 0 ? (cfg.realizado / cfg.meta) * 100 : 0;
+      const percProjetado =
+        cfg.meta > 0 ? (totalProjetado / cfg.meta) * 100 : 0;
+      const faltaComEstoque = cfg.meta - totalProjetado;
+
+      return {
+        ...cfg,
+        totalProjetado,
+        percRealizado,
+        percProjetado,
+        faltaComEstoque,
+      };
+    };
+
+    const todosOsQuatro = [
+      montarIndicador({
+        id: 'PRONAF',
+        titulo: 'FNE PRONAF (Consolidado)',
+        subtitulo: 'Convencional + CVM + PRONAF A',
+        corDestaque: '#8B1530',
+        realizado: realPronaf,
+        estoque: estoqueHipoteticoPronaf,
+        meta: metaPronaf,
+      }),
+      montarIndicador({
+        id: 'CVM',
+        titulo: 'FNE CADA VEZ MELHOR',
+        subtitulo: 'Mulheres / Jovens PRONAF',
+        corDestaque: '#ad1457',
+        realizado: realCvm,
+        estoque: estoqueHipoteticoCvm,
+        meta: metaCvm,
+      }),
+      montarIndicador({
+        id: 'MINI',
+        titulo: 'FNE MINI',
+        subtitulo: 'Mini Produtor Rural',
+        corDestaque: '#1967d2',
+        realizado: realMini,
+        estoque: estoqueHipoteticoMini,
+        meta: metaMini,
+      }),
+      montarIndicador({
+        id: 'PRONAF_A',
+        titulo: 'FNE PRONAF A',
+        subtitulo: 'Mesmos Parâmetros FNE PRONAF',
+        corDestaque: '#e65100',
+        realizado: realPronaf,
+        estoque: estoqueHipoteticoPronafA,
+        meta: metaPronaf,
+        notaExtra:
+          contratadoSistemaPronafA > 0
+            ? `Contratado PRONAF A (Sist.): R$ ${formatarMoedaBD(
+                contratadoSistemaPronafA
+              )}`
+            : 'Estoque exclusivo de PRONAF A somado ao Realizado PRONAF',
+      }),
+    ];
+
+    // Se NÃO houver filtro de Porte selecionado, mostra todos os 4 círculos!
+    if (dashFiltroPorte.length === 0) {
+      return todosOsQuatro;
+    }
+
+    // Quando houver filtro de Porte selecionado, mostra apenas os pertinentes à seleção:
+    return todosOsQuatro.filter((ind) => {
+      if (
+        ind.id === 'PRONAF' &&
+        (dashFiltroPorte.includes('PRONAF V') ||
+          dashFiltroPorte.includes('PRONAF A') ||
+          dashFiltroPorte.includes('CADA VEZ MELHOR'))
+      ) {
+        return true;
+      }
+      if (ind.id === 'CVM' && dashFiltroPorte.includes('CADA VEZ MELHOR')) {
+        return true;
+      }
+      if (ind.id === 'MINI' && dashFiltroPorte.includes('MINI')) {
+        return true;
+      }
+      if (ind.id === 'PRONAF_A' && dashFiltroPorte.includes('PRONAF A')) {
+        return true;
+      }
+      return false;
+    });
+  }, [
+    registros,
+    cardsKanban,
+    simulacaoCarteira,
+    paramsBancoOficial,
+    baseMetaTermometro,
+    dashFiltroPorte,
+    dashFiltroCliente,
+    dashFiltroTipo,
+    dashFiltroSituacao,
+    dashFiltroProjetista,
+  ]);
 
   // =========================================================================
   // LÓGICA DO FORMULÁRIO CRUD E TABELA DA BASE DE DADOS
@@ -1106,8 +1372,8 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
               </div>
             </div>
 
-            {/* QUADRO DINÂMICO: DETALHES DA SITUAÇÃO DO CLIENTE */}
-            {temFiltroDashAtivo && (
+            {/* QUADRO DINÂMICO NO TOPO: APENAS QUANDO PESQUISAR UM CLIENTE ESPECÍFICO */}
+            {temFiltroDashAtivo && dashFiltroCliente.trim() !== '' && (
               <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', marginBottom: '20px', borderLeft: '5px solid var(--accent-color)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px dashed var(--border-color)', paddingBottom: '8px' }}>
                   <h3 style={{ margin: 0, color: 'var(--primary-color)', fontSize: '14px', textTransform: 'uppercase' }}>
@@ -1194,8 +1460,15 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
               </div>
             )}
 
-            {/* GRÁFICOS INFERIORES */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '20px' }}>
+            {/* GRÁFICOS INFERIORES: TERMÔMETRO QUÁDRUPLO COM ANEL DUPLO (VERMELHO REALIZADO + VERDE ESTOQUE HIPOTÉTICO) */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns:
+                  indicadoresTermometro.length === 1 ? '1.15fr 1.35fr' : '1fr',
+                gap: '20px',
+              }}
+            >
               <div
                 className="person-card"
                 style={{
@@ -1203,41 +1476,487 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
                   background: '#fff',
                   display: 'flex',
                   flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '20px',
+                  padding: '18px 20px',
                 }}
               >
-                <h3 style={{ marginTop: 0, color: 'var(--primary-color)', fontSize: '14px', alignSelf: 'flex-start', textTransform: 'uppercase', borderBottom: '1px dashed var(--border-color)', paddingBottom: '5px', width: '100%' }}>
-                  📊 TERMÔMETRO DA META
-                </h3>
-                <div style={{ position: 'relative', width: '180px', height: '180px', marginTop: '15px' }}>
-                  <div
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      borderRadius: '50%',
-                      background: `conic-gradient(var(--primary-color) ${metricasDash.percMeta}%, var(--secondary-color) 0)`,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      transition: 'background 0.8s ease-out',
-                      boxShadow: 'inset 0 0 10px rgba(0,0,0,0.05)',
-                    }}
-                  >
-                    <div style={{ width: '130px', height: '130px', background: '#fff', borderRadius: '50%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 5px rgba(0,0,0,0.08)' }}>
-                      <span style={{ fontSize: '26px', fontWeight: 'bold', color: 'var(--primary-color)' }}>
-                        {metricasDash.percMeta.toFixed(1)}%
+                {/* CABEÇALHO DO TERMÔMETRO COM LEGENDA E SELETOR META ANUAL vs PERÍODO */}
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                    borderBottom: '1px dashed var(--border-color)',
+                    paddingBottom: '10px',
+                    marginBottom: '16px',
+                    width: '100%',
+                  }}
+                >
+                  <div>
+                    <h3
+                      style={{
+                        margin: 0,
+                        color: 'var(--primary-color)',
+                        fontSize: '14px',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      📊 TERMÔMETRO DA META — REALIZADO × PROJEÇÃO COM ESTOQUE DA
+                      CARTEIRA
+                    </h3>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '14px',
+                        alignItems: 'center',
+                        marginTop: '5px',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        color: '#475569',
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: '10px',
+                            height: '10px',
+                            borderRadius: '50%',
+                            background: '#8B1530',
+                            display: 'inline-block',
+                          }}
+                        />
+                        Preenchimento Vermelho: Realizado Oficial
                       </span>
-                      <span style={{ fontSize: '10px', color: 'var(--support-gray)', textTransform: 'uppercase', fontWeight: 'bold' }}>
-                        Atingimento
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: '10px',
+                            height: '10px',
+                            borderRadius: '50%',
+                            background: '#22c55e',
+                            display: 'inline-block',
+                          }}
+                        />
+                        Barra Verde Claro: Realizado + Estoque Disponível
+                        (Inclui Cenário Hipotético)
                       </span>
                     </div>
                   </div>
+
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setBaseMetaTermometro('ANUAL')}
+                      style={{
+                        width: 'auto',
+                        padding: '5px 12px',
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        borderRadius: '6px',
+                        border: '1px solid #8B1530',
+                        background:
+                          baseMetaTermometro === 'ANUAL'
+                            ? '#8B1530'
+                            : '#ffffff',
+                        color:
+                          baseMetaTermometro === 'ANUAL'
+                            ? '#ffffff'
+                            : '#8B1530',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      🎯 Base: Meta Anual
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBaseMetaTermometro('PERIODO')}
+                      style={{
+                        width: 'auto',
+                        padding: '5px 12px',
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        borderRadius: '6px',
+                        border: '1px solid #0369a1',
+                        background:
+                          baseMetaTermometro === 'PERIODO'
+                            ? '#0369a1'
+                            : '#ffffff',
+                        color:
+                          baseMetaTermometro === 'PERIODO'
+                            ? '#ffffff'
+                            : '#0369a1',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      📅 Base: Meta do Período
+                    </button>
+                  </div>
                 </div>
-                <p style={{ fontSize: '13px', color: 'var(--support-gray)', marginTop: '20px', fontWeight: 'bold', background: '#f9f9f9', padding: '5px 15px', borderRadius: '12px' }}>
-                  Meta Considerada: R$ {formatarMoedaBD(metricasDash.metaAplicavel)}
-                </p>
+
+                {/* GRADE DINÂMICA DOS CÍRCULOS (4 CÍRCULOS QUANDO SEM FILTRO DE PORTE) */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns:
+                      indicadoresTermometro.length >= 4
+                        ? 'repeat(4, 1fr)'
+                        : indicadoresTermometro.length === 3
+                        ? 'repeat(3, 1fr)'
+                        : indicadoresTermometro.length === 2
+                        ? 'repeat(2, 1fr)'
+                        : '1fr',
+                    gap: '14px',
+                    width: '100%',
+                  }}
+                >
+                  {indicadoresTermometro.map((ind) => {
+                    const tamanhoSvg = 166;
+                    const centro = tamanhoSvg / 2;
+                    const raioPrincipal = 60;
+                    const circunferenciaPrincipal =
+                      2 * Math.PI * raioPrincipal;
+
+                    const raioExternoVerde = 72;
+                    const circunferenciaExterna =
+                      2 * Math.PI * raioExternoVerde;
+
+                    const percRealClamp = Math.min(
+                      100,
+                      Math.max(0, ind.percRealizado)
+                    );
+                    const percProjClamp = Math.min(
+                      100,
+                      Math.max(0, ind.percProjetado)
+                    );
+
+                    const offsetRealizado =
+                      circunferenciaPrincipal -
+                      (percRealClamp / 100) * circunferenciaPrincipal;
+                    const offsetProjetadoPrincipal =
+                      circunferenciaPrincipal -
+                      (percProjClamp / 100) * circunferenciaPrincipal;
+                    const offsetProjetadoExterno =
+                      circunferenciaExterna -
+                      (percProjClamp / 100) * circunferenciaExterna;
+
+                    const bateuMetaComEstoque = ind.faltaComEstoque <= 0;
+
+                    return (
+                      <div
+                        key={ind.id}
+                        style={{
+                          background: '#f8fafc',
+                          border: '1px solid #e2e8f0',
+                          borderTop: `4px solid ${ind.corDestaque}`,
+                          borderRadius: '10px',
+                          padding: '12px 12px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          boxShadow: '0 2px 5px rgba(0,0,0,0.03)',
+                        }}
+                      >
+                        <div style={{ textAlign: 'center', width: '100%' }}>
+                          <div
+                            style={{
+                              fontSize: '12px',
+                              fontWeight: 900,
+                              color: ind.corDestaque,
+                              textTransform: 'uppercase',
+                            }}
+                          >
+                            {ind.titulo}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: '10px',
+                              color: '#64748b',
+                              fontWeight: 600,
+                            }}
+                          >
+                            {ind.subtitulo}
+                          </div>
+                        </div>
+
+                        {/* CÍRCULO SVG DUPLO: VERMELHO (REALIZADO) + VERDE CLARO (PROJEÇÃO C/ ESTOQUE) */}
+                        <div
+                          style={{
+                            position: 'relative',
+                            width: `${tamanhoSvg}px`,
+                            height: `${tamanhoSvg}px`,
+                            margin: '8px 0',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <svg
+                            width={tamanhoSvg}
+                            height={tamanhoSvg}
+                            style={{ transform: 'rotate(-90deg)' }}
+                          >
+                            {/* Trilha Externa Suave */}
+                            <circle
+                              cx={centro}
+                              cy={centro}
+                              r={raioExternoVerde}
+                              fill="transparent"
+                              stroke="#f1f5f9"
+                              strokeWidth={5}
+                            />
+
+                            {/* Anel Externo Verde Claro (Passando por fora do preenchimento vermelho) */}
+                            <circle
+                              cx={centro}
+                              cy={centro}
+                              r={raioExternoVerde}
+                              fill="transparent"
+                              stroke="#4ade80"
+                              strokeWidth={5}
+                              strokeDasharray={circunferenciaExterna}
+                              strokeDashoffset={offsetProjetadoExterno}
+                              strokeLinecap="round"
+                              style={{
+                                transition: 'stroke-dashoffset 0.8s ease-out',
+                              }}
+                            />
+
+                            {/* Trilha Principal Cinza */}
+                            <circle
+                              cx={centro}
+                              cy={centro}
+                              r={raioPrincipal}
+                              fill="transparent"
+                              stroke="#e2e8f0"
+                              strokeWidth={14}
+                            />
+
+                            {/* Camada 1 na Trilha Principal: Verde Claro (Realizado + Estoque Hipotético) */}
+                            <circle
+                              cx={centro}
+                              cy={centro}
+                              r={raioPrincipal}
+                              fill="transparent"
+                              stroke="#86efac"
+                              strokeWidth={14}
+                              strokeDasharray={circunferenciaPrincipal}
+                              strokeDashoffset={offsetProjetadoPrincipal}
+                              strokeLinecap="round"
+                              style={{
+                                transition: 'stroke-dashoffset 0.8s ease-out',
+                              }}
+                            />
+
+                            {/* Camada 2 na Trilha Principal: Vermelho/Vinho Efetivamente Realizado */}
+                            <circle
+                              cx={centro}
+                              cy={centro}
+                              r={raioPrincipal}
+                              fill="transparent"
+                              stroke="#8B1530"
+                              strokeWidth={14}
+                              strokeDasharray={circunferenciaPrincipal}
+                              strokeDashoffset={offsetRealizado}
+                              strokeLinecap="round"
+                              style={{
+                                transition: 'stroke-dashoffset 0.8s ease-out',
+                              }}
+                            />
+                          </svg>
+
+                          {/* MIOLO DO CÍRCULO COM AS DUAS PORCENTAGENS */}
+                          <div
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              textAlign: 'center',
+                              pointerEvents: 'none',
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: '18px',
+                                fontWeight: 900,
+                                color: '#8B1530',
+                                lineHeight: 1.1,
+                              }}
+                              title="Percentual Efetivamente Realizado"
+                            >
+                              {ind.percRealizado.toFixed(1)}%
+                            </span>
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                fontWeight: 800,
+                                color: '#64748b',
+                                textTransform: 'uppercase',
+                              }}
+                            >
+                              Realizado
+                            </span>
+
+                            <div
+                              style={{
+                                marginTop: '4px',
+                                padding: '2px 7px',
+                                borderRadius: '10px',
+                                background: '#dcfce7',
+                                border: '1px solid #86efac',
+                                color: '#15803d',
+                                fontSize: '11px',
+                                fontWeight: 900,
+                              }}
+                              title="Percentual Projetado somando Realizado + Estoque Disponível (Cenário Hipotético)"
+                            >
+                              🚀 {ind.percProjetado.toFixed(1)}%
+                            </div>
+                            <span
+                              style={{
+                                fontSize: '8.5px',
+                                fontWeight: 800,
+                                color: '#15803d',
+                              }}
+                            >
+                              c/ Estoque
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* DETALHAMENTO FINANCEIRO DO INDICADOR */}
+                        <div
+                          style={{
+                            width: '100%',
+                            background: '#ffffff',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '8px',
+                            padding: '8px 10px',
+                            fontSize: '11px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '4px',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <span style={{ color: '#64748b', fontWeight: 700 }}>
+                              🎯 Meta ({baseMetaTermometro === 'ANUAL' ? 'Ano' : 'Per.'}):
+                            </span>
+                            <strong style={{ color: '#0f172a' }}>
+                              R$ {formatarMoedaBD(ind.meta)}
+                            </strong>
+                          </div>
+
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <span style={{ color: '#8B1530', fontWeight: 700 }}>
+                              🔴 Realizado:
+                            </span>
+                            <strong style={{ color: '#8B1530' }}>
+                              R$ {formatarMoedaBD(ind.realizado)}
+                            </strong>
+                          </div>
+
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <span style={{ color: '#15803d', fontWeight: 700 }}>
+                              🟢 + Estoque (Hip.):
+                            </span>
+                            <strong style={{ color: '#15803d' }}>
+                              + R$ {formatarMoedaBD(ind.estoque)}
+                            </strong>
+                          </div>
+
+                          <div
+                            style={{
+                              borderTop: '1px dashed #cbd5e1',
+                              paddingTop: '4px',
+                              marginTop: '2px',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <span style={{ color: '#334155', fontWeight: 800 }}>
+                              Σ Projeção Total:
+                            </span>
+                            <strong style={{ color: '#15803d' }}>
+                              R$ {formatarMoedaBD(ind.totalProjetado)}
+                            </strong>
+                          </div>
+
+                          <div
+                            style={{
+                              background: bateuMetaComEstoque
+                                ? '#dcfce7'
+                                : '#fef2f2',
+                              color: bateuMetaComEstoque
+                                ? '#166534'
+                                : '#b91c1c',
+                              padding: '4px 6px',
+                              borderRadius: '5px',
+                              fontWeight: 800,
+                              fontSize: '10.5px',
+                              textAlign: 'center',
+                              marginTop: '2px',
+                            }}
+                          >
+                            {bateuMetaComEstoque
+                              ? `✅ Meta Superada (+R$ ${formatarMoedaBD(
+                                  Math.abs(ind.faltaComEstoque)
+                                )})`
+                              : `⏳ Falta c/ Estoque: R$ ${formatarMoedaBD(
+                                  ind.faltaComEstoque
+                                )}`}
+                          </div>
+
+                          {ind.notaExtra && (
+                            <div
+                              style={{
+                                fontSize: '9.5px',
+                                color: '#c2410c',
+                                textAlign: 'center',
+                                fontWeight: 700,
+                                marginTop: '2px',
+                              }}
+                            >
+                              {ind.notaExtra}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="person-card" style={{ borderLeftColor: 'var(--primary-color)', background: '#fff', padding: '20px' }}>
@@ -1269,6 +1988,94 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
                 </div>
               </div>
             </div>
+
+            {/* QUADRO DINÂMICO ABAIXO DOS GRÁFICOS: QUANDO FILTRAR POR PORTE, TIPO, SITUAÇÃO OU PROJETISTA (SEM BUSCA DE NOME) */}
+            {temFiltroDashAtivo && dashFiltroCliente.trim() === '' && (
+              <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', marginTop: '20px', borderLeft: '5px solid var(--accent-color)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px dashed var(--border-color)', paddingBottom: '8px' }}>
+                  <h3 style={{ margin: 0, color: 'var(--primary-color)', fontSize: '14px', textTransform: 'uppercase' }}>
+                    👤 DETALHES DA SITUAÇÃO DO CLIENTE ({dadosFiltradosDash.length})
+                  </h3>
+                  <button
+                    onClick={() => {
+                      setDashFiltroCliente('');
+                      setDashFiltroPorte([]);
+                      setDashFiltroTipo([]);
+                      setDashFiltroSituacao([]);
+                      setDashFiltroProjetista([]);
+                    }}
+                    style={{ background: '#fce8e6', color: '#c5221f', padding: '4px 10px', fontSize: '11px', borderRadius: '4px', width: 'auto' }}
+                  >
+                    ✖ Limpar Filtros
+                  </button>
+                </div>
+                <div style={{ overflowX: 'auto', marginTop: '15px' }}>
+                  <table className="conf-table" style={{ whiteSpace: 'nowrap' }}>
+                    <thead>
+                      <tr>
+                        <th>DATA</th>
+                        <th>PORTE</th>
+                        <th style={{ textAlign: 'left' }}>CLIENTE</th>
+                        <th>CPF</th>
+                        <th style={{ textAlign: 'right' }}>VALOR (R$)</th>
+                        <th>TIPO OP.</th>
+                        <th>SITUAÇÃO</th>
+                        <th>PROJETISTA</th>
+                        <th style={{ width: '40px' }}>OBS</th>
+                        <th style={{ width: '40px' }}>EDITAR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dadosFiltradosDash.length === 0 ? (
+                        <tr>
+                          <td colSpan={10} style={{ textAlign: 'center', padding: '15px', color: '#888' }}>
+                            Nenhuma operação encontrada com os filtros selecionados.
+                          </td>
+                        </tr>
+                      ) : (
+                        dadosFiltradosDash.map((reg) => (
+                          <tr key={reg.id}>
+                            <td>{reg.data}</td>
+                            <td style={{ fontWeight: 'bold' }}>{reg.porte}</td>
+                            <td style={{ textAlign: 'left' }}>
+                              {reg.cliente}{' '}
+                              {reg.cadaVezMelhor && (
+                                <span style={{ background: '#fce4ec', color: '#ad1457', fontSize: '10px', padding: '2px 6px', borderRadius: '8px', fontWeight: 'bold' }}>
+                                  👩 Cada Vez Melhor
+                                </span>
+                              )}
+                            </td>
+                            <td>{reg.cpf}</td>
+                            <td style={{ fontWeight: 'bold', textAlign: 'right' }}>R$ {reg.valor}</td>
+                            <td>{reg.tipo}</td>
+                            <td>{renderBadgeStatus(reg.situacao)}</td>
+                            <td>{reg.projetista || '-'}</td>
+                            <td>
+                              <button
+                                onClick={() => onInspecionarNoKanban?.(reg)}
+                                style={{ background: 'none', border: 'none', fontSize: '16px', padding: 0 }}
+                                title="Inspecionar Nota Completa no Kanban"
+                              >
+                                🔎
+                              </button>
+                            </td>
+                            <td>
+                              <button
+                                onClick={() => editarRegistroContratacao(reg.id)}
+                                style={{ background: 'none', border: 'none', fontSize: '16px', padding: 0 }}
+                                title="Editar Registro"
+                              >
+                                ✏️
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

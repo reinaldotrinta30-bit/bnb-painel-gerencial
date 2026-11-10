@@ -375,6 +375,7 @@ export default function ModuloRelatorioCarteira({
         STORAGE_KEY_SIMULACAO_CARTEIRA,
         JSON.stringify(nova)
       );
+      window.dispatchEvent(new Event('bnb_simulacao_carteira_atualizados'));
       salvarFerramentasSync({ simulacaoEstoqueCarteira: nova }).catch(() => {});
     }
   }, []);
