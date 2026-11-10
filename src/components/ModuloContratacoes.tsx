@@ -4,7 +4,13 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { RegistroContratacao, CardKanban } from '@/types/painel';
 import { localizarCardDoClienteNoKanban } from '@/lib/integradorSincronizado';
-import { carregarFerramentasSync } from '@/lib/firebaseSync';
+import {
+  carregarFerramentasSync,
+  salvarFerramentasSync,
+} from '@/lib/firebaseSync';
+import BotaoInfoSomaEstoque, {
+  SimulacaoEstoqueCarteira,
+} from '@/components/ModalDetalheSomaEstoque';
 import {
   META_PRONAF,
   META_MINI,
@@ -176,6 +182,71 @@ export default function ModuloContratacoes({
     };
   }, []);
 
+  // Salva alterações feitas no modal (i) do Termômetro direto no LocalStorage e Nuvem (sincronizado com a Planilha da Carteira)
+  const salvarSimulacaoNoContratacoes = (nova: SimulacaoEstoqueCarteira) => {
+    setSimulacaoCarteira({
+      idsDesmarcados: nova.idsDesmarcados || [],
+      valoresCustomizados: nova.valoresCustomizados || {},
+      modoFlexivelAtivo: Boolean(nova.modoFlexivelAtivo),
+    });
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        'bnb_v2_simulacao_hipotetica_carteira',
+        JSON.stringify(nova)
+      );
+      window.dispatchEvent(new Event('bnb_simulacao_carteira_atualizados'));
+      salvarFerramentasSync({ simulacaoEstoqueCarteira: nova }).catch(() => {});
+    }
+  };
+
+  const handleTogglePropostaSimulacao = (idProposta: string) => {
+    const atuais = new Set(simulacaoCarteira.idsDesmarcados || []);
+    if (atuais.has(idProposta)) atuais.delete(idProposta);
+    else atuais.add(idProposta);
+    salvarSimulacaoNoContratacoes({
+      ...simulacaoCarteira,
+      idsDesmarcados: Array.from(atuais),
+    });
+  };
+
+  const handleToggleVariasPropostasSimulacao = (
+    ids: string[],
+    marcar: boolean
+  ) => {
+    const atuais = new Set(simulacaoCarteira.idsDesmarcados || []);
+    ids.forEach((id) => {
+      if (marcar) atuais.delete(id);
+      else atuais.add(id);
+    });
+    salvarSimulacaoNoContratacoes({
+      ...simulacaoCarteira,
+      idsDesmarcados: Array.from(atuais),
+    });
+  };
+
+  const handleAlterarValorProvisorio = (
+    idProposta: string,
+    novoValor: string | null
+  ) => {
+    const copiaValores = { ...(simulacaoCarteira.valoresCustomizados || {}) };
+    if (novoValor === null) {
+      delete copiaValores[idProposta];
+    } else {
+      copiaValores[idProposta] = novoValor;
+    }
+    salvarSimulacaoNoContratacoes({
+      ...simulacaoCarteira,
+      valoresCustomizados: copiaValores,
+    });
+  };
+
+  const handleToggleModoFlexivel = (ativo: boolean) => {
+    salvarSimulacaoNoContratacoes({
+      ...simulacaoCarteira,
+      modoFlexivelAtivo: ativo,
+    });
+  };
+
   // Estados de Garantia para exibição didática no Card do Kanban (Oculto para PRONAF A)
   const [tipoGarantiaKanban, setTipoGarantiaKanban] = useState<
     'NENHUMA' | 'AVAL' | 'LCGH' | 'LCGA'
@@ -277,17 +348,32 @@ export default function ModuloContratacoes({
   // LÓGICA DO DASHBOARD ANALÍTICO
   // =========================================================================
   const dadosFiltradosDash = useMemo(() => {
-    const busca = dashFiltroCliente.toUpperCase();
+    const busca = dashFiltroCliente.toUpperCase().trim();
     return registros.filter((r) => {
       const matchCliente =
-        !busca || (r.cliente || '').includes(busca) || (r.cpf || '').includes(busca);
+        !busca ||
+        (r.cliente || '').toUpperCase().includes(busca) ||
+        (r.cpf || '').includes(busca);
+
+      const porteUp = (r.porte || '').toUpperCase().trim();
+      const isPronafA = porteUp === 'PRONAF A';
+      const isPronafGeral = porteUp.includes('PRONAF');
+      const isCVM =
+        isPronafGeral &&
+        isEnquadradoCadaVezMelhor(r.programa, r.cadaVezMelhor);
+      const isPronafVConvencional = porteUp === 'PRONAF V' && !isCVM;
       const catPorte = classificarCategoriaPorte(r.porte);
-const matchPorte =
-  dashFiltroPorte.length === 0 ||
-  dashFiltroPorte.includes(r.porte) ||
-  (dashFiltroPorte.includes('CADA VEZ MELHOR') && r.cadaVezMelhor) ||
-  dashFiltroPorte.includes(catPorte) ||
-  (catPorte === 'OUTROS' && dashFiltroPorte.includes('PEQUENO'));
+
+      const matchPorte =
+        dashFiltroPorte.length === 0 ||
+        (isPronafA && dashFiltroPorte.includes('PRONAF A')) ||
+        (isCVM && dashFiltroPorte.includes('CADA VEZ MELHOR')) ||
+        (isPronafVConvencional && dashFiltroPorte.includes('PRONAF V')) ||
+        (!isPronafGeral &&
+          (dashFiltroPorte.includes(r.porte) ||
+            dashFiltroPorte.includes(catPorte) ||
+            (catPorte === 'OUTROS' && dashFiltroPorte.includes('PEQUENO'))));
+
       const matchTipo =
         dashFiltroTipo.length === 0 || dashFiltroTipo.includes(r.tipo);
       const matchSit =
@@ -423,39 +509,28 @@ const matchPorte =
   }, [dadosFiltradosDash, dashFiltroPorte, cardsKanban, paramsBancoOficial]);
 
   // =========================================================================
-  // ITEM 1 E 1.1: CÁLCULO DOS 4 CÍRCULOS DO TERMÔMETRO DA META
-  // (Realizado Oficial em Vermelho + Projeção com Estoque Hipotético em Verde Claro)
+  // ITEM 1 E 1.1: CÁLCULO DOS 4 CÍRCULOS DO TERMÔMETRO DA META + PROPOSTAS DO MODAL (i)
+  // (Respeita todos os filtros ativos da aba Contratações, inclusive Porte estrito!)
   // =========================================================================
   const indicadoresTermometro = useMemo(() => {
     const idsDesmarcadosSet = new Set(simulacaoCarteira.idsDesmarcados || []);
     const mapaValoresCustom = simulacaoCarteira.valoresCustomizados || {};
-
-    // Filtra as propostas aplicando os filtros superiores de Cliente, Tipo, Situação e Projetista
-    const buscaCli = dashFiltroCliente.toUpperCase().trim();
-    const baseFiltradaSemPorte = registros.filter((r) => {
-      const matchCli =
-        !buscaCli ||
-        (r.cliente || '').toUpperCase().includes(buscaCli) ||
-        (r.cpf || '').includes(buscaCli);
-      const matchTipo =
-        dashFiltroTipo.length === 0 || dashFiltroTipo.includes(r.tipo);
-      const matchSit =
-        dashFiltroSituacao.length === 0 ||
-        dashFiltroSituacao.includes(r.situacao);
-      const matchProj =
-        dashFiltroProjetista.length === 0 ||
-        dashFiltroProjetista.includes((r.projetista || '').toUpperCase());
-      return matchCli && matchTipo && matchSit && matchProj;
-    });
 
     let estoqueHipoteticoPronaf = 0;
     let estoqueHipoteticoCvm = 0;
     let estoqueHipoteticoMini = 0;
     let estoqueHipoteticoPronafA = 0;
 
+    const propostasPronaf: RegistroContratacao[] = [];
+    const propostasCvm: RegistroContratacao[] = [];
+    const propostasMini: RegistroContratacao[] = [];
+    const propostasPronafA: RegistroContratacao[] = [];
+
     let contratadoSistemaPronafA = 0;
 
-    baseFiltradaSemPorte.forEach((reg) => {
+    // Usa diretamente dadosFiltradosDash para respeitar 100% dos filtros ativos na aba Contratações
+    // (ex: se filtrar apenas PRONAF V, entram somente as propostas de PRONAF V Convencional!)
+    dadosFiltradosDash.forEach((reg) => {
       const tipoUp = (reg.tipo || '').toUpperCase().trim();
       if (tipoUp === 'LCGH' || tipoUp === 'LCGA') return;
 
@@ -476,20 +551,31 @@ const matchPorte =
       if (card?.statusCor === 'roxo') return;
 
       const idStr = String(reg.id);
-      // Respeita as marcações do Cenário Hipotético da Planilha da Carteira!
-      if (idsDesmarcadosSet.has(idStr)) return;
+      const estaMarcadaNaSimulacao = !idsDesmarcadosSet.has(idStr);
 
       const valEfetivoStr =
         mapaValoresCustom[idStr] !== undefined
           ? mapaValoresCustom[idStr]
           : reg.valor;
       const val = parseMoeda(valEfetivoStr);
-      if (val <= 0) return;
+      if (val <= 0 && parseMoeda(reg.valor) <= 0) return;
 
-      if (isPronafGeral) estoqueHipoteticoPronaf += val;
-      if (isCVM) estoqueHipoteticoCvm += val;
-      if (isMini) estoqueHipoteticoMini += val;
-      if (isPronafA) estoqueHipoteticoPronafA += val;
+      if (isPronafGeral) {
+        propostasPronaf.push(reg);
+        if (estaMarcadaNaSimulacao) estoqueHipoteticoPronaf += val;
+      }
+      if (isCVM) {
+        propostasCvm.push(reg);
+        if (estaMarcadaNaSimulacao) estoqueHipoteticoCvm += val;
+      }
+      if (isMini) {
+        propostasMini.push(reg);
+        if (estaMarcadaNaSimulacao) estoqueHipoteticoMini += val;
+      }
+      if (isPronafA) {
+        propostasPronafA.push(reg);
+        if (estaMarcadaNaSimulacao) estoqueHipoteticoPronafA += val;
+      }
     });
 
     const usarAnual = baseMetaTermometro === 'ANUAL';
@@ -517,6 +603,7 @@ const matchPorte =
       realizado: number;
       estoque: number;
       meta: number;
+      propostasEstoque: RegistroContratacao[];
       notaExtra?: string;
     }) => {
       const totalProjetado = cfg.realizado + cfg.estoque;
@@ -535,15 +622,21 @@ const matchPorte =
       };
     };
 
+    const subtituloPronafDinamico =
+      dashFiltroPorte.length === 0
+        ? 'Convencional + CVM + PRONAF A'
+        : `Filtro: ${dashFiltroPorte.join(' + ')}`;
+
     const todosOsQuatro = [
       montarIndicador({
         id: 'PRONAF',
         titulo: 'FNE PRONAF (Consolidado)',
-        subtitulo: 'Convencional + CVM + PRONAF A',
+        subtitulo: subtituloPronafDinamico,
         corDestaque: '#8B1530',
         realizado: realPronaf,
         estoque: estoqueHipoteticoPronaf,
         meta: metaPronaf,
+        propostasEstoque: propostasPronaf,
       }),
       montarIndicador({
         id: 'CVM',
@@ -553,6 +646,7 @@ const matchPorte =
         realizado: realCvm,
         estoque: estoqueHipoteticoCvm,
         meta: metaCvm,
+        propostasEstoque: propostasCvm,
       }),
       montarIndicador({
         id: 'MINI',
@@ -562,6 +656,7 @@ const matchPorte =
         realizado: realMini,
         estoque: estoqueHipoteticoMini,
         meta: metaMini,
+        propostasEstoque: propostasMini,
       }),
       montarIndicador({
         id: 'PRONAF_A',
@@ -571,6 +666,7 @@ const matchPorte =
         realizado: realPronaf,
         estoque: estoqueHipoteticoPronafA,
         meta: metaPronaf,
+        propostasEstoque: propostasPronafA,
         notaExtra:
           contratadoSistemaPronafA > 0
             ? `Contratado PRONAF A (Sist.): R$ ${formatarMoedaBD(
@@ -580,12 +676,10 @@ const matchPorte =
       }),
     ];
 
-    // Se NÃO houver filtro de Porte selecionado, mostra todos os 4 círculos!
     if (dashFiltroPorte.length === 0) {
       return todosOsQuatro;
     }
 
-    // Quando houver filtro de Porte selecionado, mostra apenas os pertinentes à seleção:
     return todosOsQuatro.filter((ind) => {
       if (
         ind.id === 'PRONAF' &&
@@ -607,7 +701,7 @@ const matchPorte =
       return false;
     });
   }, [
-    registros,
+    dadosFiltradosDash,
     cardsKanban,
     simulacaoCarteira,
     paramsBancoOficial,
@@ -1659,6 +1753,7 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
                       <div
                         key={ind.id}
                         style={{
+                          position: 'relative',
                           background: '#f8fafc',
                           border: '1px solid #e2e8f0',
                           borderTop: `4px solid ${ind.corDestaque}`,
@@ -1671,7 +1766,46 @@ setObs(htmlKanbanParaTextoLimpo(reg.obs || ''));
                           boxShadow: '0 2px 5px rgba(0,0,0,0.03)',
                         }}
                       >
-                        <div style={{ textAlign: 'center', width: '100%' }}>
+                        {/* BOTÃO (i) NO CANTO SUPERIOR DIREITO DO CARD DO TERMÔMETRO */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '8px',
+                            right: '8px',
+                            zIndex: 2,
+                          }}
+                          title="Ver composição nominal do estoque e editar cenário hipotético"
+                        >
+                          <BotaoInfoSomaEstoque
+                            tituloLinha={ind.titulo}
+                            tituloColuna={
+                              temFiltroDashAtivo
+                                ? `ESTOQUE FILTRADO (${ind.subtitulo})`
+                                : 'TOTAL CONSOLIDADO DO ESTOQUE'
+                            }
+                            propostas={ind.propostasEstoque}
+                            simulacao={simulacaoCarteira}
+                            onToggleProposta={handleTogglePropostaSimulacao}
+                            onToggleVariasPropostas={
+                              handleToggleVariasPropostasSimulacao
+                            }
+                            onAlterarValorProvisorio={
+                              handleAlterarValorProvisorio
+                            }
+                            onToggleModoFlexivel={handleToggleModoFlexivel}
+                            onAbrirCardKanbanCliente={(proposta) =>
+                              onInspecionarNoKanban?.(proposta)
+                            }
+                          />
+                        </div>
+
+                        <div
+                          style={{
+                            textAlign: 'center',
+                            width: '100%',
+                            padding: '0 20px',
+                          }}
+                        >
                           <div
                             style={{
                               fontSize: '12px',

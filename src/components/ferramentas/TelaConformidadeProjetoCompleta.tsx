@@ -163,14 +163,23 @@ async function obterCoringasDaGavetaUniversal(): Promise<CoringaGavetaItem[]> {
 
 function converterCategoriaParaAuditor(cat: CategoriaDocPasta): string {
   const mapa: Partial<Record<CategoriaDocPasta, string>> = {
+    ITEM_ARQ_ELETRONICO_PROJETO: 'ITEM_1_PROJETO_ARQ',
     ITEM_AUT_ALTERACAO: 'ITEM_2_AUT_ALTERACAO',
-    ITEM_CERT_SOCIO_COM_KML: 'ITEM_CERT_SOCIO_COM_KML',
-    ITEM_CERT_SOCIO_SEM_KML: 'ITEM_CERT_SOCIO_SEM_KML',
+    ITEM_EMBARGOS_TITULAR: 'ITEM_3_EMBARGOS_TITULAR',
+    ITEM_EMBARGOS_CONJUGE: 'ITEM_3_EMBARGOS_CONJUGE',
+    ITEM_IMPROBIDADE_TITULAR: 'ITEM_4_IMPROBIDADE_TITULAR',
+    ITEM_IMPROBIDADE_CONJUGE: 'ITEM_4_IMPROBIDADE_CONJUGE',
+    ITEM_CERT_SOCIO_COM_KML: 'ITEM_5_CERT_SOCIOAMBIENTAL',
+    ITEM_CERT_SOCIO_SEM_KML: 'ITEM_5_CERT_SOCIOAMBIENTAL',
+    ITEM_CREA: 'ITEM_6_CREA',
+    ITEM_EXTRATO_SICOR: 'ITEM_7_EXTRATO_SICOR',
     ITEM_CONTRATO_ASSESSORIA: 'ITEM_8_CONTRATO_ASSESSORIA',
     ITEM_CONSOLIDADAS: 'ITEM_9_CONSOLIDADAS',
+    ITEM_DEC_AMBIENTAIS: 'ITEM_10_DEC_AMBIENTAIS',
     ITEM_DEC_REG_AMBIENTAL: 'ITEM_10_1_REG_AMBIENTAL',
     ITEM_DEC_NAO_DESMATAMENTO: 'ITEM_10_2_NAO_DESMATAMENTO',
     ITEM_DEC_RECOMPOSICAO: 'ITEM_10_3_RECOMPOSICAO',
+    ITEM_DEC_REG_AMB_GARANTIDOR: 'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
     ITEM_DEC_OUTRA_AMBIENTAL: 'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
     ITEM_ESPELHO_UND: 'ITEM_11_ESPELHO_UND',
     ITEM_PROJETO_PDF: 'ITEM_12_PROJETO_PDF',
@@ -183,7 +192,7 @@ function converterCategoriaParaAuditor(cat: CategoriaDocPasta): string {
     ITEM_PARECER_TECNICO: 'ITEM_16_PARECER_TECNICO',
     ITEM_RB_PA: 'ITEM_17_RB_PA',
     ITEM_ORCAMENTO: 'ITEM_18_ORCAMENTO',
-    ITEM_CREA: 'ITEM_19_CREA',
+    ITEM_CAPA_ANALISADOR: 'ITEM_19_CAPA_ANALISADOR',
     ITEM_PARECER_GERENCIAL: 'ITEM_20_PARECER_GERENCIAL',
     ITEM_PARECER_SEMA: 'ITEM_21_PARECER_SEMA',
     ITEM_CND_PF: 'ITEM_CND_PF',
@@ -196,6 +205,7 @@ function converterCategoriaParaAuditor(cat: CategoriaDocPasta): string {
     ITEM_KML: 'ITEM_KML',
     CAD_1_IDENTIDADE_TITULAR: 'CAD_1_IDENTIDADE_TITULAR',
     CAD_1_IDENTIDADE_CONJUGE: 'CAD_1_IDENTIDADE_CONJUGE',
+    CAD_1_IDENTIDADE_OUTRO: 'CAD_1_IDENTIDADE_OUTRO',
     CAD_2_CERTIDAO_CASAMENTO: 'CAD_2_CERTIDAO_CASAMENTO',
     CAD_5_PROPOSTA_CADASTRO: 'CAD_5_PROPOSTA_CADASTRO',
     CAD_6_PROCURACAO: 'CAD_6_PROCURACAO',
@@ -385,6 +395,17 @@ export default function TelaConformidadeProjetoCompleta({
   const [editCarRecibo, setEditCarRecibo] = useState('');
   const [editItensTexto, setEditItensTexto] = useState('');
   const [statusSalvoRaioX, setStatusSalvoRaioX] = useState('');
+  const [modoEdicaoRaioX, setModoEdicaoRaioX] = useState(false);
+  const [chaveCopiadaRaioX, setChaveCopiadaRaioX] = useState('');
+
+  const copiarValorRaioX = (chave: string, valor: string) => {
+    if (!valor || !valor.trim()) return;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(valor.trim()).catch(() => {});
+    }
+    setChaveCopiadaRaioX(chave);
+    setTimeout(() => setChaveCopiadaRaioX(''), 2000);
+  };
 
   // Carrega todos os registros do Modal de Conformidade PRONAF A
   const todosItensConformidadePronafA = useMemo(() => {
@@ -1279,14 +1300,16 @@ if (!titDet && handle.name) {
     // -------------------------------------------------------------------------
     // GRUPO 1: TAREFAS E CONSULTAS QUE O ANALISTA (USUÁRIO) FAZ NO DIA (5.1)
     // -------------------------------------------------------------------------
-    const arqsCapa = buscarArqs(['ITEM_CAPA' as CategoriaDocPasta], [
+    const arqsCapa = buscarArqs(['ITEM_CAPA_ANALISADOR'], [
+      'CAPA DO ANALISADOR',
       '1. CAPA',
+      '19. CAPA',
       'CAPA DA PROPOSTA',
       'CAPA -',
     ]);
     itens.push({
       id: 'AN_CAPA',
-      titulo: '1. Capa do Analisador (1. CAPA)',
+      titulo: 'Capa do Analisador',
       obrigatorio: true,
       presente: arqsCapa.length > 0,
       responsavel: 'ANALISTA_BANCO',
@@ -1297,10 +1320,10 @@ if (!titDet && handle.name) {
       arquivosRelacionados: arqsCapa,
     });
 
-    const arqsEmbargos = buscarArqs(['ITEM_EMBARGOS' as CategoriaDocPasta], [
-      'EMBARGO',
-      'IBAMA',
-    ]);
+    const arqsEmbargos = buscarArqs(
+      ['ITEM_EMBARGOS_TITULAR', 'ITEM_EMBARGOS_CONJUGE'],
+      ['EMBARGO', 'IBAMA']
+    );
     itens.push({
       id: 'AN_EMBARGOS',
       titulo: 'Consulta de Embargos (IBAMA)',
@@ -1315,7 +1338,7 @@ if (!titDet && handle.name) {
     });
 
     const arqsImprobidade = buscarArqs(
-      ['ITEM_IMPROBIDADE' as CategoriaDocPasta],
+      ['ITEM_IMPROBIDADE_TITULAR', 'ITEM_IMPROBIDADE_CONJUGE'],
       ['IMPROBIDADE', 'CNJ']
     );
     itens.push({
@@ -1859,49 +1882,68 @@ if (!titDet && handle.name) {
       }
     }
 
-    // Inclui todos os arquivos .TXT de lembrete encontrados na pasta (criados pelo Organizador) como PENDENTES!
-    lembretesTxtRestantes.forEach((txtArq, idxTxt) => {
-      const nUp = removerAcentos(txtArq.nomeOriginal).toUpperCase();
-      const limpo = txtArq.nomeOriginal.replace(/\.txt$/i, '');
-      const ehTarefaAnalista =
-        nUp.includes('PARECER GERENCIAL') ||
-        nUp.includes('VERIFICAR C-C') ||
-        nUp.includes('CONSULTAR SELO') ||
-        nUp.includes('SELO') ||
-        nUp.includes('CNDT') ||
-        nUp.includes('CND ') ||
-        nUp.includes('CND-') ||
-        nUp.includes('EXTRATO DA CAF') ||
-        nUp.includes('ELABORAR CADASTRO') ||
-        nUp.includes('RENOVAR CADASTRO') ||
-        nUp.includes('EMBARGO') ||
-        nUp.includes('IMPROBIDADE') ||
-        nUp.includes('SICOR') ||
-        nUp.includes('CERTIFICACAO SOCIOAMBIENTAL') ||
-        nUp.includes('SOCIOAMBIENTAL') ||
-        nUp.includes('CAPA') ||
-        nUp.includes('VITI') ||
-        nUp.includes('VALIDAR ITI');
+    // ITEM 2.3: Não duplica alertas mostrando o Lembrete .TXT separado!
+    // Em vez disso, verifica se cada item ausente possui ou não um lembrete .TXT correspondente na pasta,
+    // e avisa na própria mensagem do item ausente caso NÃO haja um lembrete .TXT daquela falta!
+    const MAPA_TERMOS_TXT_POR_ID: Record<string, string[]> = {
+      AN_CAPA: ['CAPA DO ANALISADOR', 'CAPA'],
+      AN_EMBARGOS: ['EMBARGOS', 'EMBARGO'],
+      AN_IMPROBIDADE: ['IMPROBIDADE'],
+      AN_CERT_SOCIO_DERIV: ['CERTIFICACAO SOCIOAMBIENTAL', 'SOCIOAMBIENTAL'],
+      AN_CERT_SOCIO_LIM: ['CERTIFICACAO SOCIOAMBIENTAL', 'SOCIOAMBIENTAL'],
+      AN_SICOR: ['EXTRATO SICOR', 'SICOR'],
+      AN_CND_PF: ['CND -', 'CND PF', 'CND '],
+      AN_CNDT_PF: ['CNDT'],
+      AN_SELOS: ['SELO'],
+      AN_VITI: ['VITI', 'ITI'],
+      AN_CC_CONSOLIDADA: ['VERIFICAR C-C', 'CONTA CORRENTE', 'CONSOLIDADA'],
+      AN_PARECER_GERENCIAL: ['FALTA PARECER GERENCIAL', 'PARECER GERENCIAL'],
+      PR_PROJETO_PDF: ['PROJETO'],
+      PR_PLANILHA_PROJETO: ['ARQUIVO ELETRONICO', 'PROJETO'],
+      PR_KML: ['KML'],
+      PR_ORCAMENTO: ['ORCAMENTO'],
+      PR_PARECER_TECNICO: ['PARECER TECNICO'],
+      PR_CREA: ['CREA'],
+      PR_SOL_LIMITE: ['SOLICITACAO DE ABERTURA', 'SOLICITACAO DE LIMITE'],
+      PR_CONSOLIDADA: ['DECLARACOES CONSOLIDADAS', 'CONSOLIDADA'],
+      PR_DEC_AMBIENTAL: ['REGULARIDADE AMBIENTAL', 'DECLARACOES AMBIENTAIS'],
+      PR_CAR: ['CAR'],
+      PR_CAF: ['CAF', 'DAP'],
+      PR_DCAA: ['DCAA'],
+      PR_ESPELHO_UND: ['ESPELHO', 'RELATORIO DA UND'],
+      PR_RB_PA: ['RB DO', 'RELACAO DE BENEFICIARIOS'],
+      PR_MATRICULA_IMOVEL: ['INTEIRO TEOR', 'MATRICULA', 'TITULO', 'IMOVEL'],
+      PR_CCIR: ['CCIR'],
+      PR_ITR: ['ITR'],
+      PR_ID_TITULAR: ['IDENTIDADE', 'RG'],
+      PR_ID_CONJUGE: ['IDENTIDADE', 'CONJUGE'],
+      PR_CERTIDAO_CASAMENTO: ['CASAMENTO'],
+    };
 
-      itens.push({
-        id: `TXT_PEND_${idxTxt}_${txtArq.id}`,
-        titulo: `📌 Lembrete .TXT na Pasta: ${
-          txtArq.caminhoSubpasta ? `[${txtArq.caminhoSubpasta}] ` : ''
-        }${limpo}`,
-        obrigatorio: true,
-        presente: false,
-        responsavel: ehTarefaAnalista
-          ? 'ANALISTA_BANCO'
-          : 'PROJETISTA_CLIENTE',
-        detalheStatus:
-          'Arquivo .TXT de lembrete criado pelo Organizador ainda consta na pasta (substituir pelo documento definitivo).',
-        arquivosRelacionados: [],
-      });
+    const nomesTxtsNorm = lembretesTxtRestantes.map((t) =>
+      removerAcentos(t.nomeOriginal).toUpperCase()
+    );
+
+    const itensComVerificacaoDeLembrete = itens.map((item) => {
+      if (item.presente) return item;
+      const termos = MAPA_TERMOS_TXT_POR_ID[item.id] || [];
+      const temTxtNaPasta =
+        termos.length > 0 &&
+        nomesTxtsNorm.some((nomeTxt) =>
+          termos.some((termo) => nomeTxt.includes(termo))
+        );
+
+      return {
+        ...item,
+        detalheStatus: temTxtNaPasta
+          ? item.detalheStatus
+          : `${item.detalheStatus} ⚠️ (Não há lembrete .TXT dessa falta na pasta)`,
+      };
     });
 
     // Inclui também os alertas e restrições vindos do Modal de Conformidade PRONAF A!
     alertasConformidadePronafA.forEach((al) => {
-      itens.push({
+      itensComVerificacaoDeLembrete.push({
         id: al.id,
         titulo: al.texto,
         obrigatorio: true,
@@ -1913,7 +1955,7 @@ if (!titDet && handle.name) {
       });
     });
 
-    return itens;
+    return itensComVerificacaoDeLembrete;
   }, [
     arquivosLidos,
     lembretesTxtRestantes,
@@ -2014,7 +2056,15 @@ if (!titDet && handle.name) {
           'ITEM_INTEIRO_TEOR',
         ]);
       case 16:
-        return porCat(['CAD_5_PROPOSTA_CADASTRO']);
+        return validos.filter((a) => {
+          const nUp = removerAcentos(a.nomeOriginal).toUpperCase();
+          if (nUp.includes('PROPOSTA DE CADASTRO')) return false;
+          return (
+            /\bS400\b/.test(nUp) ||
+            nUp.includes('FICHA CADASTRAL') ||
+            nUp.includes('FICHA CADASTRO')
+          );
+        });
       default:
         return [];
     }
@@ -2600,17 +2650,29 @@ if (!titDet && handle.name) {
             )}
           </div>
 
-         {/* RAIO-X EDITÁVEL DO PROJETO COM SALVAMENTO AUTOMÁTICO NA NUVEM + CRUZAMENTO CONFORMIDADE PRONAF A */}
+         {/* ITEM 2.1: RAIO-X DO PROJETO (MODO LEITURA COM BOTÃO COPIAR POR PADRÃO | DUPLO CLIQUE PARA EDITAR) */}
           <div
+            onDoubleClick={() => {
+              if (!modoEdicaoRaioX) setModoEdicaoRaioX(true);
+            }}
+            title={
+              modoEdicaoRaioX
+                ? 'Modo de edição ativo'
+                : '💡 Dê 2 cliques neste quadro para editar manualmente qualquer campo'
+            }
             style={{
               background: '#ffffff',
               borderRadius: '10px',
               padding: '12px 14px',
-              border: '1px solid #cbd5e1',
+              border: modoEdicaoRaioX
+                ? '2px solid #004C27'
+                : '1px solid #cbd5e1',
               display: 'flex',
               flexDirection: 'column',
               gap: '7px',
               fontSize: '11px',
+              userSelect: 'text',
+              cursor: modoEdicaoRaioX ? 'default' : 'pointer',
             }}
           >
             <div
@@ -2622,27 +2684,58 @@ if (!titDet && handle.name) {
                 paddingBottom: '6px',
               }}
             >
-              <strong style={{ fontSize: '11.5px', color: '#004C27' }}>
-                📋 RAIO-X DO PROJETO (EDITÁVEL)
-              </strong>
-              <button
-                type="button"
-                onClick={() => salvarAjustesManuaisDaLupinha(true)}
-                style={{
-                  width: 'auto',
-                  padding: '3px 8px',
-                  fontSize: '10px',
-                  fontWeight: 800,
-                  background: '#004C27',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                }}
-                title="Salva os dados preenchidos abaixo no Cache do Parecer e na Nuvem deste cliente"
-              >
-                {statusSalvoRaioX || '☁️ Salvar Raio-X'}
-              </button>
+              <div>
+                <strong style={{ fontSize: '11.5px', color: '#004C27' }}>
+                  📋 RAIO-X EXTRAÍDO DO PROJETO
+                </strong>
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: '9.5px',
+                    color: '#64748b',
+                  }}
+                >
+                  {modoEdicaoRaioX
+                    ? '✏️ Editando campos (Salva na Nuvem)'
+                    : '💡 Duplo clique no quadro p/ editar'}
+                </span>
+              </div>
+
+              {modoEdicaoRaioX ? (
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    await salvarAjustesManuaisDaLupinha(true);
+                    setModoEdicaoRaioX(false);
+                  }}
+                  style={{
+                    width: 'auto',
+                    padding: '4px 10px',
+                    fontSize: '10px',
+                    fontWeight: 800,
+                    background: '#004C27',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ✅ Concluir
+                </button>
+              ) : (
+                statusSalvoRaioX && (
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      color: '#15803d',
+                    }}
+                  >
+                    {statusSalvoRaioX}
+                  </span>
+                )
+              )}
             </div>
 
             {registroConformidadePronafAVinculado && (
@@ -2685,141 +2778,243 @@ if (!titDet && handle.name) {
               </div>
             )}
 
-            {(() => {
-              const estiloCampoRaioX = (val: string): React.CSSProperties => ({
-                width: '100%',
-                height: '26px',
-                padding: '2px 6px',
-                fontSize: '11px',
-                fontWeight: 700,
-                borderRadius: '4px',
-                border: val.trim()
-                  ? '1px solid #cbd5e1'
-                  : '1px dashed #f59e0b',
-                background: val.trim() ? '#f8fafc' : '#fffbeb',
-                color: '#0f172a',
-              });
+            {!modoEdicaoRaioX ? (
+              /* MODO PADRÃO (SOMENTE LEITURA + SELEÇÃO DE TEXTO + BOTÃOZINHO DE COPIAR EM CADA ITEM PREENCHIDO) */
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '5px',
+                }}
+              >
+                {[
+                  {
+                    id: 'pasta',
+                    label: '📁 Pasta',
+                    valor: nomePasta,
+                  },
+                  {
+                    id: 'titular',
+                    label: '👤 Titular',
+                    valor: titularDetectado,
+                  },
+                  {
+                    id: 'cpf_tit',
+                    label: '🪪 CPF Titular',
+                    valor: editCpfTitular,
+                  },
+                  {
+                    id: 'nasc_tit',
+                    label: '🎂 Nasc. Titular',
+                    valor: editNascTitular,
+                  },
+                  {
+                    id: 'est_civil',
+                    label: '💍 Estado Civil',
+                    valor: editEstadoCivil,
+                  },
+                  ...(conjugeDetectado || editCpfConjuge || editNascConjuge
+                    ? [
+                        {
+                          id: 'conj_nome',
+                          label: '👥 Cônjuge',
+                          valor: conjugeDetectado,
+                        },
+                        {
+                          id: 'conj_cpf',
+                          label: '🪪 CPF Cônjuge',
+                          valor: editCpfConjuge,
+                        },
+                        {
+                          id: 'conj_nasc',
+                          label: '🎂 Nasc. Cônjuge',
+                          valor: editNascConjuge,
+                        },
+                      ]
+                    : []),
+                  ...(editProcuradorNome ||
+                  editCpfProcurador ||
+                  editNascProcurador
+                    ? [
+                        {
+                          id: 'proc_nome',
+                          label: '🤝 Proc./Aval.',
+                          valor: editProcuradorNome,
+                        },
+                        {
+                          id: 'proc_cpf',
+                          label: '🪪 CPF Proc./Aval.',
+                          valor: editCpfProcurador,
+                        },
+                        {
+                          id: 'proc_nasc',
+                          label: '🎂 Nasc. Proc./Aval.',
+                          valor: editNascProcurador,
+                        },
+                      ]
+                    : []),
+                  {
+                    id: 'valor',
+                    label: '💰 Valor Financiado',
+                    valor: editValorProj ? `R$ ${editValorProj}` : '',
+                    valorCopy: editValorProj,
+                  },
+                  {
+                    id: 'prazo',
+                    label: '⏱️ Prazo / Carência',
+                    valor:
+                      editPrazoProj || editCarenciaProj
+                        ? `${editPrazoProj || '-'}m / ${
+                            editCarenciaProj || '0'
+                          }m`
+                        : '',
+                    valorCopy: `${editPrazoProj || ''}/${
+                      editCarenciaProj || ''
+                    }`,
+                  },
+                  {
+                    id: 'cc',
+                    label: '🏦 C/C Consolidada',
+                    valor: editCcConsol,
+                  },
+                  {
+                    id: 'proj',
+                    label: '👨‍💼 Projetista',
+                    valor: projetistaDetectado,
+                  },
+                  {
+                    id: 'imovel',
+                    label: '📍 Imóvel / P.A.',
+                    valor: paDetectado,
+                  },
+                  {
+                    id: 'area',
+                    label: '📐 Área (ha)',
+                    valor: editAreaHa ? `${editAreaHa} ha` : '',
+                    valorCopy: editAreaHa,
+                  },
+                  {
+                    id: 'car',
+                    label: '🗺️ Recibo CAR',
+                    valor: editCarRecibo,
+                  },
+                ].map((row) => {
+                  const valLimpo = (row.valor || '').trim();
+                  const valParaCopiar = (row.valorCopy ?? valLimpo).trim();
+                  const foiCopiado = chaveCopiadaRaioX === row.id;
 
-              return (
-                <>
-                  <div>
-                    <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                      👤 Nome do Titular:
-                    </label>
-                    <input
-                      type="text"
-                      value={titularDetectado}
-                      onChange={(e) =>
-                        setTitularDetectado(e.target.value.toUpperCase())
-                      }
-                      onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                      placeholder="Não identificado — digite..."
-                      style={estiloCampoRaioX(titularDetectado)}
-                    />
-                  </div>
-
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1.15fr 1fr',
-                      gap: '6px',
-                    }}
-                  >
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        🪪 CPF Titular:
-                      </label>
-                      <input
-                        type="text"
-                        value={editCpfTitular}
-                        onChange={(e) =>
-                          setEditCpfTitular(aplicarMascaraCPF(e.target.value))
-                        }
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="000.000.000-00"
-                        maxLength={14}
-                        style={estiloCampoRaioX(editCpfTitular)}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        🎂 Nasc. Titular (CND):
-                      </label>
-                      <input
-                        type="text"
-                        value={editNascTitular}
-                        onChange={(e) =>
-                          setEditNascTitular(
-                            aplicarMascaraDataBR(e.target.value)
-                          )
-                        }
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="DD/MM/AAAA"
-                        maxLength={10}
-                        style={estiloCampoRaioX(editNascTitular)}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                      💍 Estado Civil:
-                    </label>
-                    <select
-                      value={editEstadoCivil}
-                      onChange={(e) => {
-                        setEditEstadoCivil(e.target.value);
-                        setTimeout(
-                          () => salvarAjustesManuaisDaLupinha(true),
-                          50
-                        );
+                  return (
+                    <div
+                      key={row.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '3px 6px',
+                        borderRadius: '4px',
+                        background: valLimpo ? '#f8fafc' : '#fffbeb',
+                        border: valLimpo
+                          ? '1px solid #e2e8f0'
+                          : '1px dashed #fcd34d',
                       }}
-                      style={estiloCampoRaioX(editEstadoCivil)}
                     >
-                      <option value="">Não identificado — selecione...</option>
-                      <option value="SOLTEIRO(A)">SOLTEIRO(A)</option>
-                      <option value="CASADO(A)">
-                        CASADO(A) (Exige Cert. Casamento)
-                      </option>
-                      <option value="UNIÃO ESTÁVEL">
-                        UNIÃO ESTÁVEL (Dispensa Cert. Casamento)
-                      </option>
-                      <option value="DIVORCIADO(A)">DIVORCIADO(A)</option>
-                      <option value="VIÚVO(A)">VIÚVO(A)</option>
-                    </select>
-                  </div>
-
-                  {/* DADOS DO CÔNJUGE / COMPANHEIRO(A) */}
-                  <div
-                    style={{
-                      background: '#faf5ff',
-                      border: '1px solid #e9d5ff',
-                      borderRadius: '6px',
-                      padding: '6px 8px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '5px',
-                    }}
-                  >
-                    <div>
-                      <label
+                      <div
                         style={{
-                          fontSize: '10px',
-                          fontWeight: 800,
-                          color: '#6b21a8',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
                         }}
                       >
-                        👥 Nome do Cônjuge / Companheiro(a):
+                        <strong style={{ color: '#334155' }}>
+                          {row.label}:
+                        </strong>{' '}
+                        {valLimpo ? (
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              color: '#0f172a',
+                              wordBreak: 'break-all',
+                            }}
+                          >
+                            {valLimpo}
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: '10px',
+                              color: '#b45309',
+                              fontStyle: 'italic',
+                            }}
+                          >
+                            Não lido (2 cliques p/ inserir)
+                          </span>
+                        )}
+                      </div>
+
+                      {valLimpo && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            copiarValorRaioX(row.id, valParaCopiar);
+                          }}
+                          title={`Copiar "${valParaCopiar}"`}
+                          style={{
+                            width: 'auto',
+                            padding: '1px 5px',
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            background: foiCopiado ? '#dcfce7' : '#ffffff',
+                            color: foiCopiado ? '#15803d' : '#64748b',
+                            border: `1px solid ${
+                              foiCopiado ? '#86efac' : '#cbd5e1'
+                            }`,
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {foiCopiado ? '✔' : '📋'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* MODO DE EDIÇÃO (ATIVADO APÓS DUPLO CLIQUE NO QUADRO) */
+              (() => {
+                const estiloCampoRaioX = (
+                  val: string
+                ): React.CSSProperties => ({
+                  width: '100%',
+                  height: '26px',
+                  padding: '2px 6px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  borderRadius: '4px',
+                  border: val.trim()
+                    ? '1px solid #cbd5e1'
+                    : '1px dashed #f59e0b',
+                  background: val.trim() ? '#f8fafc' : '#fffbeb',
+                  color: '#0f172a',
+                });
+
+                return (
+                  <>
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        👤 Nome do Titular:
                       </label>
                       <input
                         type="text"
-                        value={conjugeDetectado}
+                        value={titularDetectado}
                         onChange={(e) =>
-                          setConjugeDetectado(e.target.value.toUpperCase())
+                          setTitularDetectado(e.target.value.toUpperCase())
                         }
                         onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="Sem cônjuge ou digite aqui..."
-                        style={estiloCampoRaioX(conjugeDetectado)}
+                        placeholder="Não identificado — digite..."
+                        style={estiloCampoRaioX(titularDetectado)}
                       />
                     </div>
 
@@ -2831,27 +3026,82 @@ if (!titDet && handle.name) {
                       }}
                     >
                       <div>
-                        <label
-                          style={{
-                            fontSize: '10px',
-                            fontWeight: 800,
-                            color: '#6b21a8',
-                          }}
-                        >
-                          🪪 CPF Cônjuge:
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          🪪 CPF Titular:
                         </label>
                         <input
                           type="text"
-                          value={editCpfConjuge}
+                          value={editCpfTitular}
                           onChange={(e) =>
-                            setEditCpfConjuge(aplicarMascaraCPF(e.target.value))
+                            setEditCpfTitular(aplicarMascaraCPF(e.target.value))
                           }
                           onBlur={() => salvarAjustesManuaisDaLupinha(true)}
                           placeholder="000.000.000-00"
                           maxLength={14}
-                          style={estiloCampoRaioX(editCpfConjuge)}
+                          style={estiloCampoRaioX(editCpfTitular)}
                         />
                       </div>
+                      <div>
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          🎂 Nasc. Titular (CND):
+                        </label>
+                        <input
+                          type="text"
+                          value={editNascTitular}
+                          onChange={(e) =>
+                            setEditNascTitular(
+                              aplicarMascaraDataBR(e.target.value)
+                            )
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="DD/MM/AAAA"
+                          maxLength={10}
+                          style={estiloCampoRaioX(editNascTitular)}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                        💍 Estado Civil:
+                      </label>
+                      <select
+                        value={editEstadoCivil}
+                        onChange={(e) => {
+                          setEditEstadoCivil(e.target.value);
+                          setTimeout(
+                            () => salvarAjustesManuaisDaLupinha(true),
+                            50
+                          );
+                        }}
+                        style={estiloCampoRaioX(editEstadoCivil)}
+                      >
+                        <option value="">
+                          Não identificado — selecione...
+                        </option>
+                        <option value="SOLTEIRO(A)">SOLTEIRO(A)</option>
+                        <option value="CASADO(A)">
+                          CASADO(A) (Exige Cert. Casamento)
+                        </option>
+                        <option value="UNIÃO ESTÁVEL">
+                          UNIÃO ESTÁVEL (Dispensa Cert. Casamento)
+                        </option>
+                        <option value="DIVORCIADO(A)">DIVORCIADO(A)</option>
+                        <option value="VIÚVO(A)">VIÚVO(A)</option>
+                      </select>
+                    </div>
+
+                    <div
+                      style={{
+                        background: '#faf5ff',
+                        border: '1px solid #e9d5ff',
+                        borderRadius: '6px',
+                        padding: '6px 8px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '5px',
+                      }}
+                    >
                       <div>
                         <label
                           style={{
@@ -2860,63 +3110,87 @@ if (!titDet && handle.name) {
                             color: '#6b21a8',
                           }}
                         >
-                          🎂 Nasc. Cônjuge:
+                          👥 Nome do Cônjuge / Companheiro(a):
                         </label>
                         <input
                           type="text"
-                          value={editNascConjuge}
+                          value={conjugeDetectado}
                           onChange={(e) =>
-                            setEditNascConjuge(
-                              aplicarMascaraDataBR(e.target.value)
-                            )
+                            setConjugeDetectado(e.target.value.toUpperCase())
                           }
                           onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                          placeholder="DD/MM/AAAA"
-                          maxLength={10}
-                          style={estiloCampoRaioX(editNascConjuge)}
+                          placeholder="Sem cônjuge ou digite aqui..."
+                          style={estiloCampoRaioX(conjugeDetectado)}
                         />
                       </div>
-                    </div>
-                  </div>
 
-                  {/* DADOS DE PROCURADOR / AVALISTA */}
-                  <div
-                    style={{
-                      background: '#f0f9ff',
-                      border: '1px solid #bae6fd',
-                      borderRadius: '6px',
-                      padding: '6px 8px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '5px',
-                    }}
-                  >
-                    <div>
-                      <label
+                      <div
                         style={{
-                          fontSize: '10px',
-                          fontWeight: 800,
-                          color: '#0369a1',
+                          display: 'grid',
+                          gridTemplateColumns: '1.15fr 1fr',
+                          gap: '6px',
                         }}
                       >
-                        🤝 Procurador / Avalista (Se houver):
-                      </label>
-                      <input
-                        type="text"
-                        value={editProcuradorNome}
-                        onChange={(e) =>
-                          setEditProcuradorNome(e.target.value.toUpperCase())
-                        }
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="Nome do Procurador/Avalista..."
-                        style={estiloCampoRaioX(editProcuradorNome)}
-                      />
+                        <div>
+                          <label
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: 800,
+                              color: '#6b21a8',
+                            }}
+                          >
+                            🪪 CPF Cônjuge:
+                          </label>
+                          <input
+                            type="text"
+                            value={editCpfConjuge}
+                            onChange={(e) =>
+                              setEditCpfConjuge(
+                                aplicarMascaraCPF(e.target.value)
+                              )
+                            }
+                            onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                            placeholder="000.000.000-00"
+                            maxLength={14}
+                            style={estiloCampoRaioX(editCpfConjuge)}
+                          />
+                        </div>
+                        <div>
+                          <label
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: 800,
+                              color: '#6b21a8',
+                            }}
+                          >
+                            🎂 Nasc. Cônjuge:
+                          </label>
+                          <input
+                            type="text"
+                            value={editNascConjuge}
+                            onChange={(e) =>
+                              setEditNascConjuge(
+                                aplicarMascaraDataBR(e.target.value)
+                              )
+                            }
+                            onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                            placeholder="DD/MM/AAAA"
+                            maxLength={10}
+                            style={estiloCampoRaioX(editNascConjuge)}
+                          />
+                        </div>
+                      </div>
                     </div>
+
                     <div
                       style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1.15fr 1fr',
-                        gap: '6px',
+                        background: '#f0f9ff',
+                        border: '1px solid #bae6fd',
+                        borderRadius: '6px',
+                        padding: '6px 8px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '5px',
                       }}
                     >
                       <div>
@@ -2927,200 +3201,229 @@ if (!titDet && handle.name) {
                             color: '#0369a1',
                           }}
                         >
-                          🪪 CPF Proc./Aval.:
+                          🤝 Procurador / Avalista (Se houver):
                         </label>
                         <input
                           type="text"
-                          value={editCpfProcurador}
+                          value={editProcuradorNome}
                           onChange={(e) =>
-                            setEditCpfProcurador(
-                              aplicarMascaraCPF(e.target.value)
+                            setEditProcuradorNome(e.target.value.toUpperCase())
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="Nome do Procurador/Avalista..."
+                          style={estiloCampoRaioX(editProcuradorNome)}
+                        />
+                      </div>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1.15fr 1fr',
+                          gap: '6px',
+                        }}
+                      >
+                        <div>
+                          <label
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: 800,
+                              color: '#0369a1',
+                            }}
+                          >
+                            🪪 CPF Proc./Aval.:
+                          </label>
+                          <input
+                            type="text"
+                            value={editCpfProcurador}
+                            onChange={(e) =>
+                              setEditCpfProcurador(
+                                aplicarMascaraCPF(e.target.value)
+                              )
+                            }
+                            onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                            placeholder="000.000.000-00"
+                            maxLength={14}
+                            style={estiloCampoRaioX(editCpfProcurador)}
+                          />
+                        </div>
+                        <div>
+                          <label
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: 800,
+                              color: '#0369a1',
+                            }}
+                          >
+                            🎂 Nasc. Proc./Aval.:
+                          </label>
+                          <input
+                            type="text"
+                            value={editNascProcurador}
+                            onChange={(e) =>
+                              setEditNascProcurador(
+                                aplicarMascaraDataBR(e.target.value)
+                              )
+                            }
+                            onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                            placeholder="DD/MM/AAAA"
+                            maxLength={10}
+                            style={estiloCampoRaioX(editNascProcurador)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1.2fr 0.7fr 0.7fr',
+                        gap: '5px',
+                      }}
+                    >
+                      <div>
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          💰 Valor (R$):
+                        </label>
+                        <input
+                          type="text"
+                          value={editValorProj}
+                          onChange={(e) =>
+                            setEditValorProj(
+                              aplicarMascaraMoedaInput(e.target.value)
                             )
                           }
                           onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                          placeholder="000.000.000-00"
-                          maxLength={14}
-                          style={estiloCampoRaioX(editCpfProcurador)}
+                          placeholder="0,00"
+                          style={estiloCampoRaioX(editValorProj)}
                         />
                       </div>
                       <div>
-                        <label
-                          style={{
-                            fontSize: '10px',
-                            fontWeight: 800,
-                            color: '#0369a1',
-                          }}
-                        >
-                          🎂 Nasc. Proc./Aval.:
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          ⏱️ Prazo (m):
                         </label>
                         <input
                           type="text"
-                          value={editNascProcurador}
-                          onChange={(e) =>
-                            setEditNascProcurador(
-                              aplicarMascaraDataBR(e.target.value)
-                            )
-                          }
+                          value={editPrazoProj}
+                          onChange={(e) => setEditPrazoProj(e.target.value)}
                           onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                          placeholder="DD/MM/AAAA"
-                          maxLength={10}
-                          style={estiloCampoRaioX(editNascProcurador)}
+                          placeholder="120"
+                          style={estiloCampoRaioX(editPrazoProj)}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          ⏳ Carên.(m):
+                        </label>
+                        <input
+                          type="text"
+                          value={editCarenciaProj}
+                          onChange={(e) => setEditCarenciaProj(e.target.value)}
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="36"
+                          style={estiloCampoRaioX(editCarenciaProj)}
                         />
                       </div>
                     </div>
-                  </div>
 
-                  {/* VALOR, PRAZO, CARÊNCIA E CONTA CORRENTE */}
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1.2fr 0.7fr 0.7fr',
-                      gap: '5px',
-                    }}
-                  >
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '6px',
+                      }}
+                    >
+                      <div>
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          🏦 C/C Consolidada:
+                        </label>
+                        <input
+                          type="text"
+                          value={editCcConsol}
+                          onChange={(e) => setEditCcConsol(e.target.value)}
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="Ex: 67274-8"
+                          style={estiloCampoRaioX(editCcConsol)}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          👨‍💼 Projetista:
+                        </label>
+                        <input
+                          type="text"
+                          value={projetistaDetectado}
+                          onChange={(e) =>
+                            setProjetistaDetectado(e.target.value.toUpperCase())
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="Projetista..."
+                          style={estiloCampoRaioX(projetistaDetectado)}
+                        />
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1.4fr 0.7fr',
+                        gap: '6px',
+                      }}
+                    >
+                      <div>
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          📍 Imóvel / P.A.:
+                        </label>
+                        <input
+                          type="text"
+                          value={paDetectado}
+                          onChange={(e) =>
+                            setPaDetectado(e.target.value.toUpperCase())
+                          }
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="P.A. / Fazenda..."
+                          style={estiloCampoRaioX(paDetectado)}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10px', fontWeight: 800 }}>
+                          📐 Área (ha):
+                        </label>
+                        <input
+                          type="text"
+                          value={editAreaHa}
+                          onChange={(e) => setEditAreaHa(e.target.value)}
+                          onBlur={() => salvarAjustesManuaisDaLupinha(true)}
+                          placeholder="ha"
+                          style={estiloCampoRaioX(editAreaHa)}
+                        />
+                      </div>
+                    </div>
+
                     <div>
                       <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        💰 Valor (R$):
+                        🗺️ Recibo CAR:
                       </label>
                       <input
                         type="text"
-                        value={editValorProj}
+                        value={editCarRecibo}
                         onChange={(e) =>
-                          setEditValorProj(
-                            aplicarMascaraMoedaInput(e.target.value)
-                          )
+                          setEditCarRecibo(e.target.value.toUpperCase())
                         }
                         onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="0,00"
-                        style={estiloCampoRaioX(editValorProj)}
+                        placeholder="MA-210..."
+                        style={estiloCampoRaioX(editCarRecibo)}
                       />
                     </div>
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        ⏱️ Prazo (m):
-                      </label>
-                      <input
-                        type="text"
-                        value={editPrazoProj}
-                        onChange={(e) => setEditPrazoProj(e.target.value)}
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="120"
-                        style={estiloCampoRaioX(editPrazoProj)}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        ⏳ Carên.(m):
-                      </label>
-                      <input
-                        type="text"
-                        value={editCarenciaProj}
-                        onChange={(e) => setEditCarenciaProj(e.target.value)}
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="36"
-                        style={estiloCampoRaioX(editCarenciaProj)}
-                      />
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 1fr',
-                      gap: '6px',
-                    }}
-                  >
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        🏦 C/C Consolidada:
-                      </label>
-                      <input
-                        type="text"
-                        value={editCcConsol}
-                        onChange={(e) => setEditCcConsol(e.target.value)}
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="Ex: 67274-8"
-                        style={estiloCampoRaioX(editCcConsol)}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        👨‍💼 Projetista:
-                      </label>
-                      <input
-                        type="text"
-                        value={projetistaDetectado}
-                        onChange={(e) =>
-                          setProjetistaDetectado(e.target.value.toUpperCase())
-                        }
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="Projetista..."
-                        style={estiloCampoRaioX(projetistaDetectado)}
-                      />
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1.4fr 0.7fr',
-                      gap: '6px',
-                    }}
-                  >
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        📍 Imóvel / P.A.:
-                      </label>
-                      <input
-                        type="text"
-                        value={paDetectado}
-                        onChange={(e) =>
-                          setPaDetectado(e.target.value.toUpperCase())
-                        }
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="P.A. / Fazenda..."
-                        style={estiloCampoRaioX(paDetectado)}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                        📐 Área (ha):
-                      </label>
-                      <input
-                        type="text"
-                        value={editAreaHa}
-                        onChange={(e) => setEditAreaHa(e.target.value)}
-                        onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                        placeholder="ha"
-                        style={estiloCampoRaioX(editAreaHa)}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: '10px', fontWeight: 800 }}>
-                      🗺️ Recibo CAR:
-                    </label>
-                    <input
-                      type="text"
-                      value={editCarRecibo}
-                      onChange={(e) =>
-                        setEditCarRecibo(e.target.value.toUpperCase())
-                      }
-                      onBlur={() => salvarAjustesManuaisDaLupinha(true)}
-                      placeholder="MA-210..."
-                      style={estiloCampoRaioX(editCarRecibo)}
-                    />
-                  </div>
-                </>
-              );
-            })()}
+                  </>
+                );
+              })()
+            )}
           </div>
         </aside>
 
-        {/* COLUNA 2 (CENTRAL): LEITOR DE PDF INTEGRADO (LUPINHA 🔎) OU RELATÓRIO DE VARREDURA PROFUNDA */}
+        {/* COLUNA 2 (CENTRAL): MANTÉM O RELATÓRIO MONTADO NO DOM PARA NUNCA PERDER A POSIÇÃO DE ROLAGEM AO FECHAR O PDF (ITEM 2.2) */}
         <main
           style={{
+            position: 'relative',
             background: '#ffffff',
             borderRadius: '10px',
             border: '1px solid #cbd5e1',
@@ -3129,10 +3432,14 @@ if (!titDet && handle.name) {
             overflow: 'hidden',
           }}
         >
-          {arquivoVisualizando && urlPdfVisualizando ? (
-            /* MODO LEITOR LEVE DE PDF INTEGRADO NO PAINEL CENTRAL (ITEM 5) */
+          {/* LEITOR DE PDF SOBREPOSTO QUANDO ATIVO */}
+          {arquivoVisualizando && urlPdfVisualizando && (
             <div
               style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 20,
+                background: '#ffffff',
                 display: 'flex',
                 flexDirection: 'column',
                 height: '100%',
@@ -3178,7 +3485,9 @@ if (!titDet && handle.name) {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <div
+                  style={{ display: 'flex', gap: '8px', alignItems: 'center' }}
+                >
                   <button
                     type="button"
                     onClick={() =>
@@ -3247,7 +3556,6 @@ if (!titDet && handle.name) {
                 </div>
               </div>
 
-              {/* BARRA DE TRANSCRIÇÃO ASSISTIDA LADO A LADO COM O PDF (ITEM 7) */}
               {painelEdicaoRapidaAberto && (
                 <div
                   style={{
@@ -3422,468 +3730,451 @@ if (!titDet && handle.name) {
                 }}
               />
             </div>
-          ) : (
-            /* MODO RELATÓRIO DE VARREDURA PROFUNDA */
-            <>
+          )}
+
+          {/* RELATÓRIO DE VARREDURA PROFUNDA (SEMPRE MONTADO PARA PRESERVAR O SCROLL) */}
+          <div
+            style={{
+              padding: '12px 16px',
+              background: '#f8fafc',
+              borderBottom: '1px solid #e2e8f0',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '8px',
+            }}
+          >
+            <strong style={{ fontSize: '13px', color: '#0f172a' }}>
+              🔍 RELATÓRIO DE VARREDURA PROFUNDA ({arquivosLidos.length}{' '}
+              arquivos inspecionados)
+            </strong>
+
+            <div style={{ display: 'flex', gap: '6px' }}>
+              {(['TODOS', 'PROBLEMAS', 'OK'] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setFiltroStatus(f)}
+                  style={{
+                    width: 'auto',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    borderRadius: '6px',
+                    border: '1px solid #cbd5e1',
+                    background: filtroStatus === f ? '#004C27' : '#ffffff',
+                    color: filtroStatus === f ? '#ffffff' : '#334155',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {f === 'TODOS'
+                    ? '📋 Mostrar Todos'
+                    : f === 'PROBLEMAS'
+                    ? '🚨 Apenas Pendências / Alertas'
+                    : '✅ Apenas Itens OK'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '14px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
+            {arquivosLidos.length === 0 ? (
               <div
                 style={{
-                  padding: '12px 16px',
-                  background: '#f8fafc',
-                  borderBottom: '1px solid #e2e8f0',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: '8px',
+                  textAlign: 'center',
+                  padding: '60px 20px',
+                  color: '#64748b',
                 }}
               >
-                <strong style={{ fontSize: '13px', color: '#0f172a' }}>
-                  🔍 RELATÓRIO DE VARREDURA PROFUNDA ({arquivosLidos.length}{' '}
-                  arquivos inspecionados)
-                </strong>
-
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  {(['TODOS', 'PROBLEMAS', 'OK'] as const).map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      onClick={() => setFiltroStatus(f)}
-                      style={{
-                        width: 'auto',
-                        padding: '4px 10px',
-                        fontSize: '11px',
-                        fontWeight: 800,
-                        borderRadius: '6px',
-                        border: '1px solid #cbd5e1',
-                        background: filtroStatus === f ? '#004C27' : '#ffffff',
-                        color: filtroStatus === f ? '#ffffff' : '#334155',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {f === 'TODOS'
-                        ? '📋 Mostrar Todos'
-                        : f === 'PROBLEMAS'
-                        ? '🚨 Apenas Pendências / Alertas'
-                        : '✅ Apenas Itens OK'}
-                    </button>
-                  ))}
-                </div>
+                <div style={{ fontSize: '42px', marginBottom: '10px' }}>🛡️</div>
+                <h3 style={{ margin: '0 0 6px 0', color: '#1e293b' }}>
+                  Nenhuma pasta carregada para auditoria
+                </h3>
+                <p
+                  style={{
+                    fontSize: '12.5px',
+                    maxWidth: '520px',
+                    margin: '0 auto',
+                  }}
+                >
+                  Clique no botão amarelo{' '}
+                  <b>
+                    &ldquo;📂 Selecionar Pasta da Proposta p/ Auditoria&rdquo;
+                  </b>{' '}
+                  no topo da tela para escanear todas as subpastas, PDFs, KML e
+                  certidões do cliente.
+                </p>
               </div>
-
-              <div
-                style={{
-                  flex: 1,
-                  overflowY: 'auto',
-                  padding: '14px 16px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px',
-                }}
-              >
-                {arquivosLidos.length === 0 ? (
-                  <div
-                    style={{
-                      textAlign: 'center',
-                      padding: '60px 20px',
-                      color: '#64748b',
-                    }}
-                  >
-                    <div style={{ fontSize: '42px', marginBottom: '10px' }}>
-                      🛡️
-                    </div>
-                    <h3 style={{ margin: '0 0 6px 0', color: '#1e293b' }}>
-                      Nenhuma pasta carregada para auditoria
-                    </h3>
-                    <p
+            ) : (
+              <>
+                {/* PAINEL 1 (ITEM 5.2): PENDÊNCIAS DO PROJETISTA / CLIENTE */}
+                {pendenciasFaltantesProjetista.length > 0 &&
+                  filtroStatus !== 'OK' && (
+                    <div
                       style={{
-                        fontSize: '12.5px',
-                        maxWidth: '520px',
-                        margin: '0 auto',
+                        background: '#fef2f2',
+                        border: '1px solid #fca5a5',
+                        borderLeft: '6px solid #dc2626',
+                        borderRadius: '8px',
+                        padding: '12px 14px',
                       }}
                     >
-                      Clique no botão amarelo{' '}
-                      <b>
-                        &ldquo;📂 Selecionar Pasta da Proposta p/ Auditoria&rdquo;
-                      </b>{' '}
-                      no topo da tela para escanear todas as subpastas, PDFs, KML
-                      e certidões do cliente.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {/* =========================================================
-                        PAINEL 1 (ITEM 5.2): PENDÊNCIAS DO PROJETISTA / CLIENTE
-                       ========================================================= */}
-                    {pendenciasFaltantesProjetista.length > 0 &&
-                      filtroStatus !== 'OK' && (
-                        <div
-                          style={{
-                            background: '#fef2f2',
-                            border: '1px solid #fca5a5',
-                            borderLeft: '6px solid #dc2626',
-                            borderRadius: '8px',
-                            padding: '12px 14px',
-                          }}
-                        >
-                          <strong
-                            style={{
-                              fontSize: '12.5px',
-                              color: '#991b1b',
-                              display: 'block',
-                              marginBottom: '8px',
-                            }}
-                          >
-                            👨‍💼 DOCUMENTOS FALTANTES PARA COBRAR DO PROJETISTA /
-                            CLIENTE ({pendenciasFaltantesProjetista.length}):
-                          </strong>
+                      <strong
+                        style={{
+                          fontSize: '12.5px',
+                          color: '#991b1b',
+                          display: 'block',
+                          marginBottom: '8px',
+                        }}
+                      >
+                        👨‍💼 DOCUMENTOS FALTANTES PARA COBRAR DO PROJETISTA /
+                        CLIENTE ({pendenciasFaltantesProjetista.length}):
+                      </strong>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px',
+                        }}
+                      >
+                        {pendenciasFaltantesProjetista.map((item) => (
                           <div
+                            key={item.id}
                             style={{
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: '6px',
-                            }}
-                          >
-                            {pendenciasFaltantesProjetista.map((item) => (
-                              <div
-                                key={item.id}
-                                style={{
-                                  background: '#ffffff',
-                                  border: '1px solid #fecaca',
-                                  borderRadius: '6px',
-                                  padding: '7px 10px',
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  alignItems: 'center',
-                                  fontSize: '11.5px',
-                                }}
-                              >
-                                <div>
-                                  <strong style={{ color: '#991b1b' }}>
-                                    ❌ {item.titulo}:
-                                  </strong>{' '}
-                                  <span style={{ color: '#334155' }}>
-                                    {item.detalheStatus}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                    {/* =========================================================
-                        PAINEL 2 (ITEM 5.1): TAREFAS / CONSULTAS DO ANALISTA NO DIA
-                       ========================================================= */}
-                    {tarefasFaltantesAnalista.length > 0 &&
-                      filtroStatus !== 'OK' && (
-                        <div
-                          style={{
-                            background: '#fffbeb',
-                            border: '1px solid #fcd34d',
-                            borderLeft: '6px solid #d97706',
-                            borderRadius: '8px',
-                            padding: '12px 14px',
-                          }}
-                        >
-                          <strong
-                            style={{
-                              fontSize: '12.5px',
-                              color: '#92400e',
-                              display: 'block',
-                              marginBottom: '8px',
-                            }}
-                          >
-                            🏦 TAREFAS E CONSULTAS DO ANALISTA (EMITIR / VALIDAR
-                            NO DIA) ({tarefasFaltantesAnalista.length}):
-                          </strong>
-                          <div
-                            style={{
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: '6px',
-                            }}
-                          >
-                            {tarefasFaltantesAnalista.map((item) => (
-                              <div
-                                key={item.id}
-                                style={{
-                                  background: '#ffffff',
-                                  border: '1px solid #fde68a',
-                                  borderRadius: '6px',
-                                  padding: '7px 10px',
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  alignItems: 'center',
-                                  gap: '8px',
-                                  fontSize: '11.5px',
-                                }}
-                              >
-                                <div>
-                                  <strong style={{ color: '#b45309' }}>
-                                    ⚡ {item.titulo}:
-                                  </strong>{' '}
-                                  <span style={{ color: '#334155' }}>
-                                    {item.detalheStatus}
-                                  </span>
-                                </div>
-
-                                {item.arquivosRelacionados.length > 0 && (
-                                  <div style={{ display: 'flex', gap: '4px' }}>
-                                    {item.arquivosRelacionados.map((arq) => (
-                                      <button
-                                        key={arq.id}
-                                        type="button"
-                                        onClick={() =>
-                                          setArquivoVisualizando(arq)
-                                        }
-                                        style={{
-                                          width: 'auto',
-                                          padding: '3px 8px',
-                                          fontSize: '10.5px',
-                                          fontWeight: 800,
-                                          background: '#eff6ff',
-                                          color: '#1d4ed8',
-                                          border: '1px solid #bfdbfe',
-                                          borderRadius: '4px',
-                                          cursor: 'pointer',
-                                        }}
-                                        title={`Abrir ${arq.nomeOriginal} aqui no painel`}
-                                      >
-                                        🔎 Ver PDF
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                    {/* =========================================================
-                        PAINEL 3: OS 16 DIAGNÓSTICOS DE CONTEÚDO COM LUPINHA (🔎)
-                       ========================================================= */}
-                    {diagnosticosFiltrados.map((diag) => {
-                      const corBorda =
-                        diag.status === 'ERRO'
-                          ? '#dc2626'
-                          : diag.status === 'ALERTA'
-                          ? '#f59e0b'
-                          : '#16a34a';
-                      const corFundo =
-                        diag.status === 'ERRO'
-                          ? '#fef2f2'
-                          : diag.status === 'ALERTA'
-                          ? '#fffbeb'
-                          : '#f0fdf4';
-
-                      const arqsVinculados = obterArquivosParaDiagnostico(
-                        diag.numero
-                      );
-
-                      return (
-                        <div
-                          key={diag.numero}
-                          style={{
-                            background: corFundo,
-                            border: `1px solid ${corBorda}`,
-                            borderLeft: `5px solid ${corBorda}`,
-                            borderRadius: '8px',
-                            padding: '10px 14px',
-                          }}
-                        >
-                          <div
-                            style={{
+                              background: '#ffffff',
+                              border: '1px solid #fecaca',
+                              borderRadius: '6px',
+                              padding: '7px 10px',
                               display: 'flex',
                               justifyContent: 'space-between',
                               alignItems: 'center',
-                              flexWrap: 'wrap',
-                              gap: '6px',
-                              marginBottom: '6px',
+                              fontSize: '11.5px',
                             }}
                           >
-                            <strong
-                              style={{ fontSize: '12px', color: '#0f172a' }}
-                            >
-                              {diag.status === 'ERRO'
-                                ? '🚨 '
-                                : diag.status === 'ALERTA'
-                                ? '⚠️ '
-                                : '✅ '}
-                              {diag.titulo}
-                            </strong>
-
-                            <div
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                flexWrap: 'wrap',
-                              }}
-                            >
-                              {/* BOTÕES DE LUPINHA (🔎) PARA ABRIR OS PDFs DESTE ITEM NO CENTRO */}
-                              {arqsVinculados.map((arq) => (
-                                <button
-                                  key={arq.id}
-                                  type="button"
-                                  onClick={() => setArquivoVisualizando(arq)}
-                                  style={{
-                                    width: 'auto',
-                                    padding: '2px 8px',
-                                    fontSize: '10px',
-                                    fontWeight: 800,
-                                    background: '#ffffff',
-                                    color: '#1d4ed8',
-                                    border: '1px solid #93c5fd',
-                                    borderRadius: '5px',
-                                    cursor: 'pointer',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                  }}
-                                  title={`Inspecionar "${arq.nomeOriginal}" no leitor integrado`}
-                                >
-                                  🔎{' '}
-                                  {arq.nomeOriginal.length > 26
-                                    ? arq.nomeOriginal.slice(0, 24) + '...'
-                                    : arq.nomeOriginal}
-                                </button>
-                              ))}
-
-                              <span
-                                style={{
-                                  fontSize: '10px',
-                                  fontWeight: 800,
-                                  padding: '2px 8px',
-                                  borderRadius: '10px',
-                                  background: '#ffffff',
-                                  color: corBorda,
-                                  border: `1px solid ${corBorda}`,
-                                }}
-                              >
-                                {diag.status}
+                            <div>
+                              <strong style={{ color: '#991b1b' }}>
+                                ❌ {item.titulo}:
+                              </strong>{' '}
+                              <span style={{ color: '#334155' }}>
+                                {item.detalheStatus}
                               </span>
                             </div>
                           </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-                          <div
-                            style={{
-                              fontSize: '11.5px',
-                              color: '#334155',
-                              fontWeight: 600,
-                            }}
-                          >
-                            {diag.resumo}
-                          </div>
-
-                          {diag.detalhes && diag.detalhes.length > 0 && (
-                            <div
-                              style={{
-                                marginTop: '6px',
-                                paddingTop: '6px',
-                                borderTop: '1px dashed rgba(0,0,0,0.12)',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '3px',
-                                fontSize: '11px',
-                                color: '#1e293b',
-                              }}
-                            >
-                              {diag.detalhes.map((det, idxD) => (
-                                <div key={idxD}>{det}</div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {/* =========================================================
-                        PAINEL 4: TODOS OS DOCUMENTOS VALIDADOS NA PASTA COM LUPINHA (🔎)
-                       ========================================================= */}
-                    {filtroStatus !== 'PROBLEMAS' && (
-                      <div
+                {/* PAINEL 2 (ITEM 5.1): TAREFAS / CONSULTAS DO ANALISTA NO DIA */}
+                {tarefasFaltantesAnalista.length > 0 &&
+                  filtroStatus !== 'OK' && (
+                    <div
+                      style={{
+                        background: '#fffbeb',
+                        border: '1px solid #fcd34d',
+                        borderLeft: '6px solid #d97706',
+                        borderRadius: '8px',
+                        padding: '12px 14px',
+                      }}
+                    >
+                      <strong
                         style={{
-                          background: '#f8fafc',
-                          border: '1px solid #cbd5e1',
-                          borderRadius: '8px',
-                          padding: '12px 14px',
+                          fontSize: '12.5px',
+                          color: '#92400e',
+                          display: 'block',
+                          marginBottom: '8px',
                         }}
                       >
-                        <strong
-                          style={{
-                            fontSize: '12px',
-                            color: '#004C27',
-                            display: 'block',
-                            marginBottom: '8px',
-                          }}
-                        >
-                          📂 DOCUMENTOS PRESENTES NA PASTA — CLIQUE EM 🔎 PARA
-                          ABRIR O PDF AQUI NA TELA:
+                        🏦 TAREFAS E CONSULTAS DO ANALISTA (EMITIR / VALIDAR NO
+                        DIA) ({tarefasFaltantesAnalista.length}):
+                      </strong>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px',
+                        }}
+                      >
+                        {tarefasFaltantesAnalista.map((item) => (
+                          <div
+                            key={item.id}
+                            style={{
+                              background: '#ffffff',
+                              border: '1px solid #fde68a',
+                              borderRadius: '6px',
+                              padding: '7px 10px',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: '8px',
+                              fontSize: '11.5px',
+                            }}
+                          >
+                            <div>
+                              <strong style={{ color: '#b45309' }}>
+                                ⚡ {item.titulo}:
+                              </strong>{' '}
+                              <span style={{ color: '#334155' }}>
+                                {item.detalheStatus}
+                              </span>
+                            </div>
+
+                            {item.arquivosRelacionados.length > 0 && (
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                {item.arquivosRelacionados.map((arq) => (
+                                  <button
+                                    key={arq.id}
+                                    type="button"
+                                    onClick={() => setArquivoVisualizando(arq)}
+                                    style={{
+                                      width: 'auto',
+                                      padding: '3px 8px',
+                                      fontSize: '10.5px',
+                                      fontWeight: 800,
+                                      background: '#eff6ff',
+                                      color: '#1d4ed8',
+                                      border: '1px solid #bfdbfe',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                    }}
+                                    title={`Abrir ${arq.nomeOriginal} aqui no painel`}
+                                  >
+                                    🔎 Ver PDF
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                {/* PAINEL 3: DIAGNÓSTICOS DE CONTEÚDO COM LUPINHA (🔎) */}
+                {diagnosticosFiltrados.map((diag) => {
+                  const corBorda =
+                    diag.status === 'ERRO'
+                      ? '#dc2626'
+                      : diag.status === 'ALERTA'
+                      ? '#f59e0b'
+                      : '#16a34a';
+                  const corFundo =
+                    diag.status === 'ERRO'
+                      ? '#fef2f2'
+                      : diag.status === 'ALERTA'
+                      ? '#fffbeb'
+                      : '#f0fdf4';
+
+                  const arqsVinculados = obterArquivosParaDiagnostico(
+                    diag.numero
+                  );
+
+                  return (
+                    <div
+                      key={diag.numero}
+                      style={{
+                        background: corFundo,
+                        border: `1px solid ${corBorda}`,
+                        borderLeft: `5px solid ${corBorda}`,
+                        borderRadius: '8px',
+                        padding: '10px 14px',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '6px',
+                          marginBottom: '6px',
+                        }}
+                      >
+                        <strong style={{ fontSize: '12px', color: '#0f172a' }}>
+                          {diag.status === 'ERRO'
+                            ? '🚨 '
+                            : diag.status === 'ALERTA'
+                            ? '⚠️ '
+                            : '✅ '}
+                          {diag.titulo}
                         </strong>
+
                         <div
                           style={{
-                            display: 'grid',
-                            gridTemplateColumns:
-                              'repeat(auto-fill, minmax(260px, 1fr))',
+                            display: 'flex',
+                            alignItems: 'center',
                             gap: '6px',
+                            flexWrap: 'wrap',
                           }}
                         >
-                          {arquivosLidos
-                            .filter(
-                              (a) => !a.ehTxtPendencia && a.extensao === 'pdf'
-                            )
-                            .map((arq) => (
-                              <button
-                                key={arq.id}
-                                type="button"
-                                onClick={() => setArquivoVisualizando(arq)}
-                                style={{
-                                  width: '100%',
-                                  padding: '6px 10px',
-                                  background: '#ffffff',
-                                  border: '1px solid #cbd5e1',
-                                  borderRadius: '6px',
-                                  fontSize: '11px',
-                                  fontWeight: 700,
-                                  color: '#1e293b',
-                                  cursor: 'pointer',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  gap: '6px',
-                                  textAlign: 'left',
-                                }}
-                                title="Clique para abrir este PDF no painel central"
-                              >
-                                <span
-                                  style={{
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                  }}
-                                >
-                                  📄 {arq.nomeOriginal}
-                                </span>
-                                <span
-                                  style={{
-                                    fontSize: '12px',
-                                    color: '#1d4ed8',
-                                    flexShrink: 0,
-                                  }}
-                                >
-                                  🔎
-                                </span>
-                              </button>
-                            ))}
+                          {arqsVinculados.map((arq) => (
+                            <button
+                              key={arq.id}
+                              type="button"
+                              onClick={() => setArquivoVisualizando(arq)}
+                              style={{
+                                width: 'auto',
+                                padding: '2px 8px',
+                                fontSize: '10px',
+                                fontWeight: 800,
+                                background: '#ffffff',
+                                color: '#1d4ed8',
+                                border: '1px solid #93c5fd',
+                                borderRadius: '5px',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                              }}
+                              title={`Inspecionar "${arq.nomeOriginal}" no leitor integrado`}
+                            >
+                              🔎{' '}
+                              {arq.nomeOriginal.length > 26
+                                ? arq.nomeOriginal.slice(0, 24) + '...'
+                                : arq.nomeOriginal}
+                            </button>
+                          ))}
+
+                          <span
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: 800,
+                              padding: '2px 8px',
+                              borderRadius: '10px',
+                              background: '#ffffff',
+                              color: corBorda,
+                              border: `1px solid ${corBorda}`,
+                            }}
+                          >
+                            {diag.status}
+                          </span>
                         </div>
                       </div>
-                    )}
-                  </>
+
+                      <div
+                        style={{
+                          fontSize: '11.5px',
+                          color: '#334155',
+                          fontWeight: 600,
+                        }}
+                      >
+                        {diag.resumo}
+                      </div>
+
+                      {diag.detalhes && diag.detalhes.length > 0 && (
+                        <div
+                          style={{
+                            marginTop: '6px',
+                            paddingTop: '6px',
+                            borderTop: '1px dashed rgba(0,0,0,0.12)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '3px',
+                            fontSize: '11px',
+                            color: '#1e293b',
+                          }}
+                        >
+                          {diag.detalhes.map((det, idxD) => (
+                            <div key={idxD}>{det}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* PAINEL 4: TODOS OS DOCUMENTOS VALIDADOS NA PASTA COM LUPINHA (🔎) */}
+                {filtroStatus !== 'PROBLEMAS' && (
+                  <div
+                    style={{
+                      background: '#f8fafc',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '8px',
+                      padding: '12px 14px',
+                    }}
+                  >
+                    <strong
+                      style={{
+                        fontSize: '12px',
+                        color: '#004C27',
+                        display: 'block',
+                        marginBottom: '8px',
+                      }}
+                    >
+                      📂 DOCUMENTOS PRESENTES NA PASTA — CLIQUE EM 🔎 PARA ABRIR
+                      O PDF AQUI NA TELA:
+                    </strong>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns:
+                          'repeat(auto-fill, minmax(260px, 1fr))',
+                        gap: '6px',
+                      }}
+                    >
+                      {arquivosLidos
+                        .filter(
+                          (a) => !a.ehTxtPendencia && a.extensao === 'pdf'
+                        )
+                        .map((arq) => (
+                          <button
+                            key={arq.id}
+                            type="button"
+                            onClick={() => setArquivoVisualizando(arq)}
+                            style={{
+                              width: '100%',
+                              padding: '6px 10px',
+                              background: '#ffffff',
+                              border: '1px solid #cbd5e1',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              color: '#1e293b',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '6px',
+                              textAlign: 'left',
+                            }}
+                            title="Clique para abrir este PDF no painel central"
+                          >
+                            <span
+                              style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              📄 {arq.nomeOriginal}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: '12px',
+                                color: '#1d4ed8',
+                                flexShrink: 0,
+                              }}
+                            >
+                              🔎
+                            </span>
+                          </button>
+                        ))}
+                    </div>
+                  </div>
                 )}
-              </div>
-            </>
-          )}
+              </>
+            )}
+          </div>
         </main>
 
         {/* COLUNA 3 (DIREITA): CENTRAL DE AÇÕES, CONSULTAS AGRUPADAS E SCANNER DE IMÓVEIS */}

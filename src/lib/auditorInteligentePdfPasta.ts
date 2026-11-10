@@ -424,15 +424,46 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
 
   const tUp = removerAcentos(textoExtraido).toUpperCase();
   const tCabecalho = tUp.substring(0, 4500);
+  const nUpNome = removerAcentos(params.nomeOriginal).toUpperCase();
 
-  // 1. Verifica se é um Relatório de Conformidade do Validador ITI (VITI)
-  if (
-    isVitiAtual ||
-    tCabecalho.includes('VALIDADOR DE DOCUMENTOS DIGITAIS') ||
-    (tCabecalho.includes('INSTITUTO NACIONAL DE TECNOLOGIA DA INFORMACAO') &&
-      tCabecalho.includes('ASSINATURA'))
-  ) {
+  // 1. Verifica se é EXCLUSIVAMENTE um Relatório de Conformidade do Validador ITI (VITI)
+  // (Cuidado: documentos assinados no Gov.br possuem tarja do ITI, mas NÃO são o relatório de conformidade VITI!)
+  const ehRelatorioPuroIti =
+    tCabecalho.includes('VALIDADOR DE DOCUMENTOS DIGITAIS') &&
+    (tCabecalho.includes('RELATORIO DE CONFORMIDADE') ||
+      tCabecalho.includes('ARQUIVO(S) COM ASSINATURA(S)')) &&
+    !tCabecalho.includes('DECLARACAO CONSOLIDADA') &&
+    !tCabecalho.includes('DECLARACOES CONSOLIDADAS') &&
+    !tCabecalho.includes('CALCULO DO FINANCIAMENTO') &&
+    !tCabecalho.includes('CONTRATO DE PRESTACAO DE SERVICOS');
+
+  if (isVitiAtual || (ehRelatorioPuroIti && /\b(VITI|ITI|VALIDACAO)\b/.test(nUpNome))) {
     return { isVitiDetectado: true };
+  }
+
+  // Se o nome do arquivo já identificou com certeza uma categoria específica (ex: Consolidada, Projeto, Orçamento, CAF, etc.),
+  // preserva a categoria original e usa o conteúdo apenas para refinar Certificação Socioambiental (COM vs SEM KML),
+  // Declarações Ambientais genéricas, Identidades (Titular vs Cônjuge) ou arquivos não identificados (OUTROS)!
+  const CATEGORIAS_REFINAVEIS_POR_CONTEUDO = new Set([
+    '',
+    'OUTROS_NAO_IDENTIFICADO',
+    'CAD_9_OUTROS_CADASTRO',
+    'ITEM_5_CERT_SOCIOAMBIENTAL',
+    'ITEM_CERT_SOCIO_COM_KML',
+    'ITEM_CERT_SOCIO_SEM_KML',
+    'ITEM_10_DEC_AMBIENTAIS',
+    'ITEM_DEC_AMBIENTAIS',
+    'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
+    'ITEM_DEC_OUTRA_AMBIENTAL',
+    'CAD_1_IDENTIDADE_TITULAR',
+    'CAD_1_IDENTIDADE_OUTRO',
+  ]);
+
+  if (
+    categoriaAtual &&
+    !CATEGORIAS_REFINAVEIS_POR_CONTEUDO.has(categoriaAtual)
+  ) {
+    return {};
   }
 
   const primTit = normalizarSemAcento(titularNome.split(/\s+/)[0] || '');
@@ -764,9 +795,9 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
   }
 
   if (
-    (tCabecalho.includes('ESTADO DO CLIENTE') &&
-      tCabecalho.includes('COMO E CONHECIDO')) ||
-    tCabecalho.includes('PROPOSTA DE CADASTRO')
+    tCabecalho.includes('PROPOSTA DE CADASTRO') &&
+    !tCabecalho.includes('S400 - CENTRAL DE CADASTRO') &&
+    !tCabecalho.includes('DADOS CADASTRAIS DO CLIENTE PESSOA FISICA')
   ) {
     return {
       categoriaUniversal: 'CAD_5_PROPOSTA_CADASTRO',
@@ -2569,19 +2600,34 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     }
   }
 
-  // =========================================================================
-  // 16. ITEM 2 (V98) + IDEIA 5: LEITOR AUTOMÁTICO DO PDF DA FICHA S400 E
-  //     CRUZAMENTO DE ATIVIDADE ECONÔMICA + MUNICÍPIO COM O PROJETO
-  // =========================================================================
   const pdfS400 = extraidos.find((e) => {
+    if (e.isViti) return false;
     const nUp = removerAcentos(e.nomeOriginal).toUpperCase();
     const tUp = removerAcentos(e.textoCompleto).toUpperCase();
-    return (
-      nUp.includes('S400') ||
+
+    // Nunca confundir "Proposta de Cadastro" nem o PDF do "Projeto" com a Ficha S400!
+    if (
+      nUp.includes('PROPOSTA DE CADASTRO') ||
+      nUp.includes('PROPOSTA CADASTRO') ||
+      e.categoria === 'CAD_5_PROPOSTA_CADASTRO' ||
+      e.categoria === 'ITEM_12_PROJETO_PDF' ||
+      e.categoria === 'ITEM_9_CONSOLIDADAS'
+    ) {
+      return false;
+    }
+
+    const nomeIndicaS400 =
+      /\bS400\b/.test(nUp) ||
       nUp.includes('FICHA CADASTRAL') ||
-      (tUp.includes('ESTADO DO CLIENTE') && tUp.includes('COMO E CONHECIDO')) ||
-      tUp.includes('ATIVIDADES ECONOMICAS')
-    );
+      nUp.includes('FICHA CADASTRO') ||
+      nUp.includes('FICHA DO CLIENTE');
+
+    const tituloInternoIndicaS400 =
+      tUp.includes('S400 - CENTRAL DE CADASTRO - CLIENTES') ||
+      tUp.includes('CENTRAL DE CADASTRO - CLIENTES') ||
+      tUp.includes('DADOS CADASTRAIS DO CLIENTE PESSOA FISICA');
+
+    return nomeIndicaS400 || tituloInternoIndicaS400;
   });
 
   if (pdfS400) {
@@ -2606,7 +2652,6 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       munProjNorm.length < 3 ||
       txtS400Norm.includes(munProjNorm);
 
-    // Verifica data de atualização/renovação cadastral no S400 (>= 12 meses)
     const matchDataRenov = pdfS400.textoCompleto.match(
       /(?:Atualiza[çc][ãa]o|Renova[çc][ãa]o|Data\s+Cadastro)[^0-9]{0,25}(\d{2}\/\d{2}\/20\d{2})/i
     );
@@ -2624,35 +2669,28 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     const okS400 =
       ativConstaNoS400 && munConstaNoS400 && !cadastroVencido12Meses;
 
-    itensDiagnostico.push({
-      numero: 16,
-      titulo:
-        '16. Cruzamento Ficha S400 × Projeto (Atividade Econômica, Município e Renovação 12 Meses)',
-      status: okS400 ? 'OK' : 'ERRO',
-      resumo: okS400
-        ? `✅ Ficha S400 validada: Atividade e Município compatíveis com o Projeto${
-            matchDataRenov ? ` (Atualizado em ${matchDataRenov[1]})` : ''
-          }.`
-        : '🚨 Divergência entre a Ficha S400 e o Projeto ou Cadastro vencido há ≥ 12 meses!',
-      detalhes: [
-        ativConstaNoS400 && munConstaNoS400
-          ? `✅ Atividade (${
-              dadosProjetoParaParecer.atividadePrincipal || 'Rural'
-            }) e Município (${
-              dadosProjetoParaParecer.municipioImovel || 'OK'
-            }) localizados no S400.`
-          : `🚨 ATENÇÃO: A atividade (${
-              dadosProjetoParaParecer.atividadePrincipal || '?'
-            }) ou o município (${
-              dadosProjetoParaParecer.municipioImovel || '?'
-            }) do projeto NÃO foram encontrados em conjunto na Ficha S400!`,
-        cadastroVencido12Meses
-          ? `🚨 Cadastro no S400 vencido há ${mesesCadastro} meses (Data: ${matchDataRenov?.[1]}) — Necessário RENOVAR CADASTRO!`
-          : matchDataRenov
-          ? `✅ Renovação cadastral em dia (${matchDataRenov[1]} — há ${mesesCadastro} meses).`
-          : 'ℹ️ Verifique visualmente a data da última renovação cadastral no S400.',
-      ],
-    });
+    // Só exibe o alerta do Item 16 se a Ficha S400 existir na pasta E apresentar alguma divergência ou vencimento!
+    if (!okS400) {
+      itensDiagnostico.push({
+        numero: 16,
+        titulo: `16. Divergência na Ficha S400 Encontrada na Pasta (${pdfS400.nomeOriginal})`,
+        status: 'ERRO',
+        resumo:
+          '🚨 A Ficha S400 presente na pasta apresenta divergência com o Projeto ou Cadastro vencido há ≥ 12 meses!',
+        detalhes: [
+          !ativConstaNoS400 || !munConstaNoS400
+            ? `🚨 ATENÇÃO: A atividade (${
+                dadosProjetoParaParecer.atividadePrincipal || '?'
+              }) ou o município (${
+                dadosProjetoParaParecer.municipioImovel || '?'
+              }) do projeto NÃO foram encontrados em conjunto na Ficha S400!`
+            : `✅ Atividade e Município compatíveis na Ficha S400.`,
+          cadastroVencido12Meses
+            ? `🚨 Cadastro no S400 vencido há ${mesesCadastro} meses (Data: ${matchDataRenov?.[1]}) — Necessário RENOVAR CADASTRO!`
+            : '',
+        ].filter(Boolean),
+      });
+    }
   }
 
   // Atualiza o cache do Parecer Gerencial com a Conta Corrente extraída da Consolidada (ou da Conformidade)
