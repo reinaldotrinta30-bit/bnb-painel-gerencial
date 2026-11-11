@@ -1236,6 +1236,109 @@ if (!titDet && handle.name) {
     }
   };
 
+  // Abre a janela nativa do Windows Explorer diretamente dentro da subpasta onde o arquivo está localizado!
+  const abrirLocalDoArquivoNoExplorer = async (
+    arq: ArquivoLidoConformidade
+  ) => {
+    const caminhoLegivel = arq.caminhoSubpasta
+      ? `${nomePasta}\\${arq.caminhoSubpasta.replace(/\//g, '\\')}\\${arq.nomeOriginal}`
+      : `${nomePasta}\\${arq.nomeOriginal}`;
+
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(arq.nomeOriginal);
+      } catch {
+        // Ignora
+      }
+    }
+
+    if (!dirHandleRoot) {
+      alert(`📂 Local do arquivo:\n${caminhoLegivel}`);
+      return;
+    }
+
+    try {
+      let pastaAlvoHandle = dirHandleRoot;
+      if (arq.caminhoSubpasta) {
+        const partes = arq.caminhoSubpasta.split('/').filter(Boolean);
+        for (const p of partes) {
+          pastaAlvoHandle = await pastaAlvoHandle.getDirectoryHandle(p, {
+            create: false,
+          });
+        }
+      }
+
+      const win = window as unknown as {
+        showOpenFilePicker?: (opts?: any) => Promise<any>;
+      };
+
+      if (win.showOpenFilePicker) {
+        // Abre o Windows Explorer diretamente na subpasta do arquivo (e o nome do arquivo já vai copiado no Ctrl+V!)
+        await win.showOpenFilePicker({
+          startIn: pastaAlvoHandle,
+          multiple: false,
+        });
+      } else {
+        alert(
+          `📂 Localização do arquivo:\n${caminhoLegivel}\n\n(Nome copiado para a área de transferência!)`
+        );
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
+      alert(
+        `📂 Localização do arquivo:\n${caminhoLegivel}\n\n(O nome "${arq.nomeOriginal}" foi copiado para o seu Ctrl+V!)`
+      );
+    }
+  };
+
+  // Apaga o documento defeituoso diretamente da pasta/subpasta do cliente e re-audita a proposta!
+  const apagarDocumentoDiretoDaPasta = async (arq: ArquivoLidoConformidade) => {
+    if (!dirHandleRoot) {
+      alert('⚠️ Pasta raiz não disponível para exclusão física.');
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `🗑️ APAGAR DOCUMENTO DA PASTA\n\nTem certeza que deseja EXCLUIR permanentemente o arquivo:\n"${arq.nomeOriginal}"\n${
+        arq.caminhoSubpasta
+          ? `(Subpasta: ${arq.caminhoSubpasta})`
+          : '(Na Raiz da Pasta)'
+      }?`
+    );
+    if (!confirmar) return;
+
+    try {
+      let pastaAlvoHandle = dirHandleRoot;
+      if (arq.caminhoSubpasta) {
+        const partes = arq.caminhoSubpasta.split('/').filter(Boolean);
+        for (const p of partes) {
+          pastaAlvoHandle = await pastaAlvoHandle.getDirectoryHandle(p, {
+            create: false,
+          });
+        }
+      }
+
+      await pastaAlvoHandle.removeEntry(arq.nomeOriginal);
+      setArquivoVisualizando(null);
+      setPainelEdicaoRapidaAberto(false);
+      await executarVarreduraCompletaDaPasta(
+        dirHandleRoot,
+        porteAtivo,
+        escopoAtivo,
+        modalidadeAtiva
+      );
+      alert(
+        `✅ Arquivo "${arq.nomeOriginal}" apagado da pasta e auditoria atualizada!`
+      );
+    } catch (err: any) {
+      alert(
+        `❌ Não foi possível apagar o arquivo "${arq.nomeOriginal}": ${
+          err?.message || 'Verifique se ele não está aberto em outro programa.'
+        }`
+      );
+    }
+  };
+
   const salvarKmlCorrigidoNaPasta = async () => {
     const infoKml = auditoriaPdf?.kmlCorrigidoAutomaticamente;
     if (!dirHandleRoot || !infoKml) return;
@@ -1267,10 +1370,12 @@ if (!titDet && handle.name) {
   const matrizCompletaDocumentos = useMemo((): ItemVerificacaoCompletaPasta[] => {
     if (arquivosLidos.length === 0) return [];
 
-    // Documentos reais entregues (exclui todo e qualquer .txt de lembrete!)
-    const validos = arquivosLidos.filter(
-      (a) => !a.ehTxtPendencia && a.extensao !== 'txt'
-    );
+    // Documentos reais entregues ordenados do MAIS RECENTE para o mais antigo (lastModified decrescente)
+    const validos = [...arquivosLidos]
+      .filter((a) => !a.ehTxtPendencia && a.extensao !== 'txt')
+      .sort(
+        (a, b) => (b.fileObj.lastModified || 0) - (a.fileObj.lastModified || 0)
+      );
     const buscarArqs = (
       categorias: CategoriaDocPasta[],
       termosNome: string[] = []
@@ -1593,22 +1698,63 @@ if (!titDet && handle.name) {
         });
       }
 
-      const arqsParTec = buscarArqs(['ITEM_PARECER_TECNICO'], [
-        'PARECER TECNICO',
-        '16. PARECER',
-      ]);
-      itens.push({
-        id: 'PR_PARECER_TECNICO',
-        titulo: '16. Parecer Técnico do Projetista',
-        obrigatorio: true,
-        presente: arqsParTec.length > 0,
-        responsavel: 'PROJETISTA_CLIENTE',
-        detalheStatus:
-          arqsParTec.length > 0
-            ? 'Parecer Técnico localizado.'
-            : 'Falta o Parecer Técnico do projetista!',
-        arquivosRelacionados: arqsParTec,
-      });
+      // Parecer Técnico NÃO é obrigatório para PRONAF V!
+      if (!isPronafV) {
+        const arqsParTec = buscarArqs(['ITEM_PARECER_TECNICO'], [
+          'PARECER TECNICO',
+          '16. PARECER',
+        ]);
+        itens.push({
+          id: 'PR_PARECER_TECNICO',
+          titulo: '16. Parecer Técnico do Projetista',
+          obrigatorio: true,
+          presente: arqsParTec.length > 0,
+          responsavel: 'PROJETISTA_CLIENTE',
+          detalheStatus:
+            arqsParTec.length > 0
+              ? 'Parecer Técnico localizado.'
+              : 'Falta o Parecer Técnico do projetista!',
+          arquivosRelacionados: arqsParTec,
+        });
+      }
+
+      // Ficha Sanitária (AGED): Obrigatória em PRONAF V e MINI sempre que for CUSTEIO
+      // ou quando for INVESTIMENTO que envolva aquisição de animais/semoventes!
+      if (isPronafV || isMiniPequeno) {
+        const textoItensProjNorm = normalizarSemAcento(
+          (auditoriaPdf?.textoItensInversaoFormatado || '') +
+            ' ' +
+            (auditoriaPdf?.dadosProjetoParaParecer?.atividadePrincipal || '')
+        );
+        const envolveAquisicaoAnimais =
+          /\b(BOVIN|VACAS?|MATRIZ|MATRIZES|REPRODUTOR|TOURO|BEZERR|GARROT|NOVILH|OVIN|CAPRIN|SUIN|AVES|PEIXE|PISCICULTURA|ANIMAIS|SEMOVENTE)\b/.test(
+            textoItensProjNorm
+          );
+
+        if (modalidadeAtiva === 'CUSTEIO' || envolveAquisicaoAnimais) {
+          const arqsFichaSan = buscarArqs(['ITEM_FICHA_SANITARIA'], [
+            'FICHA SANITARIA',
+            'AGED',
+            'EXTRATO DE REBANHO',
+          ]);
+          itens.push({
+            id: 'PR_FICHA_SANITARIA',
+            titulo: '6. Ficha Sanitária / AGED Vigente',
+            obrigatorio: true,
+            presente: arqsFichaSan.length > 0,
+            responsavel: 'PROJETISTA_CLIENTE',
+            detalheStatus:
+              arqsFichaSan.length > 0
+                ? `Ficha Sanitária (${arqsFichaSan[0].nomeOriginal}) localizada.`
+                : `Falta a Ficha Sanitária (AGED) na pasta (${
+                    modalidadeAtiva === 'CUSTEIO'
+                      ? 'Obrigatória para Custeio'
+                      : 'Obrigatória p/ Aquisição de Animais'
+                  })!`,
+            arquivosRelacionados: arqsFichaSan,
+          });
+        }
+      }
 
       const arqsCrea = buscarArqs(['ITEM_CREA'], ['CREA', 'CFTA']);
       itens.push({
@@ -2047,6 +2193,8 @@ if (!titDet && handle.name) {
         return porCat(['ITEM_RB_PA']);
       case 13:
         return porCat(['ITEM_CERT_SOCIO_COM_KML', 'ITEM_CERT_SOCIO_SEM_KML']);
+      case 13.5:
+        return porCat(['ITEM_CERT_SOCIO_SEM_KML', 'ITEM_CERT_SOCIO_COM_KML']);
       case 15:
         return porCat([
           'ITEM_CND_PF',
@@ -3511,8 +3659,54 @@ if (!titDet && handle.name) {
                     ✏️{' '}
                     {painelEdicaoRapidaAberto
                       ? 'Ocultar Painel de Transcrição'
-                      : 'Conferir / Editar Dados Lidos (Prazo, Valor, Itens)'}
+                      : 'Conferir / Editar Dados Lidos'}
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      abrirLocalDoArquivoNoExplorer(arquivoVisualizando)
+                    }
+                    style={{
+                      width: 'auto',
+                      padding: '6px 12px',
+                      background: '#0284c7',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title="Abre a pasta/subpasta onde este arquivo está localizado no Windows Explorer (e copia o nome do arquivo)"
+                  >
+                    📂 
+                  </button>
+
+                  {!arquivoVisualizando.origemGaveta && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        apagarDocumentoDiretoDaPasta(arquivoVisualizando)
+                      }
+                      style={{
+                        width: 'auto',
+                        padding: '6px 12px',
+                        background: '#991b1b',
+                        color: '#ffffff',
+                        border: '1px solid #f87171',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title="Apaga este arquivo permanentemente da pasta do cliente e re-audita a proposta"
+                    >
+                      🗑️
+                    </button>
+                  )}
 
                   <a
                     href={urlPdfVisualizando}
@@ -3551,7 +3745,7 @@ if (!titDet && handle.name) {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    ✖ Fechar PDF e Voltar ao Relatório
+                    ✖ Fechar PDF
                   </button>
                 </div>
               </div>

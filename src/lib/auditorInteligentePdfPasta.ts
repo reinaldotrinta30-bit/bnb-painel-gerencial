@@ -553,7 +553,7 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
     };
   }
 
-  // 8. Declarações Ambientais Específicas
+  // 8. Declarações Ambientais Específicas (Obrigatórias e Opcionais/Complementares)
   if (tCabecalho.includes('DECLARACAO DE NAO DESMATAMENTO')) {
     return {
       categoriaUniversal: 'ITEM_DEC_NAO_DESMATAMENTO',
@@ -582,6 +582,19 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
     return {
       categoriaUniversal: 'ITEM_DEC_REG_AMBIENTAL',
       codigoAuditor: 'ITEM_10_1_REG_AMBIENTAL',
+    };
+  }
+  if (
+    tCabecalho.includes('RETIFICACAO DO CAR') ||
+    tCabecalho.includes('SOBREPOSICAO DO CAR') ||
+    tCabecalho.includes('SOBREPOSICAO DE CAR') ||
+    tCabecalho.includes('DECLARACAO DE NAO EXPLORACAO') ||
+    tCabecalho.includes('NAO TRABALHO INFANTIL') ||
+    tCabecalho.includes('EXPLORACAO DE MAO DE OBRA INFANTIL')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_DEC_OUTRA_AMBIENTAL',
+      codigoAuditor: 'ITEM_10_4_OUTRA_DEC_AMBIENTAL',
     };
   }
 
@@ -1533,11 +1546,16 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   const isMiniPequeno = porteSelecionado === 'MINI_PEQUENO';
   const isSomenteLimite = escopoSelecionado === 'LIMITE_PURO';
 
-  const pdfsParaLer = arquivos.filter(
-    (a) =>
-      a.categoria !== 'IGNORAR' &&
-      a.fileObj.name.toLowerCase().endsWith('.pdf')
-  );
+  // Ordena todos os PDFs do mais recente para o mais antigo (lastModified decrescente)
+  // Assim, quando houver mais de uma CND, CNDT, Embargos, Improbidade, Consulta CAR, S400, etc.,
+  // o sistema sempre audita a versão mais recente!
+  const pdfsParaLer = [...arquivos]
+    .filter(
+      (a) =>
+        a.categoria !== 'IGNORAR' &&
+        a.fileObj.name.toLowerCase().endsWith('.pdf')
+    )
+    .sort((a, b) => (b.fileObj.lastModified || 0) - (a.fileObj.lastModified || 0));
 
   const extraidos: PdfExtraidoInfo[] = [];
   const reclassificacoesPorConteudo: Record<string, string> = {};
@@ -2196,12 +2214,16 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   } | null = null;
   const exigenciasSocioambientaisDetectadas: string[] = [];
 
-  // 13.1. Procura arquivo .KML na pasta
-  const arqKmlItem = arquivos.find(
-    (a) =>
-      a.categoria === 'ITEM_KML' ||
-      /\.(kml|kmz)$/i.test(a.fileObj.name.toLowerCase())
-  );
+  // 13.1. Procura todos os arquivos .KML na pasta e seleciona SEMPRE O MAIS RECENTE
+  const todosKmlsDaPasta = [...arquivos]
+    .filter(
+      (a) =>
+        a.categoria === 'ITEM_KML' ||
+        /\.(kml|kmz)$/i.test(a.fileObj.name.toLowerCase())
+    )
+    .sort((a, b) => (b.fileObj.lastModified || 0) - (a.fileObj.lastModified || 0));
+
+  const arqKmlItem = todosKmlsDaPasta[0];
 
   let itensKmlExtraidos: string[] = [];
   let logsKmlExtraidos: string[] = [];
@@ -2213,6 +2235,11 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       );
       itensKmlExtraidos = resKml.itensEncontrados;
       logsKmlExtraidos = resKml.logs;
+      if (todosKmlsDaPasta.length > 1) {
+        logsKmlExtraidos.unshift(
+          `ℹ️ Múltiplos KMLs na pasta (${todosKmlsDaPasta.length}): utilizando o mais recente "${arqKmlItem.nomeOriginal}".`
+        );
+      }
       if (resKml.kmlCorrigidoTexto) {
         kmlCorrigidoAutomaticamente = {
           nomeArquivo: arqKmlItem.nomeOriginal,
@@ -2225,18 +2252,24 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   }
 
   // 13.2. Analisa todos os PDFs de Certificação Socioambiental presentes na pasta
-  // e distingue pelo conteúdo ("Glebas") qual é COM KML e qual é SEM KML!
-  const arquivosSocioPdf = arquivos.filter(
-    (a) =>
-      !a.isViti &&
-      a.fileObj.name.toLowerCase().endsWith('.pdf') &&
-      (a.categoria === 'ITEM_5_CERT_SOCIOAMBIENTAL' ||
-        a.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
-        a.categoria === 'ITEM_CERT_SOCIO_SEM_KML')
-  );
+  // (ordenados do mais recente para o mais antigo) e distingue COM KML vs SEM KML!
+  const arquivosSocioPdf = [...arquivos]
+    .filter(
+      (a) =>
+        !a.isViti &&
+        a.fileObj.name.toLowerCase().endsWith('.pdf') &&
+        (a.categoria === 'ITEM_5_CERT_SOCIOAMBIENTAL' ||
+          a.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
+          a.categoria === 'ITEM_CERT_SOCIO_SEM_KML' ||
+          removerAcentos(a.nomeOriginal)
+            .toUpperCase()
+            .includes('SOCIOAMBIENTAL'))
+    )
+    .sort((a, b) => (b.fileObj.lastModified || 0) - (a.fileObj.lastModified || 0));
 
   const analisesSocioPorArquivo: Array<{
     nomeOriginal: string;
+    lastModified: number;
     possuiGlebas: boolean;
     dadosSocio: Awaited<
       ReturnType<typeof extrairDadosPdfCertificacaoSocioambiental>
@@ -2251,6 +2284,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       );
       analisesSocioPorArquivo.push({
         nomeOriginal: arqS.nomeOriginal,
+        lastModified: arqS.fileObj.lastModified || 0,
         possuiGlebas: dadosS.possuiBlocoGlebasNoPdf,
         dadosSocio: dadosS,
       });
@@ -2265,9 +2299,16 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   }
 
   const exigeKmlNaDerivada = !isPronafA && !isSomenteLimite;
+  const exigeCertSemKmlNoLimite =
+    isSomenteLimite || escopoSelecionado === 'COMBO_DERIVADA_E_LIMITE';
+
+  // Como a lista já está ordenada por lastModified decrescente, .find() pega sempre a MAIS RECENTE de cada tipo!
   const certComKml = analisesSocioPorArquivo.find((x) => x.possuiGlebas);
   const certSemKml = analisesSocioPorArquivo.find((x) => !x.possuiGlebas);
+  const qtdCertComKml = analisesSocioPorArquivo.filter((x) => x.possuiGlebas).length;
+  const qtdCertSemKml = analisesSocioPorArquivo.filter((x) => !x.possuiGlebas).length;
 
+  // VERIFICAÇÃO A: CERTIFICAÇÃO SOCIOAMBIENTAL COM KML (PARA OPERAÇÃO DERIVADA)
   if (exigeKmlNaDerivada) {
     const detalhesSocioKml: string[] = [];
     let statusItem13: NivelStatusAuditoria = 'OK';
@@ -2283,7 +2324,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       if (temPoligonoAberto) {
         statusItem13 = 'ALERTA';
         detalhesSocioKml.push(
-          `⚠️ O arquivo "${arqKmlItem.nomeOriginal}" possuía polígono(s) aberto(s)! Clique no botão "🔧 Corrigir .KML na Pasta" abaixo para fechar automaticamente.`
+          `⚠️ O arquivo "${arqKmlItem.nomeOriginal}" possuía polígono(s) aberto(s)! Clique no botão "🔧 Fechar Polígonos do .KML Direto na Pasta" para corrigir.`
         );
       }
       logsKmlExtraidos.forEach((lg) => detalhesSocioKml.push(lg));
@@ -2292,12 +2333,17 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     if (analisesSocioPorArquivo.length === 0) {
       statusItem13 = 'ERRO';
       resumoItem13 =
-        'Falta anexar a Certificação Socioambiental com KML na pasta.';
+        'Falta anexar a Certificação Socioambiental COM KML na pasta da Derivada.';
     } else if (!certComKml && certSemKml) {
       statusItem13 = 'ERRO';
       resumoItem13 =
-        '🚨 ATENÇÃO: A Certificação Socioambiental na pasta NÃO possui o quadro de Glebas (foi emitida SEM o KML, padrão LCGH/LCGA)! Para Operação Derivada é obrigatória a Certificação COM KML.';
+        '🚨 ATENÇÃO: Só foi localizada Certificação SEM KML (padrão Limite)! Para a Operação Derivada é obrigatória a Certificação COM KML (quadro de Glebas).';
     } else if (certComKml) {
+      if (qtdCertComKml > 1) {
+        detalhesSocioKml.unshift(
+          `ℹ️ Foram encontradas ${qtdCertComKml} Certificações COM KML na pasta. Auditando a mais recente: "${certComKml.nomeOriginal}".`
+        );
+      }
       const diagV98 = avaliarConformidadeSocioambientalV98({
         dados: certComKml.dadosSocio,
         areaImovelHa:
@@ -2314,9 +2360,9 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
 
       if (diagV98.errosCriticos.length > 0) {
         statusItem13 = 'ERRO';
-        resumoItem13 = `🚨 IMPEDIMENTO SOCIOAMBIENTAL / KML: ${diagV98.errosCriticos[0]}`;
+        resumoItem13 = `🚨 IMPEDIMENTO NA CERT. COM KML ("${certComKml.nomeOriginal}"): ${diagV98.errosCriticos[0]}`;
       } else if (statusItem13 !== 'ERRO') {
-        resumoItem13 = `✅ Cruzamento KML (${itensKmlExtraidos.length} itens) × Certificação Socioambiental (${certComKml.dadosSocio.glebas.length} glebas) APROVADO! Reserva Legal: ${certComKml.dadosSocio.reservaLegalPerc || 'OK'}.`;
+        resumoItem13 = `✅ Certificação COM KML mais recente ("${certComKml.nomeOriginal}") × KML ("${arqKmlItem?.nomeOriginal || 'KML'}") APROVADOS! (${certComKml.dadosSocio.glebas.length} glebas • RL: ${certComKml.dadosSocio.reservaLegalPerc || 'OK'}).`;
       }
 
       diagV98.errosCriticos.forEach((er) =>
@@ -2327,69 +2373,65 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       );
     }
 
-    // Se for COMBO_DERIVADA_E_LIMITE e também tiver a Certificação SEM KML na pasta, audita-a também!
-    if (escopoSelecionado === 'COMBO_DERIVADA_E_LIMITE') {
-      if (!certSemKml) {
-        detalhesSocioKml.push(
-          '⚠️ Modo Combo (Derivada + Limite): Falta na pasta a Certificação Socioambiental SEM KML (exclusiva do imóvel da garantia LCGH/LCGA).'
-        );
-        if (statusItem13 === 'OK') statusItem13 = 'ALERTA';
-      } else {
-        const diagLim = avaliarConformidadeSocioambientalV98({
-          dados: certSemKml.dadosSocio,
-          areaImovelHa: certSemKml.dadosSocio.areaCarHa,
-        });
-        if (diagLim.errosCriticos.length > 0) {
-          statusItem13 = 'ERRO';
-          diagLim.errosCriticos.forEach((er) =>
-            detalhesSocioKml.push(`🚨 [CERT. SEM KML / LIMITE] ${er}`)
-          );
-        } else {
-          detalhesSocioKml.push(
-            `✅ [CERT. SEM KML / LIMITE]: "${certSemKml.nomeOriginal}" auditada e aprovada (RL: ${certSemKml.dadosSocio.reservaLegalPerc || 'OK'}).`
-          );
-        }
-      }
-    }
-
     itensDiagnostico.push({
       numero: 13,
       titulo:
-        '13. Cruzamento Automático: KML Geodésico × Certificação Socioambiental (V98)',
+        '13. Auditoria de Derivada: KML Mais Recente × Certificação Socioambiental COM KML',
       status: statusItem13,
       resumo:
         resumoItem13 ||
-        'Verificação do KML e da Certificação Socioambiental concluída.',
+        'Verificação do KML e da Certificação Socioambiental COM KML concluída.',
       detalhes: detalhesSocioKml,
     });
-  } else if (analisesSocioPorArquivo.length > 0) {
-    // Caso seja LIMITE_PURO (LCGH/LCGA) ou PRONAF A: audita a Certificação SEM KML (PRODES, Escravo, Embargos, RL 16%)
-    const alvoCert = certSemKml || analisesSocioPorArquivo[0];
-    const diagSemKml = avaliarConformidadeSocioambientalV98({
-      dados: alvoCert.dadosSocio,
-      areaImovelHa:
-        dadosProjetoParaParecer.areaImovelHa || alvoCert.dadosSocio.areaCarHa,
-      forcarAte4ModulosAntes2008: isPronafA,
-    });
+  }
 
-    itensDiagnostico.push({
-      numero: 13,
-      titulo:
-        '13. Auditoria da Certificação Socioambiental (PRODES, Embargos, Trabalho Escravo e RL)',
-      status: diagSemKml.errosCriticos.length > 0 ? 'ERRO' : 'OK',
-      resumo:
-        diagSemKml.errosCriticos.length > 0
-          ? `🚨 Impedimento na Certificação Socioambiental: ${diagSemKml.errosCriticos[0]}`
-          : `✅ Certificação Socioambiental aprovada (Área CAR: ${
-              alvoCert.dadosSocio.areaCarHa || '?'
-            } ha • Reserva Legal: ${
-              alvoCert.dadosSocio.reservaLegalPerc || 'OK'
-            }).`,
-      detalhes: [
-        ...diagSemKml.errosCriticos.map((er) => `🚨 ${er}`),
-        ...diagSemKml.justificativasERessalvas.map((ju) => `✅ ${ju}`),
-      ],
-    });
+  // VERIFICAÇÃO B (SEPARADA): CERTIFICAÇÃO SOCIOAMBIENTAL SEM KML (PARA LIMITE LCGH/LCGA OU PRONAF A)
+  if (exigeCertSemKmlNoLimite || (isPronafA && analisesSocioPorArquivo.length > 0)) {
+    const alvoSemKml = certSemKml || (isPronafA ? analisesSocioPorArquivo[0] : undefined);
+
+    if (!alvoSemKml) {
+      itensDiagnostico.push({
+        numero: 13.5,
+        titulo:
+          '13.1. Auditoria de Limite (LCGH/LCGA): Certificação Socioambiental SEM KML',
+        status: 'ERRO',
+        resumo:
+          '🚨 Falta a Certificação Socioambiental SEM KML (exclusiva do imóvel da garantia LCGH/LCGA) na pasta!',
+      });
+    } else {
+      const diagLim = avaliarConformidadeSocioambientalV98({
+        dados: alvoSemKml.dadosSocio,
+        areaImovelHa:
+          dadosProjetoParaParecer.areaImovelHa || alvoSemKml.dadosSocio.areaCarHa,
+        forcarAte4ModulosAntes2008: isPronafA,
+      });
+
+      const detalhesSemKml: string[] = [];
+      if (qtdCertSemKml > 1) {
+        detalhesSemKml.push(
+          `ℹ️ Foram encontradas ${qtdCertSemKml} Certificações SEM KML na pasta. Auditando a mais recente: "${alvoSemKml.nomeOriginal}".`
+        );
+      }
+      diagLim.errosCriticos.forEach((er) => detalhesSemKml.push(`🚨 ${er}`));
+      diagLim.justificativasERessalvas.forEach((ju) =>
+        detalhesSemKml.push(`✅ ${ju}`)
+      );
+
+      itensDiagnostico.push({
+        numero: isPronafA ? 13 : 13.5,
+        titulo: isPronafA
+          ? '13. Auditoria da Certificação Socioambiental (PRONAF A)'
+          : `13.1. Auditoria de Limite (LCGH/LCGA): Certificação Socioambiental SEM KML ("${alvoSemKml.nomeOriginal}")`,
+        status: diagLim.errosCriticos.length > 0 ? 'ERRO' : 'OK',
+        resumo:
+          diagLim.errosCriticos.length > 0
+            ? `🚨 Impedimento na Certificação SEM KML ("${alvoSemKml.nomeOriginal}"): ${diagLim.errosCriticos[0]}`
+            : `✅ Certificação SEM KML mais recente ("${alvoSemKml.nomeOriginal}") aprovada (Área CAR: ${
+                alvoSemKml.dadosSocio.areaCarHa || '?'
+              } ha • RL: ${alvoSemKml.dadosSocio.reservaLegalPerc || 'OK'}).`,
+        detalhes: detalhesSemKml,
+      });
+    }
   }
 
   // =========================================================================

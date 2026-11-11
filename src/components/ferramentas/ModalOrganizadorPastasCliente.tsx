@@ -303,11 +303,35 @@ const OPCOES_SELECT_CATEGORIA: Array<{
       },
       {
         valor: 'ITEM_TITULO_DOMINIO',
-        label: 'TÍTULO DE DOMÍNIO / ESCRITURA PÚBLICA',
+        label: '4. TÍTULO DE DOMÍNIO (SUBSTITUI ECPV)',
+      },
+      {
+        valor: 'ITEM_ECPV_ESCRITURA',
+        label: '5. ECPV / ESCRITURA PÚBLICA DE COMPRA E VENDA',
       },
       {
         valor: 'ITEM_INTEIRO_TEOR',
-        label: 'INTEIRO TEOR DA MATRÍCULA (HISTÓRICO 15 ANOS)',
+        label: '6. INTEIRO TEOR DA MATRÍCULA (HISTÓRICO 15 ANOS)',
+      },
+      {
+        valor: 'ITEM_SELO_IMOVEL',
+        label: '6. SELO CORRESPONDENTE DO IMÓVEL (SELO 1, SELO 2...)',
+      },
+      {
+        valor: 'ITEM_MEMORIAL_DESCRITIVO',
+        label: '7. MEMORIAL DESCRITIVO DO IMÓVEL',
+      },
+      {
+        valor: 'ITEM_AUT_DEBITO_CONTA',
+        label: '14. AUTORIZAÇÃO DE DÉBITO EM CONTA (OPCIONAL)',
+      },
+      {
+        valor: 'ITEM_CND_CONJUGE',
+        label: 'CND PESSOA FÍSICA (CÔNJUGE)',
+      },
+      {
+        valor: 'ITEM_CNDT_CONJUGE',
+        label: 'CNDT TRABALHISTA (CÔNJUGE)',
       },
       {
         valor: 'ITEM_PLANO_ATIVIDADE_RURAL',
@@ -1079,15 +1103,32 @@ export default function ModalOrganizadorPastasCliente({
       }
     );
 
+    // Ordena do arquivo MAIS RECENTE para o mais antigo (lastModified decrescente)!
+    // Assim, se houver mais de 1 CND, CNDT, Embargos, Improbidade, S400, SICOR, etc., prevalece sempre o mais recente!
+    const mapeadosOrdenadosRecentes = [...mapeadosBrutos].sort(
+      (a, b) => (b.fileObj.lastModified || 0) - (a.fileObj.lastModified || 0)
+    );
+
     const vistosPorChave = new Set<string>();
     const mapeados: ArquivoMapeadoItem[] = [];
-    mapeadosBrutos.forEach((m) => {
+    mapeadosOrdenadosRecentes.forEach((m) => {
       const permiteMultiplosArquivos =
         m.categoria === 'OUTROS_NAO_IDENTIFICADO' ||
         m.categoria === 'CAD_9_OUTROS_CADASTRO' ||
+        m.categoria === 'CAD_8_SELO_CARTORIO' ||
+        m.categoria === 'ITEM_DEC_OUTRA_AMBIENTAL' ||
+        m.categoria === 'ITEM_KML' ||
+        m.categoria === 'ITEM_PLANILHA_GEODESICA' ||
+        m.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
+        m.categoria === 'ITEM_CERT_SOCIO_SEM_KML' ||
         m.categoria === 'ITEM_DOC_IMOVEL_GENERICO' ||
         m.categoria === 'ITEM_INTEIRO_TEOR' ||
+        m.categoria === 'ITEM_SELO_IMOVEL' ||
+        m.categoria === 'ITEM_MEMORIAL_DESCRITIVO' ||
         m.categoria === 'ITEM_TITULO_DOMINIO' ||
+        m.categoria === 'ITEM_ECPV_ESCRITURA' ||
+        m.categoria === 'ITEM_LAUDO_INTERNO' ||
+        m.categoria === 'ITEM_LAUDO_EXTERNO' ||
         m.categoria === 'ITEM_CAR' ||
         m.categoria === 'ITEM_CONSULTA_CAR' ||
         m.categoria === 'ITEM_CCIR' ||
@@ -1592,40 +1633,34 @@ export default function ModalOrganizadorPastasCliente({
         }
       };
 
-      // 1. Limpa antigos .txt de lembretes vazios na raiz e nas subpastas conhecidas (preservando o Parecer Gerencial real!)
-      const limparTxtsAntigosDeHandle = async (hPasta: any) => {
-        for await (const [entryName, entryHandle] of hPasta.entries()) {
-          if (
-            entryHandle.kind === 'file' &&
-            entryName.toLowerCase().endsWith('.txt') &&
-            !isArquivoParecerGerencialReal(entryName)
-          ) {
-            try {
-              await hPasta.removeEntry(entryName);
-            } catch {
-              // Ignora
+      // 1. Limpa recursivamente antigos .txt de lembretes na raiz e em todas as subpastas (preservando o Parecer Gerencial real!)
+      const limparTxtsAntigosRecursivo = async (
+        hPasta: any,
+        profundidade = 0
+      ) => {
+        if (profundidade > 3) return;
+        try {
+          for await (const [entryName, entryHandle] of hPasta.entries()) {
+            if (
+              entryHandle.kind === 'file' &&
+              entryName.toLowerCase().endsWith('.txt') &&
+              !isArquivoParecerGerencialReal(entryName)
+            ) {
+              try {
+                await hPasta.removeEntry(entryName);
+              } catch {
+                // Ignora
+              }
+            } else if (entryHandle.kind === 'directory') {
+              await limparTxtsAntigosRecursivo(entryHandle, profundidade + 1);
             }
           }
+        } catch {
+          // Ignora pasta bloqueada
         }
       };
 
-      await limparTxtsAntigosDeHandle(dirHandleRoot);
-      for (const subNome of [
-        'CADASTRO',
-        'LCGH',
-        'LCGA',
-        'INVESTIMENTO',
-        'CUSTEIO',
-      ]) {
-        try {
-          const subH = await dirHandleRoot.getDirectoryHandle(subNome, {
-            create: false,
-          });
-          await limparTxtsAntigosDeHandle(subH);
-        } catch {
-          // Subpasta ainda não existe
-        }
-      }
+      await limparTxtsAntigosRecursivo(dirHandleRoot, 0);
 
       // 2. Processa cada arquivo, PULANDO os destinos que já estão organizados no lugar certo!
       let qtdArquivosMovidosOuRenomeados = 0;
@@ -1739,6 +1774,107 @@ export default function ModalOrganizadorPastasCliente({
           }
         }
       }
+
+      // 2.5. VARREDURA E LIMPEZA ESTRATÉGICA DE ÁRVORES ANTIGAS:
+      // Qualquer arquivo excedente/antigo que não faça parte dos destinos oficiais (gravadosPorPasta)
+      // é movido para dentro de "OUTROS/<Subpasta Antiga>", e as pastas antigas/vazias são removidas da raiz!
+      const varrerELimparArvoreAntiga = async (
+        dirAtual: any,
+        caminhoRel: string,
+        profundidade = 0
+      ): Promise<boolean> => {
+        if (profundidade > 4) return false;
+        const caminhoUp = (caminhoRel || '').toUpperCase().trim();
+
+        // Nunca mexe no que já está guardado dentro da pasta OUTROS
+        if (caminhoUp === 'OUTROS' || caminhoUp.startsWith('OUTROS/')) {
+          return true;
+        }
+
+        const entradasAtuais: Array<[string, any]> = [];
+        try {
+          for await (const entry of dirAtual.entries()) {
+            entradasAtuais.push(entry);
+          }
+        } catch {
+          return false;
+        }
+
+        let possuiConteudoOficial = false;
+
+        for (const [entryName, entryHandle] of entradasAtuais) {
+          if (
+            !entryName ||
+            entryName.startsWith('.') ||
+            entryName.startsWith('~$')
+          ) {
+            continue;
+          }
+
+          if (entryHandle.kind === 'file') {
+            const isParecerReal = isArquivoParecerGerencialReal(entryName);
+            const isTxtLembrete =
+              entryName.toLowerCase().endsWith('.txt') && !isParecerReal;
+            if (isParecerReal || isTxtLembrete) {
+              possuiConteudoOficial = true;
+              continue;
+            }
+
+            const salvosNestaPasta = gravadosPorPasta.get(caminhoUp);
+            const fazParteDaArvoreOficial = Boolean(
+              salvosNestaPasta && salvosNestaPasta.has(entryName)
+            );
+
+            if (fazParteDaArvoreOficial) {
+              possuiConteudoOficial = true;
+            } else {
+              // Arquivo de uma pasta antiga ou versão duplicada descartada -> Move para OUTROS mantendo a subpasta de origem!
+              try {
+                const fileSobra: File = await entryHandle.getFile();
+                const bufferSobra = await fileSobra.arrayBuffer();
+                const destinoOutrosRel = caminhoRel
+                  ? `OUTROS/${caminhoRel}`
+                  : 'OUTROS';
+                await gravarEmSubpasta(destinoOutrosRel, entryName, bufferSobra);
+                await dirAtual.removeEntry(entryName);
+              } catch {
+                // Ignora se bloqueado
+              }
+            }
+          } else if (entryHandle.kind === 'directory') {
+            const subCaminho = caminhoRel
+              ? `${caminhoRel}/${entryName}`
+              : entryName;
+            const subCaminhoUp = subCaminho.toUpperCase().trim();
+
+            if (subCaminhoUp === 'OUTROS') {
+              possuiConteudoOficial = true;
+              continue;
+            }
+
+            const subTemOficial = await varrerELimparArvoreAntiga(
+              entryHandle,
+              subCaminho,
+              profundidade + 1
+            );
+
+            if (subTemOficial) {
+              possuiConteudoOficial = true;
+            } else {
+              // A pasta antiga ficou vazia (ou todo o seu conteúdo não pertinente já foi movido p/ OUTROS) -> Remove a pasta antiga!
+              try {
+                await dirAtual.removeEntry(entryName, { recursive: true });
+              } catch {
+                // Ignora se o sistema operacional bloquear
+              }
+            }
+          }
+        }
+
+        return possuiConteudoOficial;
+      };
+
+      await varrerELimparArvoreAntiga(dirHandleRoot, '', 0);
 
       // 3. Verifica se já existe Parecer Gerencial real na pasta
       let jaTemParecerGerencialNaPasta =
