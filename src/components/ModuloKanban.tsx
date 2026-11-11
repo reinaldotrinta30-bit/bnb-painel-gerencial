@@ -211,6 +211,62 @@ export default function ModuloKanban({
   const [pdfLayout, setPdfLayout] = useState<
     'QUADRINHOS' | 'LISTAGEM' | 'DIDATICA_ROBUSTA'
   >('QUADRINHOS');
+
+  const TODAS_SITUACOES_CONTRATACAO_PDF = [
+    'Com Cliente/Projetista',
+    'Na Agência',
+    'Devolvido AG',
+    'Na Central',
+    'F. Assinar',
+    'F. Conformidade',
+    'Contratado',
+  ];
+
+  const TODAS_SITUACOES_DESEMBOLSO_PDF = [
+    'Sem Registro',
+    'Solicitar Documentação',
+    'Verificar Conformidade',
+    'Solicitar Desembolso',
+    'Desembolso Solicitado',
+    'Desembolso Pendente',
+    'Desembolso na Vinculada',
+    'Disponível para C/C',
+    'Desembolso Efetivado',
+    'Não Desembolsar',
+    'Finalizado',
+  ];
+
+  const [pdfSituacoesContratacao, setPdfSituacoesContratacao] = useState<
+    string[]
+  >([
+    'Com Cliente/Projetista',
+    'Na Agência',
+    'Devolvido AG',
+    'Na Central',
+    'F. Assinar',
+    'F. Conformidade',
+    'Contratado',
+  ]);
+
+  const [pdfSituacoesDesembolso, setPdfSituacoesDesembolso] = useState<
+    string[]
+  >([
+    'Sem Registro',
+    'Solicitar Documentação',
+    'Verificar Conformidade',
+    'Solicitar Desembolso',
+    'Desembolso Solicitado',
+    'Desembolso Pendente',
+    'Desembolso na Vinculada',
+    'Disponível para C/C',
+    'Desembolso Efetivado',
+    'Não Desembolsar',
+    'Finalizado',
+  ]);
+
+  const [pdfAbaSituacoesExpandida, setPdfAbaSituacoesExpandida] = useState<
+    'NENHUMA' | 'CONTRATACAO' | 'DESEMBOLSO'
+  >('NENHUMA');
   const [notasMinimizadas, setNotasMinimizadas] = useState(false);
 
   const [menuFiltroCorAberto, setMenuFiltroCorAberto] = useState(false);
@@ -5518,6 +5574,337 @@ const opNumero =
               </div>
             </div>
 
+            {/* 7. FILTROS DISCRETOS POR SITUAÇÃO DO PROCESSO E SITUAÇÃO DO DESEMBOLSO */}
+            <div
+              style={{
+                marginTop: '12px',
+                background: '#f8fafc',
+                padding: '9px 12px',
+                borderRadius: '6px',
+                border: '1px solid #e2e8f0',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    color: '#334155',
+                  }}
+                >
+                  7. Filtrar por Situação Específica (Opcional):
+                </span>
+
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPdfAbaSituacoesExpandida((prev) =>
+                        prev === 'CONTRATACAO' ? 'NENHUMA' : 'CONTRATACAO'
+                      )
+                    }
+                    style={{
+                      width: 'auto',
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      border:
+                        pdfSituacoesContratacao.length <
+                        TODAS_SITUACOES_CONTRATACAO_PDF.length
+                          ? '1.5px solid #8B1530'
+                          : '1px solid #cbd5e1',
+                      background:
+                        pdfAbaSituacoesExpandida === 'CONTRATACAO'
+                          ? '#8B1530'
+                          : pdfSituacoesContratacao.length <
+                            TODAS_SITUACOES_CONTRATACAO_PDF.length
+                          ? '#fdf2f4'
+                          : '#ffffff',
+                      color:
+                        pdfAbaSituacoesExpandida === 'CONTRATACAO'
+                          ? '#ffffff'
+                          : pdfSituacoesContratacao.length <
+                            TODAS_SITUACOES_CONTRATACAO_PDF.length
+                          ? '#8B1530'
+                          : '#334155',
+                    }}
+                  >
+                    📌 Situação Contratação (
+                    {pdfSituacoesContratacao.length ===
+                    TODAS_SITUACOES_CONTRATACAO_PDF.length
+                      ? 'Todas'
+                      : `${pdfSituacoesContratacao.length}/${TODAS_SITUACOES_CONTRATACAO_PDF.length}`}
+                    ) ▾
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPdfAbaSituacoesExpandida((prev) =>
+                        prev === 'DESEMBOLSO' ? 'NENHUMA' : 'DESEMBOLSO'
+                      )
+                    }
+                    style={{
+                      width: 'auto',
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      border:
+                        pdfSituacoesDesembolso.length <
+                        TODAS_SITUACOES_DESEMBOLSO_PDF.length
+                          ? '1.5px solid #6b21a8'
+                          : '1px solid #cbd5e1',
+                      background:
+                        pdfAbaSituacoesExpandida === 'DESEMBOLSO'
+                          ? '#6b21a8'
+                          : pdfSituacoesDesembolso.length <
+                            TODAS_SITUACOES_DESEMBOLSO_PDF.length
+                          ? '#faf5ff'
+                          : '#ffffff',
+                      color:
+                        pdfAbaSituacoesExpandida === 'DESEMBOLSO'
+                          ? '#ffffff'
+                          : pdfSituacoesDesembolso.length <
+                            TODAS_SITUACOES_DESEMBOLSO_PDF.length
+                          ? '#6b21a8'
+                          : '#334155',
+                    }}
+                  >
+                    💸 Situação Desembolso (
+                    {pdfSituacoesDesembolso.length ===
+                    TODAS_SITUACOES_DESEMBOLSO_PDF.length
+                      ? 'Todas'
+                      : `${pdfSituacoesDesembolso.length}/${TODAS_SITUACOES_DESEMBOLSO_PDF.length}`}
+                    ) ▾
+                  </button>
+                </div>
+              </div>
+
+              {/* GAVETA EXPANSÍVEL 1: SITUAÇÕES DA CONTRATAÇÃO (F. CONFORMIDADE, F. ASSINAR, CONTRATADO, ETC.) */}
+              {pdfAbaSituacoesExpandida === 'CONTRATACAO' && (
+                <div
+                  style={{
+                    marginTop: '8px',
+                    paddingTop: '8px',
+                    borderTop: '1px dashed #cbd5e1',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: '6px',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: '10.5px',
+                        fontWeight: 700,
+                        color: '#64748b',
+                      }}
+                    >
+                      Marque as situações de processo que devem sair no PDF:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPdfSituacoesContratacao(
+                          pdfSituacoesContratacao.length ===
+                            TODAS_SITUACOES_CONTRATACAO_PDF.length
+                            ? []
+                            : [...TODAS_SITUACOES_CONTRATACAO_PDF]
+                        )
+                      }
+                      style={{
+                        width: 'auto',
+                        background: 'none',
+                        border: 'none',
+                        color: '#8B1530',
+                        fontSize: '10.5px',
+                        fontWeight: 800,
+                        padding: 0,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {pdfSituacoesContratacao.length ===
+                      TODAS_SITUACOES_CONTRATACAO_PDF.length
+                        ? 'Desmarcar Todas'
+                        : 'Marcar Todas'}
+                    </button>
+                  </div>
+
+                  <div
+                    style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}
+                  >
+                    {TODAS_SITUACOES_CONTRATACAO_PDF.map((sit) => {
+                      const ativo = pdfSituacoesContratacao.includes(sit);
+                      return (
+                        <label
+                          key={sit}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '3px 8px',
+                            borderRadius: '14px',
+                            fontSize: '10.5px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            margin: 0,
+                            background: ativo ? '#fdf2f4' : '#ffffff',
+                            color: ativo ? '#8B1530' : '#64748b',
+                            border: `1px solid ${
+                              ativo ? '#f5c2c7' : '#cbd5e1'
+                            }`,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={ativo}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setPdfSituacoesContratacao([
+                                  ...pdfSituacoesContratacao,
+                                  sit,
+                                ]);
+                              } else {
+                                setPdfSituacoesContratacao(
+                                  pdfSituacoesContratacao.filter(
+                                    (x) => x !== sit
+                                  )
+                                );
+                              }
+                            }}
+                            style={{ width: '12px', height: '12px', margin: 0 }}
+                          />
+                          {sit}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* GAVETA EXPANSÍVEL 2: SITUAÇÕES DO DESEMBOLSO (DESEMBOLSO NA VINCULADA, SOLICITADO, EFETIVADO, ETC.) */}
+              {pdfAbaSituacoesExpandida === 'DESEMBOLSO' && (
+                <div
+                  style={{
+                    marginTop: '8px',
+                    paddingTop: '8px',
+                    borderTop: '1px dashed #cbd5e1',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: '6px',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: '10.5px',
+                        fontWeight: 700,
+                        color: '#64748b',
+                      }}
+                    >
+                      Marque as situações de desembolso que devem sair no PDF:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPdfSituacoesDesembolso(
+                          pdfSituacoesDesembolso.length ===
+                            TODAS_SITUACOES_DESEMBOLSO_PDF.length
+                            ? []
+                            : [...TODAS_SITUACOES_DESEMBOLSO_PDF]
+                        )
+                      }
+                      style={{
+                        width: 'auto',
+                        background: 'none',
+                        border: 'none',
+                        color: '#6b21a8',
+                        fontSize: '10.5px',
+                        fontWeight: 800,
+                        padding: 0,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {pdfSituacoesDesembolso.length ===
+                      TODAS_SITUACOES_DESEMBOLSO_PDF.length
+                        ? 'Desmarcar Todas'
+                        : 'Marcar Todas'}
+                    </button>
+                  </div>
+
+                  <div
+                    style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}
+                  >
+                    {TODAS_SITUACOES_DESEMBOLSO_PDF.map((sitD) => {
+                      const ativo = pdfSituacoesDesembolso.includes(sitD);
+                      return (
+                        <label
+                          key={sitD}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '3px 8px',
+                            borderRadius: '14px',
+                            fontSize: '10.5px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            margin: 0,
+                            background: ativo ? '#faf5ff' : '#ffffff',
+                            color: ativo ? '#6b21a8' : '#64748b',
+                            border: `1px solid ${
+                              ativo ? '#d8b4fe' : '#cbd5e1'
+                            }`,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={ativo}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setPdfSituacoesDesembolso([
+                                  ...pdfSituacoesDesembolso,
+                                  sitD,
+                                ]);
+                              } else {
+                                setPdfSituacoesDesembolso(
+                                  pdfSituacoesDesembolso.filter(
+                                    (x) => x !== sitD
+                                  )
+                                );
+                              }
+                            }}
+                            style={{ width: '12px', height: '12px', margin: 0 }}
+                          />
+                          {sitD}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '18px', borderTop: '1px solid #eee', paddingTop: '12px' }}>
               <button
                 type="button"
@@ -5525,6 +5912,9 @@ const opNumero =
                   setPdfProjetistasSel([]);
                   setPdfFiltroTipoOp('TODOS');
                   setPdfIncluirArquivados(false);
+                  setPdfSituacoesContratacao([...TODAS_SITUACOES_CONTRATACAO_PDF]);
+                  setPdfSituacoesDesembolso([...TODAS_SITUACOES_DESEMBOLSO_PDF]);
+                  setPdfAbaSituacoesExpandida('NENHUMA');
                 }}
                 style={{ background: 'transparent', color: '#64748b', border: '1px solid #cbd5e1', padding: '7px 12px', fontSize: '11px' }}
               >
@@ -5544,15 +5934,120 @@ const opNumero =
                       ? Array.from(new Set([...pdfPrioridades, 'roxo']))
                       : pdfPrioridades;
 
-                    exportarKanbanParaPDFExecutivo(cards, {
-                      etapas: pdfEtapas,
-                      portes: pdfPortes,
-                      prioridades: priosFinais,
-                      incluirArquivados: pdfIncluirArquivados,
-                      filtroTipoOperacao: pdfFiltroTipoOp,
-                      projetistas: pdfProjetistasSel,
-                      layoutSaida: pdfLayout,
+                    // Filtra os cards pelas Situações de Contratação e Situações de Desembolso selecionadas
+                    const filtraPorSitContrat =
+                      pdfSituacoesContratacao.length <
+                      TODAS_SITUACOES_CONTRATACAO_PDF.length;
+                    const filtraPorSitDesemb =
+                      pdfSituacoesDesembolso.length <
+                      TODAS_SITUACOES_DESEMBOLSO_PDF.length;
+
+                    const cardsFiltradosParaExportacao = cards.filter((c) => {
+                      if (c.etapa === 'NOTAS') return true;
+
+                      if (filtraPorSitContrat) {
+                        const sitCard = (
+                          c.situacaoVinculada ||
+                          mapearEtapaKanbanParaSituacaoContratacao(
+                            c.etapa,
+                            c.statusCor,
+                            'Na Agência'
+                          )
+                        ).trim();
+                        const opsCli = obterContratacoesDoCard(c);
+                        const matchSitContrat =
+                          pdfSituacoesContratacao.includes(sitCard) ||
+                          opsCli.some((op) =>
+                            pdfSituacoesContratacao.includes(
+                              (op.situacao || '').trim()
+                            )
+                          );
+                        if (!matchSitContrat) return false;
+                      }
+
+                      if (filtraPorSitDesemb) {
+                        const sitDesembCard = (
+                          c.situacaoDesembolsoVinculada || 'Sem Registro'
+                        ).trim();
+                        const evsCli = obterDesembolsosDoCard(c).evs;
+                        const matchSitDesemb =
+                          pdfSituacoesDesembolso.includes(sitDesembCard) ||
+                          evsCli.some((ev) =>
+                            pdfSituacoesDesembolso.includes(
+                              (ev.situacao || '').trim()
+                            )
+                          );
+                        if (!matchSitDesemb) return false;
+                      }
+
+                      return true;
                     });
+
+                    // Intercepta a abertura da janela de impressão para injetar as Margens A4 Padrão Anti-Corte!
+                    const originalOpen = window.open.bind(window);
+                    window.open = ((...args: Parameters<typeof window.open>) => {
+                      const jan = originalOpen(...args);
+                      if (jan && jan.document) {
+                        const origWrite = jan.document.write.bind(jan.document);
+                        jan.document.write = (htmlStr: string) => {
+                          const cssMargensA4Seguras = `
+                            <style>
+                              @page {
+                                size: A4 landscape;
+                                margin: 12mm 15mm !important;
+                              }
+                              html, body {
+                                width: 100% !important;
+                                max-width: 100% !important;
+                                box-sizing: border-box !important;
+                                margin: 0 !important;
+                                padding: 5mm 7mm !important;
+                                overflow-x: hidden !important;
+                              }
+                              table {
+                                width: 100% !important;
+                                max-width: 100% !important;
+                                box-sizing: border-box !important;
+                              }
+                              th, td {
+                                word-wrap: break-word !important;
+                                overflow-wrap: break-word !important;
+                                box-sizing: border-box !important;
+                              }
+                              .grid-cards, .cards-grid, div {
+                                box-sizing: border-box !important;
+                              }
+                            </style>
+                          `;
+                          const htmlAjustado = htmlStr.includes('</head>')
+                            ? htmlStr.replace(
+                                '</head>',
+                                `${cssMargensA4Seguras}</head>`
+                              )
+                            : cssMargensA4Seguras + htmlStr;
+                          return origWrite(htmlAjustado);
+                        };
+                      }
+                      return jan;
+                    }) as typeof window.open;
+
+                    try {
+                      exportarKanbanParaPDFExecutivo(
+                        cardsFiltradosParaExportacao,
+                        {
+                          etapas: pdfEtapas,
+                          portes: pdfPortes,
+                          prioridades: priosFinais,
+                          incluirArquivados: pdfIncluirArquivados,
+                          filtroTipoOperacao: pdfFiltroTipoOp,
+                          projetistas: pdfProjetistasSel,
+                          layoutSaida: pdfLayout,
+                        }
+                      );
+                    } finally {
+                      window.open = originalOpen;
+                    }
+
                     setModalPdfAberto(false);
                   }}
                   style={{ background: 'var(--primary-color)', color: '#fff', padding: '9px 20px', fontSize: '13px' }}

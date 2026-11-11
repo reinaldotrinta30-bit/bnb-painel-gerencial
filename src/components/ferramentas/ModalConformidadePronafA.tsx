@@ -1297,18 +1297,88 @@ export default function ModalConformidadePronafA({
     );
   };
 
-  // ITEM 1 CORRIGIDO: O Grupo 1 inicia imediatamente na Página 1 abaixo do cabeçalho (sem page-break-inside no container do grupo)
+  // Estados do Modal Discreto de Configuração da Exportação PDF do PRONAF A
+  const [modalPdfPronafAAberto, setModalPdfPronafAAberto] = useState(false);
+  const [pdfPronafAGrupos, setPdfPronafAGrupos] = useState<
+    Array<1 | 2 | 3 | 4>
+  >([1, 2, 3, 4]);
+  const [pdfPronafACadTitular, setPdfPronafACadTitular] = useState<
+    StatusCadastroPessoa[]
+  >(['OK', 'A_RENOVAR', 'A_ELABORAR']);
+  const [pdfPronafAFiltroPainel, setPdfPronafAFiltroPainel] = useState<
+    'TODOS' | 'NAO_CADASTRADOS' | 'JA_CADASTRADOS'
+  >('TODOS');
+  const [pdfPronafAFiltroCc, setPdfPronafAFiltroCc] = useState<
+    'TODOS' | 'COM_CC' | 'SEM_CC'
+  >('TODOS');
+  const [pdfPronafAFiltroVisita, setPdfPronafAFiltroVisita] = useState<
+    'TODOS' | 'VISITADOS' | 'NAO_VISITADOS'
+  >('TODOS');
+  const [pdfPronafAOrientacao, setPdfPronafAOrientacao] = useState<
+    'landscape' | 'portrait'
+  >('landscape');
+
   const exportarRelatorioPrioridadesPDF = () => {
-    if (rankingClassificado.length === 0) {
-      alert('Preencha ao menos um cliente na planilha antes de gerar o PDF.');
+    const baseLista = buscaClienteConformidade.trim()
+      ? rankingClassificadoFiltrado
+      : rankingClassificado;
+
+    const filtradosPdf = baseLista.filter((r) => {
+      if (!pdfPronafAGrupos.includes(r.grupoNumero)) return false;
+      if (!pdfPronafACadTitular.includes(r.item.cadastroClienteOk))
+        return false;
+
+      if (
+        pdfPronafAFiltroPainel === 'NAO_CADASTRADOS' &&
+        r.jaCadastradoNoPainel
+      ) {
+        return false;
+      }
+      if (
+        pdfPronafAFiltroPainel === 'JA_CADASTRADOS' &&
+        !r.jaCadastradoNoPainel
+      ) {
+        return false;
+      }
+
+      const ccUp = (r.item.contaCorrente || '').trim().toUpperCase();
+      const temCcValida =
+        Boolean(ccUp) &&
+        ccUp !== 'NÃO' &&
+        ccUp !== 'NAO' &&
+        ccUp !== '-' &&
+        !ccUp.includes('SEM');
+
+      if (pdfPronafAFiltroCc === 'COM_CC' && !temCcValida) return false;
+      if (pdfPronafAFiltroCc === 'SEM_CC' && temCcValida) return false;
+
+      if (pdfPronafAFiltroVisita === 'VISITADOS' && r.item.visitado !== 'SIM') {
+        return false;
+      }
+      if (
+        pdfPronafAFiltroVisita === 'NAO_VISITADOS' &&
+        r.item.visitado === 'SIM'
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (filtradosPdf.length === 0) {
+      alert(
+        '⚠️ Nenhum cliente corresponde aos filtros selecionados para a exportação do PDF.'
+      );
       return;
     }
 
-    const jan = window.open('', '_blank', 'width=1020,height=840');
+    const jan = window.open('', '_blank', 'width=1060,height=840');
     if (!jan) return;
 
-    const grupos = [1, 2, 3, 4] as const;
-    const coresGrupo: Record<number, { bg: string; borda: string; texto: string }> = {
+    const coresGrupo: Record<
+      number,
+      { bg: string; borda: string; texto: string }
+    > = {
       1: { bg: '#f0fdf4', borda: '#15803d', texto: '#166534' },
       2: { bg: '#eff6ff', borda: '#1d4ed8', texto: '#1e40af' },
       3: { bg: '#fffbeb', borda: '#d97706', texto: '#92400e' },
@@ -1318,24 +1388,31 @@ export default function ModalConformidadePronafA({
     let htmlGrupos = '';
     let posGeral = 1;
 
-    grupos.forEach((numG) => {
-      const doGrupo = rankingClassificado.filter((r) => r.grupoNumero === numG);
+    ([1, 2, 3, 4] as const).forEach((numG) => {
+      if (!pdfPronafAGrupos.includes(numG)) return;
+      const doGrupo = filtradosPdf.filter((r) => r.grupoNumero === numG);
       if (doGrupo.length === 0) return;
 
       const estilo = coresGrupo[numG];
       htmlGrupos += `
         <div style="margin-bottom: 16px;">
-          <div style="background:${estilo.bg}; border-left:5px solid ${estilo.borda}; padding:7px 12px; font-weight:bold; color:${estilo.texto}; font-size:10.5pt; margin-bottom:6px; page-break-after: avoid; break-after: avoid;">
-            ${doGrupo[0].grupoTitulo} (${doGrupo.length} cliente${doGrupo.length > 1 ? 's' : ''})
+          <div style="background:${estilo.bg}; border-left:5px solid ${
+        estilo.borda
+      }; padding:7px 12px; font-weight:bold; color:${
+        estilo.texto
+      }; font-size:10pt; margin-bottom:6px; page-break-after: avoid; break-after: avoid;">
+            ${doGrupo[0].grupoTitulo} (${doGrupo.length} cliente${
+        doGrupo.length > 1 ? 's' : ''
+      })
           </div>
-          <table style="width:100%; border-collapse:collapse; font-size:8.5pt; page-break-inside: auto;">
+          <table style="width:100%; max-width:100%; table-layout:fixed; border-collapse:collapse; font-size:8.5pt; page-break-inside: auto;">
             <thead style="display: table-header-group;">
               <tr style="background:#f1f5f9; text-align:left; page-break-inside: avoid; break-inside: avoid;">
-                <th style="border:1px solid #cbd5e1; padding:5px; width:36px; text-align:center;"> Fila </th>
-                <th style="border:1px solid #cbd5e1; padding:5px;"> Cliente / CPF </th>
-                <th style="border:1px solid #cbd5e1; padding:5px;"> Enquadramento & Envolvidos </th>
-                <th style="border:1px solid #cbd5e1; padding:5px;"> C/C & Visita </th>
-                <th style="border:1px solid #cbd5e1; padding:5px;"> Pendências / Observações </th>
+                <th style="border:1px solid #cbd5e1; padding:5px; width:6%; text-align:center;">Fila</th>
+                <th style="border:1px solid #cbd5e1; padding:5px; width:22%;">Cliente / CPF</th>
+                <th style="border:1px solid #cbd5e1; padding:5px; width:27%;">Enquadramento & Envolvidos</th>
+                <th style="border:1px solid #cbd5e1; padding:5px; width:15%;">C/C & Visita</th>
+                <th style="border:1px solid #cbd5e1; padding:5px; width:30%;">Pendências / Observações</th>
               </tr>
             </thead>
             <tbody>
@@ -1344,7 +1421,9 @@ export default function ModalConformidadePronafA({
       doGrupo.forEach((r) => {
         const it = r.item;
         const envTxt = [
-          it.conjugeNome ? `Cônjuge: ${it.conjugeNome} (${it.cadastroConjugeOk})` : 'Sem Cônjuge',
+          it.conjugeNome
+            ? `Cônjuge: ${it.conjugeNome} (${it.cadastroConjugeOk})`
+            : 'Sem Cônjuge',
           it.procuradorNome
             ? `Proc.: ${it.procuradorNome} (${it.cadastroProcuradorOk})`
             : 'Sem Procurador',
@@ -1352,22 +1431,24 @@ export default function ModalConformidadePronafA({
 
         htmlGrupos += `
           <tr style="page-break-inside: avoid; break-inside: avoid;">
-            <td style="border:1px solid #cbd5e1; padding:5px; text-align:center; font-weight:bold; font-size:9.5pt; color:${estilo.texto};">
+            <td style="border:1px solid #cbd5e1; padding:5px; text-align:center; font-weight:bold; font-size:9.5pt; color:${
+              estilo.texto
+            };">
               ${posGeral++}º
             </td>
-            <td style="border:1px solid #cbd5e1; padding:5px;">
+            <td style="border:1px solid #cbd5e1; padding:5px; word-wrap:break-word; overflow-wrap:break-word;">
               <strong>${it.nomeCliente.toUpperCase()}</strong><br/>
               <span style="color:#475569;">CPF: ${it.cpfCliente || '-'}</span>
             </td>
-            <td style="border:1px solid #cbd5e1; padding:5px;">
+            <td style="border:1px solid #cbd5e1; padding:5px; word-wrap:break-word; overflow-wrap:break-word;">
               <strong>${r.subgrupoDescricao}</strong><br/>
               <span style="color:#475569; font-size:8pt;">${envTxt}</span>
             </td>
-            <td style="border:1px solid #cbd5e1; padding:5px;">
+            <td style="border:1px solid #cbd5e1; padding:5px; word-wrap:break-word; overflow-wrap:break-word;">
               C/C: <strong>${it.contaCorrente || 'Não aberta'}</strong><br/>
               Visitado: <strong>${it.visitado}</strong>
             </td>
-            <td style="border:1px solid #cbd5e1; padding:5px; color:${
+            <td style="border:1px solid #cbd5e1; padding:5px; word-wrap:break-word; overflow-wrap:break-word; color:${
               r.resumoPendencias.length > 0 ? '#b91c1c' : '#15803d'
             };">
               ${
@@ -1390,31 +1471,50 @@ export default function ModalConformidadePronafA({
   <title>&nbsp;</title>
   <style>
     @page {
-      size: A4 landscape;
-      margin: 10mm 12mm !important;
+      size: A4 ${pdfPronafAOrientacao};
+      margin: 12mm 15mm !important;
     }
-    body {
+    html, body {
       font-family: "Segoe UI", Arial, sans-serif;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
       margin: 0;
-      padding: 0;
+      padding: 5mm 7mm;
       color: #0f172a;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    * {
+      box-sizing: border-box;
     }
     @media print {
       .no-print { display: none !important; }
+      html, body {
+        padding: 3mm 5mm !important;
+      }
     }
   </style>
 </head>
 <body>
   <div class="no-print" style="background:#1e293b; color:#fff; padding:10px 16px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; border-radius:6px;">
-    <span>🏆 <strong>${listaAtiva.nomeLista.toUpperCase()} — RELATÓRIO DE PRIORIDADES PRONAF A</strong></span>
+    <span>🏆 <strong>${listaAtiva.nomeLista.toUpperCase()} — RELATÓRIO DE PRIORIDADES PRONAF A (${
+      filtradosPdf.length
+    } cliente${filtradosPdf.length > 1 ? 's' : ''})</strong></span>
     <button onclick="window.print()" style="background:#dc2626; color:#fff; border:none; padding:6px 14px; border-radius:4px; font-weight:bold; cursor:pointer;">🖨️ Imprimir / Salvar PDF</button>
   </div>
-  <div style="border-bottom:2px solid #8B1530; padding-bottom:6px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:flex-end;">
+  <div style="border-bottom:2px solid #8B1530; padding-bottom:6px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:flex-end; gap:10px;">
     <div>
-      <h2 style="margin:0; color:#8B1530; font-size:13pt;">ORDEM DE PRIORIDADE E CONFORMIDADE CADASTRAL — PRONAF A (${listaAtiva.nomeLista})</h2>
-      <span style="font-size:8.5pt; color:#475569;">Classificação Automática por Grupos (1 a 4), Vínculos (Cônjuge/Procurador) e Nível de Restrições</span>
+      <h2 style="margin:0; color:#8B1530; font-size:12.5pt;">ORDEM DE PRIORIDADE E CONFORMIDADE CADASTRAL — PRONAF A (${
+        listaAtiva.nomeLista
+      })</h2>
+      <span style="font-size:8.5pt; color:#475569;">Classificação Automática por Grupos (${pdfPronafAGrupos.join(
+        ', '
+      )}), Vínculos (Cônjuge/Procurador) e Nível de Restrições</span>
     </div>
-    <span style="font-size:8.5pt; font-weight:bold; color:#334155;">Data: ${getHojeBR()} • Total: ${rankingClassificado.length} clientes</span>
+    <span style="font-size:8.5pt; font-weight:bold; color:#334155; white-space:nowrap;">Data: ${getHojeBR()} • Exibindo: ${
+      filtradosPdf.length
+    } de ${rankingClassificado.length}</span>
   </div>
   ${htmlGrupos}
   <script>
@@ -1423,6 +1523,7 @@ export default function ModalConformidadePronafA({
 </body>
 </html>`);
     jan.document.close();
+    setModalPdfPronafAAberto(false);
   };
 
   if (!aberto || typeof document === 'undefined') return null;
@@ -1742,7 +1843,7 @@ export default function ModalConformidadePronafA({
 
             <button
               type="button"
-              onClick={exportarRelatorioPrioridadesPDF}
+              onClick={() => setModalPdfPronafAAberto(true)}
               style={{
                 width: 'auto',
                 height: '32px',
@@ -1755,6 +1856,7 @@ export default function ModalConformidadePronafA({
                 color: '#dc2626',
                 cursor: 'pointer',
               }}
+              title="Configurar filtros de Grupos (1 a 4) e Situações para exportar o PDF em A4"
             >
               🖨️ PDF
             </button>
@@ -2644,6 +2746,424 @@ export default function ModalConformidadePronafA({
           </div>
         )}
       </div>
+
+      {/* SUB-MODAL: CONFIGURAR FILTROS DE EXPORTAÇÃO PDF DA CONFORMIDADE PRONAF A */}
+      {modalPdfPronafAAberto && (
+        <div
+          onClick={() => setModalPdfPronafAAberto(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.65)',
+            zIndex: 20000015,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#ffffff',
+              width: '94%',
+              maxWidth: '640px',
+              borderRadius: '10px',
+              borderTop: '5px solid #8B1530',
+              padding: '20px 22px',
+              boxShadow: '0 20px 45px rgba(0,0,0,0.38)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                borderBottom: '1px solid #e2e8f0',
+                paddingBottom: '10px',
+              }}
+            >
+              <div>
+                <h3
+                  style={{
+                    margin: 0,
+                    fontSize: '15px',
+                    color: '#8B1530',
+                    fontWeight: 800,
+                  }}
+                >
+                  🖨️ CONFIGURAR EXPORTAÇÃO PDF — CONFORMIDADE PRONAF A
+                </h3>
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  Selecione os Grupos de Prioridade e as situações cadastrais que
+                  deseja incluir na impressão A4.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalPdfPronafAAberto(false)}
+                style={{
+                  width: 'auto',
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '22px',
+                  color: '#64748b',
+                  cursor: 'pointer',
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* 1. GRUPOS DE PRIORIDADE (1 A 4) */}
+            <div
+              style={{
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: '8px',
+                padding: '10px 12px',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '8px',
+                }}
+              >
+                <strong style={{ fontSize: '11.5px', color: '#334155' }}>
+                  1. Grupos de Prioridade a Incluir no Relatório:
+                </strong>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPdfPronafAGrupos(
+                      pdfPronafAGrupos.length === 4 ? [] : [1, 2, 3, 4]
+                    )
+                  }
+                  style={{
+                    width: 'auto',
+                    background: 'none',
+                    border: 'none',
+                    color: '#8B1530',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    padding: 0,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {pdfPronafAGrupos.length === 4
+                    ? 'Desmarcar Todos'
+                    : 'Marcar Todos'}
+                </button>
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                }}
+              >
+                {(
+                  [
+                    {
+                      num: 1 as const,
+                      label: '🟢 Grupo 1 — Cliente com cadastro OK e sem REFIN',
+                      cor: '#15803d',
+                    },
+                    {
+                      num: 2 as const,
+                      label:
+                        '🔵 Grupo 2 — Cliente com cadastro para renovar e sem REFIN',
+                      cor: '#1d4ed8',
+                    },
+                    {
+                      num: 3 as const,
+                      label: '🟡 Grupo 3 — Cadastro ainda não elaborado',
+                      cor: '#b45309',
+                    },
+                    {
+                      num: 4 as const,
+                      label:
+                        '🔴 Grupo 4 — Com restrição grave (REFIN / Bancos / Pend. Financeira)',
+                      cor: '#dc2626',
+                    },
+                  ]
+                ).map((g) => {
+                  const qtdNoGrupo = rankingClassificado.filter(
+                    (r) => r.grupoNumero === g.num
+                  ).length;
+                  return (
+                    <label
+                      key={g.num}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        fontSize: '11.5px',
+                        fontWeight: 700,
+                        color: g.cor,
+                        cursor: 'pointer',
+                        margin: 0,
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        background: pdfPronafAGrupos.includes(g.num)
+                          ? '#ffffff'
+                          : 'transparent',
+                        border: '1px solid #e2e8f0',
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={pdfPronafAGrupos.includes(g.num)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setPdfPronafAGrupos([
+                                ...pdfPronafAGrupos,
+                                g.num,
+                              ]);
+                            } else {
+                              setPdfPronafAGrupos(
+                                pdfPronafAGrupos.filter((x) => x !== g.num)
+                              );
+                            }
+                          }}
+                          style={{ width: '14px', height: '14px', margin: 0 }}
+                        />
+                        {g.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '10.5px',
+                          color: '#64748b',
+                          fontWeight: 800,
+                        }}
+                      >
+                        ({qtdNoGrupo})
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 2. FILTROS DISCRETOS DE SITUAÇÃO CADASTRAL, CONTA CORRENTE, VISITA E PAINEL */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '10px',
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    color: '#334155',
+                    display: 'block',
+                    marginBottom: '4px',
+                  }}
+                >
+                  2. Status no Painel / Kanban:
+                </label>
+                <select
+                  value={pdfPronafAFiltroPainel}
+                  onChange={(e) =>
+                    setPdfPronafAFiltroPainel(
+                      e.target.value as
+                        | 'TODOS'
+                        | 'NAO_CADASTRADOS'
+                        | 'JA_CADASTRADOS'
+                    )
+                  }
+                  style={{ height: '32px', fontSize: '11.5px', fontWeight: 700 }}
+                >
+                  <option value="TODOS">
+                    Todos os Clientes (Cadastrados e Pendentes)
+                  </option>
+                  <option value="NAO_CADASTRADOS">
+                    🚀 Somente Pendentes de Iniciar no Painel
+                  </option>
+                  <option value="JA_CADASTRADOS">
+                    ✅ Somente Já Cadastrados no Painel / Kanban
+                  </option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    color: '#334155',
+                    display: 'block',
+                    marginBottom: '4px',
+                  }}
+                >
+                  3. Situação da Conta Corrente (C/C):
+                </label>
+                <select
+                  value={pdfPronafAFiltroCc}
+                  onChange={(e) =>
+                    setPdfPronafAFiltroCc(
+                      e.target.value as 'TODOS' | 'COM_CC' | 'SEM_CC'
+                    )
+                  }
+                  style={{ height: '32px', fontSize: '11.5px', fontWeight: 700 }}
+                >
+                  <option value="TODOS">Todas (Com C/C e Sem C/C)</option>
+                  <option value="COM_CC">🏦 Somente Clientes COM C/C Aberta</option>
+                  <option value="SEM_CC">
+                    ⚠️ Somente Clientes SEM C/C (Falta Abrir)
+                  </option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    color: '#334155',
+                    display: 'block',
+                    marginBottom: '4px',
+                  }}
+                >
+                  4. Situação da Visita Técnica:
+                </label>
+                <select
+                  value={pdfPronafAFiltroVisita}
+                  onChange={(e) =>
+                    setPdfPronafAFiltroVisita(
+                      e.target.value as
+                        | 'TODOS'
+                        | 'VISITADOS'
+                        | 'NAO_VISITADOS'
+                    )
+                  }
+                  style={{ height: '32px', fontSize: '11.5px', fontWeight: 700 }}
+                >
+                  <option value="TODOS">Todos (Visitados e Não Visitados)</option>
+                  <option value="VISITADOS">✅ Somente Visitados (SIM)</option>
+                  <option value="NAO_VISITADOS">
+                    ⏳ Somente Não Visitados / Pendentes
+                  </option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    color: '#334155',
+                    display: 'block',
+                    marginBottom: '4px',
+                  }}
+                >
+                  5. Orientação da Folha A4:
+                </label>
+                <select
+                  value={pdfPronafAOrientacao}
+                  onChange={(e) =>
+                    setPdfPronafAOrientacao(
+                      e.target.value as 'landscape' | 'portrait'
+                    )
+                  }
+                  style={{ height: '32px', fontSize: '11.5px', fontWeight: 700 }}
+                >
+                  <option value="landscape">
+                    📄 A4 Paisagem (Horizontal — Recomendado)
+                  </option>
+                  <option value="portrait">📄 A4 Retrato (Vertical)</option>
+                </select>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                borderTop: '1px solid #e2e8f0',
+                paddingTop: '12px',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setPdfPronafAGrupos([1, 2, 3, 4]);
+                  setPdfPronafACadTitular(['OK', 'A_RENOVAR', 'A_ELABORAR']);
+                  setPdfPronafAFiltroPainel('TODOS');
+                  setPdfPronafAFiltroCc('TODOS');
+                  setPdfPronafAFiltroVisita('TODOS');
+                }}
+                style={{
+                  width: 'auto',
+                  padding: '7px 12px',
+                  fontSize: '11px',
+                  background: '#f1f5f9',
+                  color: '#475569',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                🧹 Restaurar Padrão
+              </button>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setModalPdfPronafAAberto(false)}
+                  style={{
+                    width: 'auto',
+                    padding: '8px 16px',
+                    fontSize: '12px',
+                    background: '#e2e8f0',
+                    color: '#334155',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={exportarRelatorioPrioridadesPDF}
+                  style={{
+                    width: 'auto',
+                    padding: '8px 20px',
+                    fontSize: '12.5px',
+                    fontWeight: 800,
+                    background: '#8B1530',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  🖨️ Gerar PDF A4 Agora
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SUB-MODAL: COLAR LISTA EM LOTE */}
       {modalColarAberto && (

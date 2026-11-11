@@ -1442,18 +1442,36 @@ export default function ModuloRelatorioCarteira({
   <style>
     @page {
       size: A4 landscape;
-      margin: 10mm 12mm !important;
+      margin: 12mm 15mm !important;
     }
-    body {
+    html, body {
       font-family: "Segoe UI", Arial, sans-serif;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
       margin: 0;
-      padding: 0;
+      padding: 5mm 7mm;
       color: #0f172a;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
+    * {
+      box-sizing: border-box;
+    }
+    table {
+      width: 100% !important;
+      max-width: 100% !important;
+      table-layout: fixed;
+    }
+    th, td {
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
     @media print {
       .no-print { display: none !important; }
+      html, body {
+        padding: 3mm 5mm !important;
+      }
     }
   </style>
 </head>
