@@ -29,6 +29,8 @@ export interface ConfiguracaoPerfilPasta {
   paOuImovelNome: string;
   imoveisExtraidosPdf?: ImovelExtraidoProjetoPdf[];
   envolveAnimaisNoInvestimento?: boolean;
+  categoriasFaltandoViti?: Set<CategoriaDocPasta>;
+  statusContaConsolidada?: 'OK' | 'FALTA' | 'NAO_LIDO';
 }
 
 export type CategoriaDocPasta =
@@ -165,10 +167,58 @@ export function isArquivoParecerGerencialReal(nomeArquivo: string): boolean {
   return true;
 }
 
-// Extrai o nome do imóvel (ex: FAZENDA SÃO JOSÉ, SÍTIO BOA VISTA, LOTE 12, GLEBA B) de dentro do nome do arquivo
+// Verifica se um candidato a nome de imóvel é na verdade o nome do Titular, Cônjuge, Procurador, Avalista ou Projetista
+export function ehNomeDePessoaEnvolvida(
+  candidato: string,
+  nomesPessoasIgnorar?: string[]
+): boolean {
+  const candNorm = removerAcentos(candidato || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!candNorm) return true;
+
+  // Se tiver prefixo explícito de propriedade rural, nunca é nome de pessoa
+  if (
+    /\b(FAZENDA|FAZ|SITIO|CHACARA|LOTEAMENTO|LOTE|GLEBA|ASSENTAMENTO|ESTANCIA|GRANJA|RANCHO)\b/.test(
+      candNorm
+    ) ||
+    /^P\s*A\b/.test(candNorm)
+  ) {
+    return false;
+  }
+
+  if (!nomesPessoasIgnorar || nomesPessoasIgnorar.length === 0) return false;
+
+  for (const pessoa of nomesPessoasIgnorar) {
+    const pNorm = removerAcentos(pessoa || '')
+      .toUpperCase()
+      .replace(/\(.*?\)/g, '')
+      .replace(/[^A-Z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!pNorm || pNorm.length < 3) continue;
+    const primNome = pNorm.split(/\s+/)[0];
+    if (
+      candNorm === pNorm ||
+      candNorm === primNome ||
+      pNorm.startsWith(candNorm) ||
+      candNorm.startsWith(pNorm)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Extrai o nome do imóvel (ex: FAZ. DOIS IRMÃOS, FAZENDA SÃO JOSÉ, SÍTIO BOA VISTA, LOTE 12, GLEBA B)
+// ignorando estritamente nomes de titulares/envolvidos!
 export function extrairNomeImovelDoNomeArquivo(
   nomeArquivo: string,
-  imoveisConhecidos?: ImovelExtraidoProjetoPdf[]
+  imoveisConhecidos?: ImovelExtraidoProjetoPdf[],
+  nomesPessoasIgnorar?: string[]
 ): string {
   const semExt = nomeArquivo.replace(/\.[^/.]+$/, '');
   const norm = removerAcentos(semExt)
@@ -177,27 +227,42 @@ export function extrairNomeImovelDoNomeArquivo(
     .replace(/\s+/g, ' ')
     .trim();
 
+  // 1. Verifica se cita algum dos imóveis lidos do PDF do Projeto
   if (imoveisConhecidos && imoveisConhecidos.length > 0) {
     for (const im of imoveisConhecidos) {
       const nIm = removerAcentos(im.nome).toUpperCase().trim();
-      if (nIm.length >= 4 && norm.includes(nIm)) {
+      const nImSemPonto = nIm.replace(/\./g, '').replace(/\s+/g, ' ');
+      const normSemPonto = norm.replace(/\./g, '').replace(/\s+/g, ' ');
+      if (
+        nIm.length >= 4 &&
+        (norm.includes(nIm) || normSemPonto.includes(nImSemPonto)) &&
+        !ehNomeDePessoaEnvolvida(im.nome, nomesPessoasIgnorar)
+      ) {
         return im.nome.toUpperCase().trim();
       }
     }
   }
 
+  // 2. Procura padrões clássicos de nome de imóvel rural (suporta "FAZ. DOIS IRMAOS", "SÍT. X", etc.)
   const matchImovel = norm.match(
-    /\b((?:FAZENDA|FAZ\.?|SITIO|CHACARA|LOTEAMENTO|LOTE|GLEBA|P\.?\s*A\.?|ASSENTAMENTO)\s+[A-Z0-9\s]{2,35}?)(?:\s+ASSINADO|\s+COMPRESSED|\s+MATRICULA|\s+CPF|\s*-|$)/i
+    /\b((?:FAZENDA|FAZ\.?|SITIO|SIT\.?|CHACARA|CHAC\.?|LOTEAMENTO|LOTE|GLEBA|P\.?\s*A\.?|ASSENTAMENTO|ESTANCIA|GRANJA)\s+[A-Z0-9.\s]{2,38}?)(?:\s+ASSINADO|\s+COMPRESSED|\s+MATRICULA|\s+CPF|\s*-|$)/i
   );
   if (matchImovel && matchImovel[1]) {
-    return matchImovel[1].trim();
+    const extraido = matchImovel[1].replace(/\s+/g, ' ').trim();
+    if (!ehNomeDePessoaEnvolvida(extraido, nomesPessoasIgnorar)) {
+      return extraido;
+    }
   }
 
+  // 3. Se for "DOC. DO IMÓVEL - XXXXX", só aceita XXXXX se NÃO for nome de pessoa envolvida!
   const matchDocImovel = norm.match(
-    /(?:DOC(?:UMENTACAO|\.)?\s+(?:DO\s+)?IMOVEL)\s*[-–:]?\s*([A-Z0-9\s]{3,35})/i
+    /(?:DOC(?:UMENTACAO|\.)?\s+(?:DO\s+)?IMOVEL)\s*[-–:]?\s*([A-Z0-9.\s]{3,35})/i
   );
   if (matchDocImovel && matchDocImovel[1]) {
-    return matchDocImovel[1].replace(/\bASSINADO\b/g, '').trim();
+    const cand = matchDocImovel[1].replace(/\bASSINADO\b/g, '').trim();
+    if (!ehNomeDePessoaEnvolvida(cand, nomesPessoasIgnorar)) {
+      return cand;
+    }
   }
 
   return '';
@@ -264,7 +329,8 @@ export function classificarArquivoUniversal(
 
   const nomeImovelEsp = extrairNomeImovelDoNomeArquivo(
     nomeArquivo,
-    imoveisConhecidos
+    imoveisConhecidos,
+    [primeiroNomeTitular, primeiroNomeConjuge]
   );
 
   if (ext === 'KML' || ext === 'KMZ') {
@@ -417,7 +483,12 @@ export function classificarArquivoUniversal(
     );
   }
 
-  if (miolo.includes('SOCIOAMBIENTAL') || miolo.includes('SOCIO AMBIENTAL')) {
+  if (
+    miolo.includes('SOCIOAMBIENTAL') ||
+    miolo.includes('SOCIO AMBIENTAL') ||
+    miolo.includes('CONFORMIDADE SOCIO') ||
+    /\bCERT\.?\s*SOCIO\b/.test(miolo)
+  ) {
     if (
       miolo.includes('SEM KML') ||
       miolo.includes('S KML') ||
@@ -1315,9 +1386,29 @@ function formatarNomePadronizado(
     return `${prefNum} ${prefViti}${rotulo} - ${proj}${ext}`;
   }
 
-  const nomeImovelArq =
-    item.nomeImovelEspecifico ||
-    extrairNomeImovelDoNomeArquivo(item.nomeOriginal, cfg.imoveisExtraidosPdf);
+  const listaPessoasIgnorar = [
+    nomes.titular,
+    nomes.conjuge,
+    nomes.procurador,
+    nomes.avalista,
+    cfg.titularNome,
+    cfg.conjugeNome,
+    cfg.procuradorNome,
+    cfg.avalistaNome,
+    cfg.projetistaNome,
+  ];
+
+  const nomeImovelArqValidado =
+    item.nomeImovelEspecifico &&
+    !ehNomeDePessoaEnvolvida(item.nomeImovelEspecifico, listaPessoasIgnorar)
+      ? item.nomeImovelEspecifico
+      : extrairNomeImovelDoNomeArquivo(
+          item.nomeOriginal,
+          cfg.imoveisExtraidosPdf,
+          listaPessoasIgnorar
+        );
+
+  const nomeImovelArq = nomeImovelArqValidado;
 
   if (
     CATEGORIAS_KIT_IMOVEL.has(item.categoria) ||
@@ -1524,9 +1615,30 @@ export function calcularTodosDestinosDoArquivo(
     imoveisBeneficiados.length > 1 ||
     (imoveisBeneficiados.length === 0 && temMultiplosImoveisGeral);
 
+  const listaPessoasIgnorarDest = [
+    nomes.titular,
+    nomes.conjuge,
+    nomes.procurador,
+    nomes.avalista,
+    cfg.titularNome,
+    cfg.conjugeNome,
+    cfg.procuradorNome,
+    cfg.avalistaNome,
+    cfg.projetistaNome,
+  ];
+
+  const nomeImovelValidadoDest =
+    item.nomeImovelEspecifico &&
+    !ehNomeDePessoaEnvolvida(item.nomeImovelEspecifico, listaPessoasIgnorarDest)
+      ? item.nomeImovelEspecifico
+      : extrairNomeImovelDoNomeArquivo(
+          item.nomeOriginal,
+          imoveisLidos,
+          listaPessoasIgnorarDest
+        );
+
   const nomeImovelEspecificoArq = (
-    item.nomeImovelEspecifico ||
-    extrairNomeImovelDoNomeArquivo(item.nomeOriginal, imoveisLidos) ||
+    nomeImovelValidadoDest ||
     imoveisLidos[0]?.nome ||
     cfg.paOuImovelNome ||
     tit
@@ -1930,7 +2042,11 @@ export function gerarLembretesTxtPorPerfil(params: {
       add(`8. CONTRATO DE ASSESSORIA - ${tit}.txt`);
     if (!categoriasPresentes.has('ITEM_CONSOLIDADAS'))
       add(`9. DECLARAÇÕES CONSOLIDADAS - ${tit}.txt`);
-    add('9. VERIFICAR C-C NA CONSOLIDADA.txt');
+    if (cfg.statusContaConsolidada === 'FALTA') {
+      add('9. FALTA CONTA CORRENTE NA CONSOLIDADA.txt');
+    } else if (cfg.statusContaConsolidada !== 'OK') {
+      add('9. VERIFICAR C-C NA CONSOLIDADA.txt');
+    }
     if (!categoriasPresentes.has('ITEM_DEC_AMBIENTAIS'))
       add(`10. DEC. AMBIENTAIS - ${tit}.txt`);
     if (!categoriasPresentes.has('ITEM_DEC_REG_AMBIENTAL'))
@@ -2058,7 +2174,11 @@ export function gerarLembretesTxtPorPerfil(params: {
     if (!categoriasPresentes.has('ITEM_CONSOLIDADAS')) {
       add(`0. DECLARAÇÕES CONSOLIDADAS - ${tit}.txt`);
     }
-    add('0. VERIFICAR C-C NA CONSOLIDADA.txt');
+    if (cfg.statusContaConsolidada === 'FALTA') {
+      add('0. FALTA CONTA CORRENTE NA CONSOLIDADA.txt');
+    } else if (cfg.statusContaConsolidada !== 'OK') {
+      add('0. VERIFICAR C-C NA CONSOLIDADA.txt');
+    }
 
     if (isPronafV) {
       if (!categoriasPresentes.has('ITEM_CAF')) add(`0. CAF - ${tit}.txt`);
@@ -2237,7 +2357,11 @@ export function gerarLembretesTxtPorPerfil(params: {
     if (!categoriasPresentes.has('ITEM_CONSOLIDADAS')) {
       add(`0. DECLARAÇÕES CONSOLIDADAS - ${tit}.txt`);
     }
-    add('0. VERIFICAR C-C NA CONSOLIDADA.txt');
+    if (cfg.statusContaConsolidada === 'FALTA') {
+      add('0. FALTA CONTA CORRENTE NA CONSOLIDADA.txt');
+    } else if (cfg.statusContaConsolidada !== 'OK') {
+      add('0. VERIFICAR C-C NA CONSOLIDADA.txt');
+    }
 
     if (!categoriasPresentes.has('ITEM_SOLICITACAO_LIMITE')) {
       add(`0. SOLICITAÇÃO DE ${cfg.modalidadeLimite} - ${tit}.txt`);
@@ -2335,6 +2459,42 @@ export function gerarLembretesTxtPorPerfil(params: {
   } else if (cfg.escopo === 'COMBO_DERIVADA_E_LIMITE') {
     gerarTxtsPastaDerivada(cfg.modalidadeDerivada);
     gerarTxtsPastaLimite(cfg.modalidadeLimite);
+  }
+
+  // ITEM 5: Se houver documentos assinados digitalmente na pasta sem o respectivo relatório VITI,
+  // gera o lembrete .TXT seguindo exatamente a pasta e a numeração do arquivo de origem!
+  if (cfg.categoriasFaltandoViti && cfg.categoriasFaltandoViti.size > 0) {
+    cfg.categoriasFaltandoViti.forEach((catSemViti) => {
+      const destinosViti = calcularTodosDestinosDoArquivo(
+        {
+          nomeOriginal: 'DOCUMENTO.pdf',
+          extensao: 'txt',
+          categoria: catSemViti,
+          isViti: true,
+        },
+        cfg
+      );
+
+      destinosViti.forEach((dest) => {
+        // Evita duplicar lembrete de VITI dentro da subpasta de cópia socioambiental se já colocou na pasta principal
+        if (dest.pastaRelativa.includes('CERTIFICAÇÃO SOCIOAMBIENTAL')) return;
+        const nomeTxtViti = dest.nomeArquivoFinal
+          .replace(/\bVITI\s*-\s*/i, 'FALTA VITI - ')
+          .replace(/\.pdf$/i, '.txt');
+        if (
+          !lembretes.some(
+            (l) =>
+              l.pastaRelativa === dest.pastaRelativa &&
+              l.nomeArquivoTxt === nomeTxtViti
+          )
+        ) {
+          lembretes.push({
+            pastaRelativa: dest.pastaRelativa,
+            nomeArquivoTxt: nomeTxtViti,
+          });
+        }
+      });
+    });
   }
 
   return lembretes;

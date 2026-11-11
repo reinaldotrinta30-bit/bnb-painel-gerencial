@@ -8,10 +8,12 @@ import ModuloKanban from '@/components/ModuloKanban';
 import PainelConsultasRapidasAgrupadas from '@/components/ferramentas/PainelConsultasRapidasAgrupadas';
 import {
   executarAuditoriaCompletaDosPdfsDaPasta,
+  executarOcrEmPdfEscaneado,
   ResultadoAuditoriaPastaPdf,
   limparCacheDadosProjetoParecer,
   salvarDadosExtraidosParaParecer,
 } from '@/lib/auditorInteligentePdfPasta';
+import ModalScriptCopilotDocumento from '@/components/ferramentas/ModalScriptCopilotDocumento';
 import {
   PorteOrganizador,
   EscopoOperacaoPasta,
@@ -78,6 +80,11 @@ interface ModalOrganizadorPastasClienteProps {
   ) => void;
 }
 
+interface OrigemFisicaArquivo {
+  subpasta?: string;
+  nomeOriginal: string;
+}
+
 interface ArquivoMapeadoItem {
   id: string;
   nomeOriginal: string;
@@ -87,7 +94,44 @@ interface ArquivoMapeadoItem {
   isViti: boolean;
   origemGaveta?: boolean;
   origemSubpasta?: string;
+  origensTodas?: OrigemFisicaArquivo[];
+  hashBinario?: string;
   subtipoAmbientalExtra?: string;
+  nomeImovelEspecifico?: string;
+}
+
+// Calcula uma impressão digital binária ultrarrápida (Tamanho + Hash de amostras do início, meio e fim do arquivo)
+// Permite descobrir com 100% de certeza se dois arquivos são o mesmo documento (mesmo com nomes diferentes)!
+async function calcularHashBinarioRapido(file: File): Promise<string> {
+  try {
+    const size = file.size || 0;
+    if (size === 0) return `EMPTY_${file.name}`;
+    const chunkLen = Math.min(4096, size);
+    const midStart = Math.max(0, Math.floor(size / 2) - Math.floor(chunkLen / 2));
+    const endStart = Math.max(0, size - chunkLen);
+
+    const [bufIni, bufMeio, bufFim] = await Promise.all([
+      file.slice(0, chunkLen).arrayBuffer(),
+      file.slice(midStart, midStart + chunkLen).arrayBuffer(),
+      file.slice(endStart, size).arrayBuffer(),
+    ]);
+
+    let hash = 2166136261;
+    const acumular = (buf: ArrayBuffer) => {
+      const view = new Uint8Array(buf);
+      for (let i = 0; i < view.length; i += 4) {
+        hash ^= view[i];
+        hash = Math.imul(hash, 16777619);
+      }
+    };
+    acumular(bufIni);
+    acumular(bufMeio);
+    acumular(bufFim);
+
+    return `SZ_${size}_H_${(hash >>> 0).toString(16)}`;
+  } catch {
+    return `FALLBACK_${file.size}_${file.lastModified}`;
+  }
 }
 
 const DB_NAME_COFRE = 'bnb_v2_cofre_coringas_db';
@@ -425,6 +469,13 @@ export default function ModalOrganizadorPastasCliente({
   const [avalistaNome, setAvalistaNome] = useState('');
   const [projetistaNome, setProjetistaNome] = useState('ZEZÃO');
   const [paNome, setPaNome] = useState('P.A LAGO DA CARNAÚBA');
+  const [listaImoveisNomes, setListaImoveisNomes] = useState<string[]>([
+    'P.A LAGO DA CARNAÚBA',
+  ]);
+  const [modalGerenciarImoveisAberto, setModalGerenciarImoveisAberto] =
+    useState(false);
+  const [imoveisEditadosManualmente, setImoveisEditadosManualmente] =
+    useState(false);
   const [gerarTxtsLembretesFaltantes, setGerarTxtsLembretesFaltantes] =
     useState(true);
 
@@ -447,6 +498,125 @@ export default function ModalOrganizadorPastasCliente({
   const [auditoriaPdf, setAuditoriaPdf] =
     useState<ResultadoAuditoriaPastaPdf | null>(null);
   const [auditandoPdfs, setAuditandoPdfs] = useState(false);
+
+  // ITEM 1: Estados do Modal de Visualização de Documento (Lupinha 🔎) por cima do Organizador
+  const [arqVisualizandoId, setArqVisualizandoId] = useState<string | null>(
+    null
+  );
+  const [urlArqVisualizando, setUrlArqVisualizando] = useState<string | null>(
+    null
+  );
+  const [modalCopilotOrgAberto, setModalCopilotOrgAberto] = useState(false);
+  const [modalDocMinimizado, setModalDocMinimizado] = useState(false);
+  const [textosOcrOrg, setTextosOcrOrg] = useState<Record<string, string>>({});
+  const [executandoOcrOrg, setExecutandoOcrOrg] = useState(false);
+  const [msgOcrOrg, setMsgOcrOrg] = useState('');
+
+  const arqVisualizandoAtual = useMemo(
+    () => arquivosMapeados.find((a) => a.id === arqVisualizandoId) || null,
+    [arquivosMapeados, arqVisualizandoId]
+  );
+
+  useEffect(() => {
+    if (!arqVisualizandoAtual) {
+      setUrlArqVisualizando(null);
+      return;
+    }
+    const url = URL.createObjectURL(arqVisualizandoAtual.fileObj);
+    setUrlArqVisualizando(url);
+    return () => URL.revokeObjectURL(url);
+  }, [arqVisualizandoAtual]);
+
+  const abrirLocalArquivoNoOrganizador = async (arq: ArquivoMapeadoItem) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(arq.nomeOriginal).catch(() => {});
+    }
+    if (!dirHandleRoot) return;
+    try {
+      let pastaAlvo = dirHandleRoot;
+      if (arq.origemSubpasta) {
+        const partes = arq.origemSubpasta.split('/').filter(Boolean);
+        for (const p of partes) {
+          pastaAlvo = await pastaAlvo.getDirectoryHandle(p, { create: false });
+        }
+      }
+      const win = window as any;
+      if (win.showOpenFilePicker) {
+        await win.showOpenFilePicker({ startIn: pastaAlvo, multiple: false });
+      }
+    } catch {
+      // Cancelado pelo usuário
+    }
+  };
+
+  const apagarArquivoDiretoPeloOrganizador = async (arq: ArquivoMapeadoItem) => {
+    if (!dirHandleRoot) return;
+    if (
+      !window.confirm(
+        `🗑️ APAGAR DOCUMENTO\n\nDeseja excluir permanentemente o arquivo "${arq.nomeOriginal}" da pasta do cliente?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const origens = arq.origensTodas || [
+        { subpasta: arq.origemSubpasta, nomeOriginal: arq.nomeOriginal },
+      ];
+      for (const orig of origens) {
+        try {
+          const handleSub = await obterSubpastaHandle(
+            dirHandleRoot,
+            orig.subpasta || ''
+          );
+          await handleSub.removeEntry(orig.nomeOriginal);
+        } catch {
+          // Ignora
+        }
+      }
+      setArqVisualizandoId(null);
+      await escanearHandleDaPasta(dirHandleRoot);
+    } catch {
+      alert('❌ Não foi possível excluir o arquivo.');
+    }
+  };
+
+  const rodarOcrNoOrganizador = async (arq: ArquivoMapeadoItem) => {
+    if (executandoOcrOrg) return;
+    setExecutandoOcrOrg(true);
+    setMsgOcrOrg(`⏳ Lendo OCR de "${arq.nomeOriginal}"...`);
+    try {
+      const txtOcr = await executarOcrEmPdfEscaneado(arq.fileObj, (m) =>
+        setMsgOcrOrg(m)
+      );
+      if (!txtOcr || txtOcr.trim().length < 20) {
+        alert('⚠️ Não foi possível extrair texto suficiente da imagem.');
+        return;
+      }
+      const novoMapa = { ...textosOcrOrg, [arq.nomeOriginal]: txtOcr };
+      setTextosOcrOrg(novoMapa);
+      const resAud = await executarAuditoriaCompletaDosPdfsDaPasta({
+        arquivos: arquivosMapeados.map((m) => ({
+          fileObj: m.fileObj,
+          categoria: converterCategoriaParaAuditorPdf(m.categoria),
+          isViti: m.isViti,
+          nomeOriginal: m.nomeOriginal,
+        })),
+        titularNome: nomesCurtos.titular,
+        conjugeNome: nomesCurtos.conjuge,
+        paEsperado: paNome,
+        porteSelecionado: portePerfil,
+        escopoSelecionado: cfgPerfil.escopo,
+        modalidadeDerivada,
+        modalidadeLimite,
+        textosOcrOverride: novoMapa,
+      });
+      setAuditoriaPdf(resAud);
+      alert(`✅ OCR concluído e auditoria atualizada!`);
+    } finally {
+      setExecutandoOcrOrg(false);
+      setMsgOcrOrg('');
+    }
+  };
 
   // Gaveta de Coringas na Nuvem
   const [coringasSalvos, setCoringasSalvos] = useState<
@@ -558,9 +728,51 @@ export default function ModalOrganizadorPastasCliente({
       procuradorNome,
       avalistaNome,
       projetistaNome,
-      paOuImovelNome: paNome,
-      imoveisExtraidosPdf:
-        auditoriaPdf?.dadosProjetoParaParecer?.imoveisVinculados,
+      paOuImovelNome:
+        listaImoveisNomes.filter((x) => x.trim())[0] || paNome,
+      imoveisExtraidosPdf: (() => {
+        const nomesValidos = listaImoveisNomes
+          .map((n) => n.toUpperCase().trim())
+          .filter(Boolean);
+        const lidosPdf =
+          auditoriaPdf?.dadosProjetoParaParecer?.imoveisVinculados || [];
+        if (nomesValidos.length > 0) {
+          return nomesValidos.map((nomeIm) => {
+            const achado = lidosPdf.find(
+              (lp) =>
+                removerAcentos(lp.nome).toUpperCase().trim() ===
+                removerAcentos(nomeIm).toUpperCase().trim()
+            );
+            return (
+              achado || {
+                nome: nomeIm,
+                municipioUf: '',
+                areaHa: '',
+                realizaInversao: true,
+                compoeGarantia:
+                  escopoPasta === 'LIMITE_PURO' ||
+                  escopoPasta === 'COMBO_DERIVADA_E_LIMITE' ||
+                  garantiaDerivada === 'LCGH_LCGA',
+              }
+            );
+          });
+        }
+        return lidosPdf;
+      })(),
+      categoriasFaltandoViti: (() => {
+        const faltam = new Set<CategoriaDocPasta>();
+        const assinadosStr = auditoriaPdf?.arquivosComAssinaturaDigital || [];
+        arquivosMapeados.forEach((arq) => {
+          if (arq.isViti || !CATEGORIAS_QUE_ACEITAM_VITI.has(arq.categoria))
+            return;
+          const faltaNesse = assinadosStr.some(
+            (s) => s.includes(arq.nomeOriginal) && s.includes('FALTA VITI')
+          );
+          if (faltaNesse) faltam.add(arq.categoria);
+        });
+        return faltam;
+      })(),
+      statusContaConsolidada: auditoriaPdf?.statusContaConsolidada,
     }),
     [
       portePerfil,
@@ -575,7 +787,9 @@ export default function ModalOrganizadorPastasCliente({
       avalistaNome,
       projetistaNome,
       paNome,
+      listaImoveisNomes,
       auditoriaPdf,
+      arquivosMapeados,
     ]
   );
 
@@ -936,7 +1150,7 @@ export default function ModalOrganizadorPastasCliente({
         titDetectado = matchJaOrg[1].trim();
       }
       const matchPa = up.match(
-        /(P\.?A\.?\s+[A-ZÀ-Ú0-9 ]+?)(?:_COMPRESSED|_ASSINADO|\.PDF|$)/i
+        /((?:P\.?A\.?|FAZENDA|FAZ\.?|SITIO|SÍTIO|CHACARA|CHÁCARA|GLEBA|LOTE)\s+[A-ZÀ-Ú0-9 ]+?)(?:_COMPRESSED|_ASSINADO|\.PDF|\s*-|$)/i
       );
       if (matchPa && matchPa[1]) {
         paDetectado = matchPa[1].replace(/^PA\s+/i, 'P.A ').trim();
@@ -1005,7 +1219,32 @@ export default function ModalOrganizadorPastasCliente({
     if (titFinal) setTitularNome(titFinal);
     setConjugeNome(conjFinal);
     setProcuradorNome(procFinal);
-    if (paDetectado) setPaNome(paDetectado);
+    const imoveisPelosNomes = Array.from(
+      new Set(
+        files
+          .map((f) => {
+            if (!f || !f.name) return '';
+            const m = removerAcentos(f.name)
+              .toUpperCase()
+              .replace(/_/g, ' ')
+              .match(
+                /\b((?:FAZENDA|FAZ\.?|SITIO|CHACARA|LOTEAMENTO|LOTE|GLEBA|P\.?\s*A\.?)\s+[A-Z0-9\s]{2,32}?)(?:\s+ASSINADO|\s+COMPRESSED|\s+MATRICULA|\.PDF|\s*-|$)/i
+              );
+            return m && m[1]
+              ? m[1].replace(/^PA\s+/i, 'P.A ').replace(/\s+/g, ' ').trim()
+              : '';
+          })
+          .filter(Boolean)
+      )
+    );
+
+    if (imoveisPelosNomes.length > 0) {
+      setPaNome(imoveisPelosNomes[0]);
+      setListaImoveisNomes(imoveisPelosNomes);
+    } else if (paDetectado) {
+      setPaNome(paDetectado);
+      setListaImoveisNomes([paDetectado]);
+    }
     if (projDetectado) setProjetistaNome(projDetectado);
 
     let escopoFinal = escopoPasta;
@@ -1037,9 +1276,11 @@ export default function ModalOrganizadorPastasCliente({
     };
   };
 
-  // Blindado: aceita tanto Array<{ file: File; origemSubpasta?: string }> quanto File[]
+  // Blindado: deduplica por Impressão Digital Binária (hashBinario + tamanho) e evita falsos imóveis com nome do titular!
   const processarArquivosLidos = (
-    entradasBrutas: Array<{ file: File; origemSubpasta?: string } | File>,
+    entradasBrutas: Array<
+      { file: File; origemSubpasta?: string; hashBinario?: string } | File
+    >,
     primTit: string,
     primConj: string,
     projAtual: string,
@@ -1050,6 +1291,7 @@ export default function ModalOrganizadorPastasCliente({
     const entradasNormalizadas: Array<{
       file: File;
       origemSubpasta?: string;
+      hashBinario?: string;
     }> = [];
 
     for (const item of entradasBrutas || []) {
@@ -1065,6 +1307,7 @@ export default function ModalOrganizadorPastasCliente({
         entradasNormalizadas.push({
           file: item.file,
           origemSubpasta: item.origemSubpasta,
+          hashBinario: item.hashBinario,
         });
       }
     }
@@ -1080,7 +1323,7 @@ export default function ModalOrganizadorPastasCliente({
     });
 
     const mapeadosBrutos: ArquivoMapeadoItem[] = entradasFiltradas.map(
-      ({ file, origemSubpasta }, idx) => {
+      ({ file, origemSubpasta, hashBinario }, idx) => {
         const partes = file.name.split('.');
         const ext = partes.length > 1 ? partes.pop() || 'pdf' : '';
         const classif = classificarArquivoUniversal(
@@ -1098,35 +1341,56 @@ export default function ModalOrganizadorPastasCliente({
           categoria: classif.categoria,
           isViti: classif.isViti,
           origemSubpasta,
+          origensTodas: [{ subpasta: origemSubpasta, nomeOriginal: file.name }],
+          hashBinario:
+            hashBinario || `SZ_${file.size}_${ext.toUpperCase()}`,
           subtipoAmbientalExtra: classif.subtipoAmbientalExtra,
+          nomeImovelEspecifico: classif.nomeImovelEspecifico,
         };
       }
     );
 
-    // Ordena do arquivo MAIS RECENTE para o mais antigo (lastModified decrescente)!
-    // Assim, se houver mais de 1 CND, CNDT, Embargos, Improbidade, S400, SICOR, etc., prevalece sempre o mais recente!
-    const mapeadosOrdenadosRecentes = [...mapeadosBrutos].sort(
-      (a, b) => (b.fileObj.lastModified || 0) - (a.fileObj.lastModified || 0)
-    );
+    // Prioriza na ordenação arquivos que:
+    // 1º Já possuem nome real de imóvel (ex: "FAZ. DOIS IRMAOS") em vez de fallback do titular ("ELANNE");
+    // 2º São mais recentes (lastModified decrescente).
+    const mapeadosOrdenadosRecentes = [...mapeadosBrutos].sort((a, b) => {
+      const aTemImovel = a.nomeImovelEspecifico ? 1 : 0;
+      const bTemImovel = b.nomeImovelEspecifico ? 1 : 0;
+      if (aTemImovel !== bTemImovel) return bTemImovel - aTemImovel;
+      return (b.fileObj.lastModified || 0) - (a.fileObj.lastModified || 0);
+    });
 
-    const vistosPorChave = new Set<string>();
+    const mapaPorHashBinario = new Map<string, ArquivoMapeadoItem>();
+    const mapaPorChaveLogica = new Map<string, ArquivoMapeadoItem>();
     const mapeados: ArquivoMapeadoItem[] = [];
+
     mapeadosOrdenadosRecentes.forEach((m) => {
-      const permiteMultiplosArquivos =
-        m.categoria === 'OUTROS_NAO_IDENTIFICADO' ||
-        m.categoria === 'CAD_9_OUTROS_CADASTRO' ||
-        m.categoria === 'CAD_8_SELO_CARTORIO' ||
-        m.categoria === 'ITEM_DEC_OUTRA_AMBIENTAL' ||
+      // 1ª Barreira: Se já vimos um arquivo com EXATAMENTE o mesmo conteúdo binário (hashBinario + tamanho),
+      // é um documento 100% repetido (ex: "6. INTEIRO TEOR - ELANNE" vs "6. INTEIRO TEOR - FAZ. DOIS IRMAOS")!
+      // Não duplica na lista, apenas registra a localização física antiga em `origensTodas` para limpar depois!
+      if (m.hashBinario && mapaPorHashBinario.has(m.hashBinario)) {
+        const existente = mapaPorHashBinario.get(m.hashBinario)!;
+        existente.origensTodas = [
+          ...(existente.origensTodas || []),
+          ...(m.origensTodas || []),
+        ];
+        if (!existente.nomeImovelEspecifico && m.nomeImovelEspecifico) {
+          existente.nomeImovelEspecifico = m.nomeImovelEspecifico;
+          existente.nomeOriginal = m.nomeOriginal;
+        }
+        return;
+      }
+
+      // 2ª Barreira: Chave lógica por categoria e imóvel real (e não por nomeOriginal bruto!)
+      const permiteMultiplosPorImovel =
         m.categoria === 'ITEM_KML' ||
         m.categoria === 'ITEM_PLANILHA_GEODESICA' ||
         m.categoria === 'ITEM_CERT_SOCIO_COM_KML' ||
         m.categoria === 'ITEM_CERT_SOCIO_SEM_KML' ||
-        m.categoria === 'ITEM_DOC_IMOVEL_GENERICO' ||
         m.categoria === 'ITEM_INTEIRO_TEOR' ||
-        m.categoria === 'ITEM_SELO_IMOVEL' ||
-        m.categoria === 'ITEM_MEMORIAL_DESCRITIVO' ||
         m.categoria === 'ITEM_TITULO_DOMINIO' ||
         m.categoria === 'ITEM_ECPV_ESCRITURA' ||
+        m.categoria === 'ITEM_MEMORIAL_DESCRITIVO' ||
         m.categoria === 'ITEM_LAUDO_INTERNO' ||
         m.categoria === 'ITEM_LAUDO_EXTERNO' ||
         m.categoria === 'ITEM_CAR' ||
@@ -1134,14 +1398,37 @@ export default function ModalOrganizadorPastasCliente({
         m.categoria === 'ITEM_CCIR' ||
         m.categoria === 'ITEM_CND_ITR_IMOVEL';
 
-      const chaveUnica = permiteMultiplosArquivos
-        ? `${m.categoria}_${m.nomeOriginal}`
+      const permiteMultiplosLivres =
+        m.categoria === 'OUTROS_NAO_IDENTIFICADO' ||
+        m.categoria === 'CAD_9_OUTROS_CADASTRO' ||
+        m.categoria === 'CAD_8_SELO_CARTORIO' ||
+        m.categoria === 'ITEM_SELO_IMOVEL' ||
+        m.categoria === 'ITEM_DEC_OUTRA_AMBIENTAL' ||
+        m.categoria === 'ITEM_DOC_IMOVEL_GENERICO';
+
+      const tagImovelOuTamanho =
+        m.nomeImovelEspecifico || `SZ_${m.fileObj.size}`;
+
+      const chaveUnica = permiteMultiplosLivres
+        ? `${m.categoria}_${m.hashBinario || m.nomeOriginal}`
+        : permiteMultiplosPorImovel
+        ? `${m.categoria}_${m.isViti ? 'VITI' : 'DOC'}_${tagImovelOuTamanho}`
         : `${m.categoria}_${m.isViti ? 'VITI' : 'DOC'}`;
 
-      if (!vistosPorChave.has(chaveUnica)) {
-        vistosPorChave.add(chaveUnica);
-        mapeados.push(m);
+      if (mapaPorChaveLogica.has(chaveUnica)) {
+        const existente = mapaPorChaveLogica.get(chaveUnica)!;
+        existente.origensTodas = [
+          ...(existente.origensTodas || []),
+          ...(m.origensTodas || []),
+        ];
+        return;
       }
+
+      if (m.hashBinario) {
+        mapaPorHashBinario.set(m.hashBinario, m);
+      }
+      mapaPorChaveLogica.set(chaveUnica, m);
+      mapeados.push(m);
     });
 
     const jaTemCrea = mapeados.some((m) => m.categoria === 'ITEM_CREA');
@@ -1265,8 +1552,27 @@ export default function ModalOrganizadorPastasCliente({
       porteSelecionado: portePerfil,
       escopoSelecionado: cfgPerfil.escopo,
       modalidadeDerivada,
+      modalidadeLimite,
     })
       .then((resAuditoria) => {
+        if (cancelado) return;
+        // ITEM 2: Atualiza a lista de imóveis se os PDFs (Projeto, CAR, CCIR, ITR, Matrícula) revelarem 1 ou mais imóveis!
+        const imsPdf =
+          resAuditoria.imoveisDetectadosNosDocumentos &&
+          resAuditoria.imoveisDetectadosNosDocumentos.length > 0
+            ? resAuditoria.imoveisDetectadosNosDocumentos
+            : (resAuditoria.dadosProjetoParaParecer?.imoveisVinculados || []).map(
+                (i) => i.nome
+              );
+        if (!imoveisEditadosManualmente) {
+          if (imsPdf.length > 0) {
+            setPaNome(imsPdf[0]);
+            setListaImoveisNomes(imsPdf);
+          } else if (resAuditoria.paDetectadoNoProjeto) {
+            setPaNome(resAuditoria.paDetectadoNoProjeto);
+            setListaImoveisNomes([resAuditoria.paDetectadoNoProjeto]);
+          }
+        }
         if (cancelado) return;
         setAuditoriaPdf(resAuditoria);
 
@@ -1364,7 +1670,11 @@ export default function ModalOrganizadorPastasCliente({
     setNomePastaSelecionada(handle.name);
     setParecerGerencialExtraidoNaPasta(false);
 
-    const entradasLidas: Array<{ file: File; origemSubpasta?: string }> = [];
+    const entradasLidas: Array<{
+      file: File;
+      origemSubpasta?: string;
+      hashBinario?: string;
+    }> = [];
     let achouSeloNoSubCadastro = false;
     let achouProcOuCasamentoNoSubCadastro = false;
     let tinhaSubpastaOrganizada = false;
@@ -1401,9 +1711,11 @@ export default function ModalOrganizadorPastasCliente({
           if (entryHandle.kind === 'file') {
             try {
               const file: File = await entryHandle.getFile();
+              const hashBinario = await calcularHashBinarioRapido(file);
               entradasLidas.push({
                 file,
                 origemSubpasta: caminhoRelativo || undefined,
+                hashBinario,
               });
 
               if (caminhoRelativo.toUpperCase().includes('CADASTRO')) {
@@ -1483,6 +1795,7 @@ export default function ModalOrganizadorPastasCliente({
     setCadCpf('');
     setCadValor('');
     setImovelAvaliadoAcima600k(false);
+    setImoveisEditadosManualmente(false);
     limparCacheDadosProjetoParecer();
   };
 
@@ -1526,6 +1839,11 @@ export default function ModalOrganizadorPastasCliente({
     }
   };
 
+  const [buscaArquivoTabela, setBuscaArquivoTabela] = useState('');
+  const [filtroGrupoTabela, setFiltroGrupoTabela] = useState<
+    'TODOS' | 'CADASTRO' | 'IMOVEL' | 'SOCIO' | 'OUTROS'
+  >('TODOS');
+
   // Ordena a lista de arquivos exatamente pela numeração do Perfil Ativo!
   const arquivosMapeadosOrdenados = useMemo(() => {
     return [...arquivosMapeados].sort((a, b) => {
@@ -1537,6 +1855,108 @@ export default function ModalOrganizadorPastasCliente({
       return a.nomeOriginal.localeCompare(b.nomeOriginal);
     });
   }, [arquivosMapeados, cfgPerfil]);
+
+  // Filtra os arquivos exibidos na tabela pela Caixa de Busca e pelos Botões de Grupo Rápido
+  const arquivosMapeadosFiltrados = useMemo(() => {
+    const termo = removerAcentos(buscaArquivoTabela).toUpperCase().trim();
+
+    return arquivosMapeadosOrdenados.filter((arq) => {
+      const destinos = calcularTodosDestinosDoArquivo(arq, cfgPerfil);
+
+      if (filtroGrupoTabela === 'CADASTRO') {
+        const vaiParaCad =
+          arq.categoria.startsWith('CAD_') ||
+          destinos.some((d) => d.pastaRelativa === 'CADASTRO');
+        if (!vaiParaCad) return false;
+      } else if (filtroGrupoTabela === 'IMOVEL') {
+        const vaiParaImovel = destinos.some(
+          (d) =>
+            d.pastaRelativa.includes('IMÓVEL') ||
+            d.pastaRelativa.includes('FAZ') ||
+            d.pastaRelativa.includes('LCG')
+        );
+        if (!vaiParaImovel) return false;
+      } else if (filtroGrupoTabela === 'SOCIO') {
+        const vaiParaSocio = destinos.some((d) =>
+          d.pastaRelativa.includes('SOCIOAMBIENTAL')
+        );
+        if (!vaiParaSocio) return false;
+      } else if (filtroGrupoTabela === 'OUTROS') {
+        if (
+          arq.categoria !== 'OUTROS_NAO_IDENTIFICADO' &&
+          arq.categoria !== 'IGNORAR'
+        ) {
+          return false;
+        }
+      }
+
+      if (!termo) return true;
+
+      const nomeOrigNorm = removerAcentos(arq.nomeOriginal).toUpperCase();
+      const subOrigNorm = removerAcentos(arq.origemSubpasta || '').toUpperCase();
+      const catNorm = removerAcentos(arq.categoria).toUpperCase();
+      const destinosNorm = destinos
+        .map((d) =>
+          removerAcentos(`${d.pastaRelativa} ${d.nomeArquivoFinal}`).toUpperCase()
+        )
+        .join(' ');
+
+      return (
+        nomeOrigNorm.includes(termo) ||
+        subOrigNorm.includes(termo) ||
+        catNorm.includes(termo) ||
+        destinosNorm.includes(termo)
+      );
+    });
+  }, [
+    arquivosMapeadosOrdenados,
+    buscaArquivoTabela,
+    filtroGrupoTabela,
+    cfgPerfil,
+  ]);
+
+  const contagemGruposTabela = useMemo(() => {
+    let cadastro = 0;
+    let imovel = 0;
+    let socio = 0;
+    let outros = 0;
+
+    arquivosMapeadosOrdenados.forEach((arq) => {
+      const destinos = calcularTodosDestinosDoArquivo(arq, cfgPerfil);
+      if (
+        arq.categoria.startsWith('CAD_') ||
+        destinos.some((d) => d.pastaRelativa === 'CADASTRO')
+      ) {
+        cadastro++;
+      }
+      if (
+        destinos.some(
+          (d) =>
+            d.pastaRelativa.includes('IMÓVEL') ||
+            d.pastaRelativa.includes('FAZ')
+        )
+      ) {
+        imovel++;
+      }
+      if (destinos.some((d) => d.pastaRelativa.includes('SOCIOAMBIENTAL'))) {
+        socio++;
+      }
+      if (
+        arq.categoria === 'OUTROS_NAO_IDENTIFICADO' ||
+        arq.categoria === 'IGNORAR'
+      ) {
+        outros++;
+      }
+    });
+
+    return {
+      todos: arquivosMapeadosOrdenados.length,
+      cadastro,
+      imovel,
+      socio,
+      outros,
+    };
+  }, [arquivosMapeadosOrdenados, cfgPerfil]);
 
   const planoLembretesTxt = useMemo(() => {
     const catsPresentes = new Set(arquivosMapeados.map((a) => a.categoria));
@@ -1755,29 +2175,55 @@ export default function ModalOrganizadorPastasCliente({
           }
         }
 
-        // Remove o arquivo original antigo APENAS se ele mudou de nome ou mudou de pasta
+        // Remove TODAS as cópias/versões antigas deste documento (ex: "6. INTEIRO TEOR - ELANNE.pdf")
+        // em TODAS as subpastas onde ele estava antes, caso o nome ou a pasta tenha mudado!
         if (!item.origemGaveta) {
-          const conjSalvosNaOrigem = gravadosPorPasta.get(pastaOrigemNorm);
-          if (
-            !conjSalvosNaOrigem ||
-            !conjSalvosNaOrigem.has(item.nomeOriginal)
-          ) {
-            try {
-              const handleOrigem = await obterSubpastaHandle(
-                dirHandleRoot,
-                item.origemSubpasta || ''
-              );
-              await handleOrigem.removeEntry(item.nomeOriginal);
-            } catch {
-              // Ignora se já removido
+          const listaOrigens =
+            item.origensTodas && item.origensTodas.length > 0
+              ? item.origensTodas
+              : [
+                  {
+                    subpasta: item.origemSubpasta,
+                    nomeOriginal: item.nomeOriginal,
+                  },
+                ];
+
+          for (const orig of listaOrigens) {
+            const pOrigKey = (orig.subpasta || '').toUpperCase().trim();
+            const salvosNaquelaPasta = gravadosPorPasta.get(pOrigKey);
+            if (
+              !salvosNaquelaPasta ||
+              !salvosNaquelaPasta.has(orig.nomeOriginal)
+            ) {
+              try {
+                const handleOrig = await obterSubpastaHandle(
+                  dirHandleRoot,
+                  orig.subpasta || ''
+                );
+                await handleOrig.removeEntry(orig.nomeOriginal);
+              } catch {
+                // Ignora se já removido
+              }
             }
           }
         }
       }
 
-      // 2.5. VARREDURA E LIMPEZA ESTRATÉGICA DE ÁRVORES ANTIGAS:
-      // Qualquer arquivo excedente/antigo que não faça parte dos destinos oficiais (gravadosPorPasta)
-      // é movido para dentro de "OUTROS/<Subpasta Antiga>", e as pastas antigas/vazias são removidas da raiz!
+      // Conjunto de impressões digitais binárias (hashBinario) de todos os documentos oficiais da proposta:
+      // Se qualquer arquivo remanescente na pasta tiver o MESMO hashBinario (ou seja, for cópia idêntica de um documento já organizado),
+      // ele será EXCLUÍDO em vez de ficar duplicado na pasta ou ir para OUTROS!
+      const hashesOficiaisOrganizados = new Set<string>(
+        arquivosMapeados
+          .filter(
+            (a) =>
+              a.categoria !== 'IGNORAR' &&
+              a.categoria !== 'OUTROS_NAO_IDENTIFICADO' &&
+              Boolean(a.hashBinario)
+          )
+          .map((a) => a.hashBinario!)
+      );
+
+      // 2.5. VARREDURA E LIMPEZA ESTRATÉGICA DE DUPLICATAS E ÁRVORES ANTIGAS:
       const varrerELimparArvoreAntiga = async (
         dirAtual: any,
         caminhoRel: string,
@@ -1786,7 +2232,6 @@ export default function ModalOrganizadorPastasCliente({
         if (profundidade > 4) return false;
         const caminhoUp = (caminhoRel || '').toUpperCase().trim();
 
-        // Nunca mexe no que já está guardado dentro da pasta OUTROS
         if (caminhoUp === 'OUTROS' || caminhoUp.startsWith('OUTROS/')) {
           return true;
         }
@@ -1801,6 +2246,8 @@ export default function ModalOrganizadorPastasCliente({
         }
 
         let possuiConteudoOficial = false;
+        // Mapa para garantir que na mesma pasta física nunca fiquem 2 arquivos com o mesmo hashBinario
+        const hashesVistosNestaPasta = new Set<string>();
 
         for (const [entryName, entryHandle] of entradasAtuais) {
           if (
@@ -1826,17 +2273,45 @@ export default function ModalOrganizadorPastasCliente({
             );
 
             if (fazParteDaArvoreOficial) {
-              possuiConteudoOficial = true;
+              try {
+                const fOficial: File = await entryHandle.getFile();
+                const hOficial = await calcularHashBinarioRapido(fOficial);
+                if (hashesVistosNestaPasta.has(hOficial)) {
+                  // Segundo arquivo idêntico na mesma pasta -> remove a duplicata!
+                  await dirAtual.removeEntry(entryName);
+                } else {
+                  hashesVistosNestaPasta.add(hOficial);
+                  possuiConteudoOficial = true;
+                }
+              } catch {
+                possuiConteudoOficial = true;
+              }
             } else {
-              // Arquivo de uma pasta antiga ou versão duplicada descartada -> Move para OUTROS mantendo a subpasta de origem!
+              // Arquivo que não faz parte dos nomes finais gravados nesta pasta:
+              // Verifica se ele é uma cópia binária idêntica de um documento que já foi organizado (ex: "6. INTEIRO TEOR - ELANNE.pdf")!
               try {
                 const fileSobra: File = await entryHandle.getFile();
-                const bufferSobra = await fileSobra.arrayBuffer();
-                const destinoOutrosRel = caminhoRel
-                  ? `OUTROS/${caminhoRel}`
-                  : 'OUTROS';
-                await gravarEmSubpasta(destinoOutrosRel, entryName, bufferSobra);
-                await dirAtual.removeEntry(entryName);
+                const hashSobra = await calcularHashBinarioRapido(fileSobra);
+
+                if (
+                  hashesOficiaisOrganizados.has(hashSobra) ||
+                  hashesVistosNestaPasta.has(hashSobra)
+                ) {
+                  // É um documento repetido/antigo cujo conteúdo idêntico já está salvo com o nome novo -> Apaga a duplicata!
+                  await dirAtual.removeEntry(entryName);
+                } else {
+                  // É um arquivo realmente diferente e não identificado -> Move para OUTROS mantendo a subpasta de origem!
+                  const bufferSobra = await fileSobra.arrayBuffer();
+                  const destinoOutrosRel = caminhoRel
+                    ? `OUTROS/${caminhoRel}`
+                    : 'OUTROS';
+                  await gravarEmSubpasta(
+                    destinoOutrosRel,
+                    entryName,
+                    bufferSobra
+                  );
+                  await dirAtual.removeEntry(entryName);
+                }
               } catch {
                 // Ignora se bloqueado
               }
@@ -1861,11 +2336,10 @@ export default function ModalOrganizadorPastasCliente({
             if (subTemOficial) {
               possuiConteudoOficial = true;
             } else {
-              // A pasta antiga ficou vazia (ou todo o seu conteúdo não pertinente já foi movido p/ OUTROS) -> Remove a pasta antiga!
               try {
                 await dirAtual.removeEntry(entryName, { recursive: true });
               } catch {
-                // Ignora se o sistema operacional bloquear
+                // Ignora se bloqueado
               }
             }
           }
@@ -2488,76 +2962,103 @@ export default function ModalOrganizadorPastasCliente({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(15, 23, 42, 0.75)',
+        background: '#f1f5f9',
         zIndex: 900000,
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backdropFilter: 'blur(3px)',
+        flexDirection: 'column',
+        overflow: 'hidden',
       }}
     >
       <div
         style={{
-          background: '#f8fafc',
-          width: '97vw',
-          maxWidth: '1440px',
-          height: '95vh',
-          borderRadius: '12px',
-          boxShadow: '0 25px 55px rgba(0,0,0,0.45)',
+          background: '#f1f5f9',
+          width: '100vw',
+          height: '100vh',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          borderTop: '5px solid #8B1530',
         }}
       >
-        {/* CABEÇALHO EXECUTIVO */}
-        <div
+        {/* CABEÇALHO EXECUTIVO DE TELA CHEIA (MESMO PADRÃO DO VERIFICADOR DE CONFORMIDADE) */}
+        <header
           style={{
-            padding: '10px 20px',
-            background: '#ffffff',
-            borderBottom: '1px solid #e2e8f0',
+            background: 'linear-gradient(90deg, #8B1530 0%, #630d21 100%)',
+            color: '#ffffff',
+            padding: '11px 22px',
+            borderBottom: '3px solid #D99700',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
             flexWrap: 'wrap',
-            gap: '10px',
+            gap: '12px',
           }}
         >
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <h3
-                style={{
-                  margin: 0,
-                  fontSize: '15px',
-                  color: '#8B1530',
-                  fontWeight: 800,
-                }}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <button
+              type="button"
+              onClick={onFechar}
+              style={{
+                width: 'auto',
+                padding: '8px 16px',
+                background: 'rgba(255, 255, 255, 0.14)',
+                color: '#ffffff',
+                border: '1px solid rgba(255, 255, 255, 0.35)',
+                borderRadius: '8px',
+                fontSize: '12.5px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              ⬅️ Voltar ao Painel
+            </button>
+
+            <div>
+              <div
+                style={{ display: 'flex', alignItems: 'center', gap: '10px' }}
               >
-                🗂️ ORGANIZADOR MULTI-PORTE DE PASTAS & AUDITORIA DE PROJETOS
-              </h3>
-              <span
-                style={{
-                  fontSize: '10px',
-                  fontWeight: 800,
-                  background:
-                    statusSyncCofre === 'SINCRONIZADO' ? '#dcfce7' : '#fef9c3',
-                  color:
-                    statusSyncCofre === 'SINCRONIZADO' ? '#15803d' : '#854d0e',
-                  padding: '2px 8px',
-                  borderRadius: '10px',
-                }}
-              >
-                {statusSyncCofre === 'SINCRONIZADO'
-                  ? '☁️ Gaveta na Nuvem OK'
-                  : '⏳ Sincronizando...'}
+                <h2
+                  style={{
+                    margin: 0,
+                    fontSize: '16.5px',
+                    color: '#ffffff',
+                    fontWeight: 800,
+                    letterSpacing: '0.3px',
+                  }}
+                >
+                  🗂️ ORGANIZADOR MULTI-PORTE DE PASTAS & AUDITORIA DE PROJETOS
+                </h2>
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontWeight: 800,
+                    background:
+                      statusSyncCofre === 'SINCRONIZADO'
+                        ? '#dcfce7'
+                        : '#fef9c3',
+                    color:
+                      statusSyncCofre === 'SINCRONIZADO'
+                        ? '#15803d'
+                        : '#854d0e',
+                    padding: '2px 9px',
+                    borderRadius: '12px',
+                  }}
+                >
+                  {statusSyncCofre === 'SINCRONIZADO'
+                    ? '☁️ Gaveta na Nuvem OK'
+                    : '⏳ Sincronizando...'}
+                </span>
+              </div>
+              <span style={{ fontSize: '11px', color: '#fce7f3' }}>
+                Suporta <b>PRONAF A</b>, <b>PRONAF V (Comum)</b>,{' '}
+                <b>MINI / PEQUENO</b>, <b>Limites LCGH/LCGA</b> e{' '}
+                <b>Combo (Derivada + Limite)</b> com cópia cruzada e limpeza
+                inteligente.
               </span>
             </div>
-            <span style={{ fontSize: '11px', color: '#64748b' }}>
-              Suporta <b>PRONAF A</b>, <b>PRONAF V (Comum)</b>,{' '}
-              <b>MINI / PEQUENO</b>, <b>Limites LCGH/LCGA</b> e{' '}
-              <b>Combo (Derivada + Limite)</b> com cópia cruzada entre
-              subpastas.
-            </span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2566,14 +3067,20 @@ export default function ModalOrganizadorPastasCliente({
               onClick={() => setAbaAtiva('ORGANIZADOR')}
               style={{
                 width: 'auto',
-                height: '32px',
-                padding: '0 14px',
-                fontSize: '11.5px',
+                height: '36px',
+                padding: '0 16px',
+                fontSize: '12px',
                 fontWeight: 800,
-                borderRadius: '6px',
-                border: '1px solid #8B1530',
-                background: abaAtiva === 'ORGANIZADOR' ? '#8B1530' : '#ffffff',
-                color: abaAtiva === 'ORGANIZADOR' ? '#ffffff' : '#8B1530',
+                borderRadius: '8px',
+                border:
+                  abaAtiva === 'ORGANIZADOR'
+                    ? '2px solid #fbbf24'
+                    : '1px solid rgba(255,255,255,0.3)',
+                background:
+                  abaAtiva === 'ORGANIZADOR'
+                    ? '#ffffff'
+                    : 'rgba(255,255,255,0.12)',
+                color: abaAtiva === 'ORGANIZADOR' ? '#8B1530' : '#ffffff',
                 cursor: 'pointer',
               }}
             >
@@ -2585,38 +3092,25 @@ export default function ModalOrganizadorPastasCliente({
               onClick={() => setAbaAtiva('COFRE')}
               style={{
                 width: 'auto',
-                height: '32px',
-                padding: '0 14px',
-                fontSize: '11.5px',
+                height: '36px',
+                padding: '0 16px',
+                fontSize: '12px',
                 fontWeight: 800,
-                borderRadius: '6px',
-                border: '1px solid #b45309',
-                background: abaAtiva === 'COFRE' ? '#b45309' : '#fffbeb',
-                color: abaAtiva === 'COFRE' ? '#ffffff' : '#b45309',
+                borderRadius: '8px',
+                border:
+                  abaAtiva === 'COFRE'
+                    ? '2px solid #fbbf24'
+                    : '1px solid rgba(255,255,255,0.3)',
+                background:
+                  abaAtiva === 'COFRE' ? '#fef3c7' : 'rgba(255,255,255,0.12)',
+                color: abaAtiva === 'COFRE' ? '#92400e' : '#ffffff',
                 cursor: 'pointer',
               }}
             >
               🗄️ 2. Gaveta de Coringas ({coringasSalvos.length})
             </button>
-
-            <button
-              type="button"
-              onClick={onFechar}
-              style={{
-                width: 'auto',
-                background: 'none',
-                border: 'none',
-                fontSize: '24px',
-                color: '#64748b',
-                cursor: 'pointer',
-                padding: '0 6px',
-                lineHeight: 1,
-              }}
-            >
-              &times;
-            </button>
           </div>
-        </div>
+        </header>
 
         {/* ABA 1: ORGANIZADOR MULTI-PORTE */}
         {abaAtiva === 'ORGANIZADOR' && (
@@ -2628,15 +3122,16 @@ export default function ModalOrganizadorPastasCliente({
               overflow: 'hidden',
             }}
           >
-            {/* PAINEL DE CONFIGURAÇÃO DO PERFIL E ENVOLVIDOS */}
+            {/* PAINEL DE CONFIGURAÇÃO DO PERFIL, ENVOLVIDOS E BARRA EXECUTIVA DE AÇÕES */}
             <div
               style={{
-                margin: '10px 20px 0 20px',
+                margin: '12px 22px 0 22px',
                 padding: '12px 16px',
                 background: '#ffffff',
                 border: '1px solid #cbd5e1',
                 borderLeft: '5px solid #8B1530',
-                borderRadius: '8px',
+                borderRadius: '10px',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '10px',
@@ -2651,7 +3146,7 @@ export default function ModalOrganizadorPastasCliente({
                   alignItems: 'end',
                   background: '#fdf2f4',
                   padding: '8px 12px',
-                  borderRadius: '6px',
+                  borderRadius: '8px',
                   border: '1px solid #f5c2c7',
                 }}
               >
@@ -2687,7 +3182,9 @@ export default function ModalOrganizadorPastasCliente({
                   >
                     <option value="PRONAF_A">PRONAF A (Reforma Agrária)</option>
                     <option value="PRONAF_V">PRONAF V (Comum)</option>
-                    <option value="MINI_PEQUENO">MINI / PEQUENO / DEMAIS</option>
+                    <option value="MINI_PEQUENO">
+                      MINI / PEQUENO / DEMAIS
+                    </option>
                   </select>
                 </div>
 
@@ -3026,25 +3523,74 @@ export default function ModalOrganizadorPastasCliente({
                   <label
                     style={{
                       fontSize: '10.5px',
-                      fontWeight: 700,
-                      color: '#334155',
+                      fontWeight: 800,
+                      color:
+                        listaImoveisNomes.filter((x) => x.trim()).length > 1
+                          ? '#0369a1'
+                          : '#334155',
                       display: 'block',
                       marginBottom: '3px',
                     }}
                   >
-                    🏕️ Imóvel / P.A.
+                    🏕️ Imóvel(is) / P.A. (
+                    {listaImoveisNomes.filter((x) => x.trim()).length || 1})
                   </label>
-                  <input
-                    type="text"
-                    value={paNome}
-                    onChange={(e) => setPaNome(e.target.value.toUpperCase())}
-                    placeholder="Ex: P.A LAGO DA CARNAÚBA"
-                    style={inputPadraoStyle}
-                  />
+
+                  <button
+                    type="button"
+                    onClick={() => setModalGerenciarImoveisAberto(true)}
+                    title="Clique para editar o nome do imóvel, excluir imóveis identificados por engano ou adicionar mais imóveis"
+                    style={{
+                      ...inputPadraoStyle,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '6px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      background: imoveisEditadosManualmente
+                        ? '#f0fdf4'
+                        : listaImoveisNomes.length > 1
+                        ? '#f0f9ff'
+                        : '#ffffff',
+                      border: imoveisEditadosManualmente
+                        ? '1px solid #86efac'
+                        : listaImoveisNomes.length > 1
+                        ? '1px solid #7dd3fc'
+                        : '1px solid #cbd5e1',
+                    }}
+                  >
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: '#0f172a',
+                      }}
+                    >
+                      {listaImoveisNomes.filter((x) => x.trim()).join(' • ') ||
+                        paNome ||
+                        'Definir Imóvel...'}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '10px',
+                        fontWeight: 900,
+                        color: '#0369a1',
+                        background: '#e0f2fe',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      ✏️ Editar
+                    </span>
+                  </button>
                 </div>
               </div>
 
-              {/* LINHA 3: BOTÕES DE AÇÃO NA PASTA */}
+              {/* LINHA 3: BARRA EXECUTIVA DE COMANDO E EXECUÇÃO (ORGANIZADA E ELEGANTE) */}
               <div
                 style={{
                   display: 'flex',
@@ -3052,10 +3598,13 @@ export default function ModalOrganizadorPastasCliente({
                   alignItems: 'center',
                   flexWrap: 'wrap',
                   gap: '10px',
-                  paddingTop: '8px',
-                  borderTop: '1px dashed #e2e8f0',
+                  background: '#f8fafc',
+                  padding: '8px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #e2e8f0',
                 }}
               >
+                {/* ZONA ESQUERDA: SELEÇÃO E CONTROLE DA PASTA */}
                 <div
                   style={{
                     display: 'flex',
@@ -3069,15 +3618,20 @@ export default function ModalOrganizadorPastasCliente({
                     onClick={selecionarPastaNoComputador}
                     style={{
                       width: 'auto',
-                      height: '34px',
-                      padding: '0 16px',
+                      height: '36px',
+                      padding: '0 18px',
                       fontSize: '12px',
                       fontWeight: 800,
-                      background: '#8B1530',
+                      background:
+                        'linear-gradient(90deg, #8B1530 0%, #a31839 100%)',
                       color: '#ffffff',
                       border: 'none',
-                      borderRadius: '6px',
+                      borderRadius: '8px',
                       cursor: 'pointer',
+                      boxShadow: '0 2px 6px rgba(139, 21, 48, 0.25)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
                     }}
                   >
                     📂 1. Selecionar Pasta do Cliente no Windows
@@ -3094,9 +3648,9 @@ export default function ModalOrganizadorPastasCliente({
                           border: `1px solid ${
                             pastaJaEraOrganizada ? '#86efac' : '#f5c2c7'
                           }`,
-                          padding: '4px 10px',
-                          borderRadius: '6px',
-                          fontSize: '11px',
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          fontSize: '11.5px',
                           fontWeight: 800,
                         }}
                       >
@@ -3111,18 +3665,18 @@ export default function ModalOrganizadorPastasCliente({
                         }
                         style={{
                           width: 'auto',
-                          height: '30px',
-                          padding: '0 10px',
+                          height: '34px',
+                          padding: '0 12px',
                           fontSize: '11px',
                           fontWeight: 800,
                           background: '#eff6ff',
                           color: '#1d4ed8',
                           border: '1px solid #bfdbfe',
-                          borderRadius: '6px',
+                          borderRadius: '7px',
                           cursor: 'pointer',
                         }}
                       >
-                        🔄 Re-escanear Pasta
+                        🔄 Re-escanear
                       </button>
                     </>
                   )}
@@ -3132,35 +3686,61 @@ export default function ModalOrganizadorPastasCliente({
                     arquivosMapeados.length > 0) && (
                     <button
                       type="button"
-                      onClick={limparConsultaOrganizadorDoZero}
+                      onClick={() => {
+                        setBuscaArquivoTabela('');
+                        setFiltroGrupoTabela('TODOS');
+                        limparConsultaOrganizadorDoZero();
+                      }}
                       title="Limpar todos os dados da pasta atual e iniciar a organização de outra pasta do zero"
                       style={{
                         width: 'auto',
-                        height: '30px',
+                        height: '34px',
                         padding: '0 12px',
                         fontSize: '11px',
                         fontWeight: 800,
                         background: '#fef2f2',
                         color: '#b91c1c',
                         border: '1px solid #fecaca',
-                        borderRadius: '6px',
+                        borderRadius: '7px',
                         cursor: 'pointer',
                       }}
                     >
-                      🧹 Limpar Consulta / Nova Pasta do Zero
+                      🧹 Limpar / Nova Pasta
                     </button>
                   )}
+                </div>
 
+                {/* ZONA DIREITA: LEMBRETES .TXT, EXPORTAÇÃO .ZIP E DISPARO DA ORGANIZAÇÃO */}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    flexWrap: 'wrap',
+                  }}
+                >
                   <label
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
-                      gap: '5px',
+                      gap: '6px',
+                      height: '34px',
+                      padding: '0 12px',
                       fontSize: '11px',
-                      fontWeight: 700,
-                      color: '#b45309',
+                      fontWeight: 800,
+                      background: gerarTxtsLembretesFaltantes
+                        ? '#fffbeb'
+                        : '#ffffff',
+                      color: gerarTxtsLembretesFaltantes
+                        ? '#b45309'
+                        : '#64748b',
+                      border: `1px solid ${
+                        gerarTxtsLembretesFaltantes ? '#fde68a' : '#cbd5e1'
+                      }`,
+                      borderRadius: '7px',
                       cursor: 'pointer',
                       margin: 0,
+                      userSelect: 'none',
                     }}
                   >
                     <input
@@ -3176,83 +3756,86 @@ export default function ModalOrganizadorPastasCliente({
                         accentColor: '#b45309',
                       }}
                     />
-                    Gerar .TXT Vazios do que Faltar
+                    📝 Gerar .TXT do que Faltar
                   </label>
+
+                  {arquivosMapeados.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={baixarPacoteZipOrganizado}
+                        style={{
+                          width: 'auto',
+                          height: '36px',
+                          padding: '0 14px',
+                          fontSize: '11.5px',
+                          fontWeight: 800,
+                          background: '#ffffff',
+                          color: '#334155',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        📦 Baixar .ZIP
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={processando}
+                        onClick={executarOrganizacaoDiretoNaPasta}
+                        style={{
+                          width: 'auto',
+                          height: '36px',
+                          padding: '0 20px',
+                          fontSize: '12px',
+                          fontWeight: 900,
+                          background:
+                            'linear-gradient(90deg, #15803d 0%, #166534 100%)',
+                          color: '#ffffff',
+                          border: 'none',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          boxShadow: '0 4px 12px rgba(21,128,61,0.32)',
+                        }}
+                      >
+                        {processando
+                          ? '⏳ Processando Pasta...'
+                          : '⚡ 2. Organizar Pasta & Iniciar Proposta / Parecer!'}
+                      </button>
+                    </>
+                  )}
                 </div>
-
-                {arquivosMapeados.length > 0 && (
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      type="button"
-                      onClick={baixarPacoteZipOrganizado}
-                      style={{
-                        width: 'auto',
-                        height: '34px',
-                        padding: '0 14px',
-                        fontSize: '11.5px',
-                        fontWeight: 700,
-                        background: '#f8fafc',
-                        color: '#334155',
-                        border: '1px solid #cbd5e1',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      📦 Baixar .ZIP
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={processando}
-                      onClick={executarOrganizacaoDiretoNaPasta}
-                      style={{
-                        width: 'auto',
-                        height: '34px',
-                        padding: '0 18px',
-                        fontSize: '12px',
-                        fontWeight: 800,
-                        background: '#15803d',
-                        color: '#ffffff',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        boxShadow: '0 3px 10px rgba(21,128,61,0.3)',
-                      }}
-                    >
-                      {processando
-                        ? '⏳ Processando Pasta...'
-                        : '⚡ 2. Organizar Pasta & Iniciar Proposta / Parecer!'}
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
 
-            {/* CORPO PRINCIPAL: TABELA DE ARQUIVOS ORDENADA + COLUNA DIREITA DE AUDITORIA E .TXT */}
+            {/* CORPO PRINCIPAL: TABELA DE ARQUIVOS COM BUSCA + COLUNA DIREITA DE AUDITORIA E .TXT */}
             <div
               style={{
                 flex: 1,
                 display: 'grid',
-                gridTemplateColumns: '1.85fr 1fr',
-                gap: '14px',
-                padding: '10px 20px 16px 20px',
+                gridTemplateColumns: '1.9fr 1fr',
+                gap: '16px',
+                padding: '12px 22px 16px 22px',
                 overflow: 'hidden',
               }}
             >
-              {/* COLUNA ESQUERDA: TABELA DE MAPEAMENTO */}
+              {/* COLUNA ESQUERDA: TABELA DE MAPEAMENTO + BARRA DE BUSCA E FILTROS RÁPIDOS */}
               <div
                 style={{
                   background: '#ffffff',
-                  borderRadius: '8px',
+                  borderRadius: '10px',
                   border: '1px solid #cbd5e1',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
                   display: 'flex',
                   flexDirection: 'column',
                   overflow: 'hidden',
                 }}
               >
+                {/* TÍTULO DA TABELA */}
                 <div
                   style={{
-                    padding: '9px 14px',
+                    padding: '10px 16px',
                     background: '#8B1530',
                     color: '#ffffff',
                     fontSize: '12px',
@@ -3260,17 +3843,160 @@ export default function ModalOrganizadorPastasCliente({
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '8px',
                   }}
                 >
                   <span>
                     📋 1. ARQUIVOS IDENTIFICADOS NA ORDEM DO PERFIL (
-                    {arquivosMapeadosOrdenados.length})
+                    {arquivosMapeadosFiltrados.length ===
+                    arquivosMapeadosOrdenados.length
+                      ? arquivosMapeadosOrdenados.length
+                      : `${arquivosMapeadosFiltrados.length} de ${arquivosMapeadosOrdenados.length}`}
+                    )
                   </span>
-                  <span style={{ fontSize: '10.5px', opacity: 0.9 }}>
+                  <span
+                    style={{
+                      fontSize: '10.5px',
+                      background: 'rgba(255,255,255,0.16)',
+                      padding: '2px 10px',
+                      borderRadius: '12px',
+                    }}
+                  >
                     Perfil Ativo: {cfgPerfil.porte.replace('_', ' ')} •{' '}
                     {cfgPerfil.escopo.replace(/_/g, ' ')}
                   </span>
                 </div>
+
+                {/* BARRA DE BUSCA INSTANTÂNEA E FILTROS POR SUBPASTA/GRUPO */}
+                {arquivosMapeadosOrdenados.length > 0 && (
+                  <div
+                    style={{
+                      padding: '8px 12px',
+                      background: '#f8fafc',
+                      borderBottom: '1px solid #cbd5e1',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '8px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: 'relative',
+                        flex: '1 1 260px',
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <input
+                        type="search"
+                        value={buscaArquivoTabela}
+                        onChange={(e) => setBuscaArquivoTabela(e.target.value)}
+                        placeholder="🔍 Localizar documento por nome atual, subpasta, classificação ou destino..."
+                        style={{
+                          ...inputPadraoStyle,
+                          height: '32px',
+                          paddingLeft: '10px',
+                          paddingRight: buscaArquivoTabela ? '68px' : '10px',
+                          fontWeight: 700,
+                          border: buscaArquivoTabela
+                            ? '1.5px solid #8B1530'
+                            : '1px solid #cbd5e1',
+                          background: buscaArquivoTabela
+                            ? '#fffbfd'
+                            : '#ffffff',
+                        }}
+                      />
+                      {buscaArquivoTabela && (
+                        <button
+                          type="button"
+                          onClick={() => setBuscaArquivoTabela('')}
+                          style={{
+                            position: 'absolute',
+                            right: '6px',
+                            width: 'auto',
+                            padding: '2px 8px',
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            background: '#fee2e2',
+                            color: '#991b1b',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✖ Limpar
+                        </button>
+                      )}
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '4px',
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      {(
+                        [
+                          {
+                            id: 'TODOS',
+                            label: `📋 Todos (${contagemGruposTabela.todos})`,
+                            corAtiva: '#8B1530',
+                          },
+                          {
+                            id: 'CADASTRO',
+                            label: `🪪 Cadastro (${contagemGruposTabela.cadastro})`,
+                            corAtiva: '#6b21a8',
+                          },
+                          {
+                            id: 'IMOVEL',
+                            label: `🏡 Imóvel (${contagemGruposTabela.imovel})`,
+                            corAtiva: '#0369a1',
+                          },
+                          {
+                            id: 'SOCIO',
+                            label: `🌿 Socioamb. (${contagemGruposTabela.socio})`,
+                            corAtiva: '#15803d',
+                          },
+                          {
+                            id: 'OUTROS',
+                            label: `📦 Outros (${contagemGruposTabela.outros})`,
+                            corAtiva: '#b45309',
+                          },
+                        ] as const
+                      ).map((btn) => {
+                        const ativo = filtroGrupoTabela === btn.id;
+                        return (
+                          <button
+                            key={btn.id}
+                            type="button"
+                            onClick={() => setFiltroGrupoTabela(btn.id)}
+                            style={{
+                              width: 'auto',
+                              height: '30px',
+                              padding: '0 10px',
+                              fontSize: '10.5px',
+                              fontWeight: 800,
+                              borderRadius: '6px',
+                              border: `1px solid ${
+                                ativo ? btn.corAtiva : '#cbd5e1'
+                              }`,
+                              background: ativo ? btn.corAtiva : '#ffffff',
+                              color: ativo ? '#ffffff' : '#334155',
+                              cursor: 'pointer',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {btn.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div style={{ flex: 1, overflowY: 'auto' }}>
                   {arquivosMapeadosOrdenados.length === 0 ? (
@@ -3284,6 +4010,40 @@ export default function ModalOrganizadorPastasCliente({
                     >
                       Selecione a pasta do cliente acima para organizar e
                       validar os documentos automaticamente.
+                    </div>
+                  ) : arquivosMapeadosFiltrados.length === 0 ? (
+                    <div
+                      style={{
+                        textAlign: 'center',
+                        padding: '45px 20px',
+                        color: '#64748b',
+                        fontSize: '12.5px',
+                      }}
+                    >
+                      Nenhum arquivo encontrado para o filtro{' '}
+                      <b>&ldquo;{buscaArquivoTabela || filtroGrupoTabela}&rdquo;</b>.
+                      <div style={{ marginTop: '8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBuscaArquivoTabela('');
+                            setFiltroGrupoTabela('TODOS');
+                          }}
+                          style={{
+                            width: 'auto',
+                            padding: '5px 12px',
+                            fontSize: '11px',
+                            fontWeight: 800,
+                            background: '#8B1530',
+                            color: '#ffffff',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Mostrar Todos os Arquivos
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <table
@@ -3342,7 +4102,7 @@ export default function ModalOrganizadorPastasCliente({
                         </tr>
                       </thead>
                       <tbody>
-                        {arquivosMapeadosOrdenados.map((arq, idx) => {
+                        {arquivosMapeadosFiltrados.map((arq, idx) => {
                           const destinos = calcularTodosDestinosDoArquivo(
                             arq,
                             cfgPerfil
@@ -3380,9 +4140,43 @@ export default function ModalOrganizadorPastasCliente({
                                     : '#334155',
                                 }}
                               >
-                                {arq.origemSubpasta
-                                  ? `[Em ${arq.origemSubpasta}] ${arq.nomeOriginal}`
-                                  : arq.nomeOriginal}
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    gap: '6px',
+                                  }}
+                                >
+                                  <span>
+                                    {arq.origemSubpasta
+                                      ? `[Em ${arq.origemSubpasta}] ${arq.nomeOriginal}`
+                                      : arq.nomeOriginal}
+                                  </span>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setArqVisualizandoId(arq.id);
+                                      setModalDocMinimizado(false);
+                                    }}
+                                    title={`Visualizar "${arq.nomeOriginal}" e classificar correspondência`}
+                                    style={{
+                                      width: 'auto',
+                                      padding: '2px 7px',
+                                      fontSize: '11px',
+                                      fontWeight: 800,
+                                      background: '#eff6ff',
+                                      color: '#1d4ed8',
+                                      border: '1px solid #bfdbfe',
+                                      borderRadius: '5px',
+                                      cursor: 'pointer',
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    🔎
+                                  </button>
+                                </div>
                               </td>
 
                               <td style={{ padding: '5px 10px' }}>
@@ -3490,7 +4284,8 @@ export default function ModalOrganizadorPastasCliente({
                                         key={iD}
                                         style={{
                                           fontSize: '11px',
-                                          fontWeight: isCad || isSocio ? 700 : 800,
+                                          fontWeight:
+                                            isCad || isSocio ? 700 : 800,
                                           color: isCad
                                             ? '#6b21a8'
                                             : isSocio
@@ -3556,7 +4351,7 @@ export default function ModalOrganizadorPastasCliente({
                 <div
                   style={{
                     background: '#ffffff',
-                    borderRadius: '8px',
+                    borderRadius: '10px',
                     border: '1px solid #cbd5e1',
                     borderTop: '4px solid #0369a1',
                     padding: '12px 14px',
@@ -3576,7 +4371,13 @@ export default function ModalOrganizadorPastasCliente({
                       🧠 AUDITORIA AUTOMÁTICA DOS PDFs DA PASTA
                     </strong>
 
-                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '6px',
+                        alignItems: 'center',
+                      }}
+                    >
                       {auditandoPdfs && (
                         <span
                           style={{
@@ -3598,7 +4399,7 @@ export default function ModalOrganizadorPastasCliente({
                             }
                             style={{
                               width: 'auto',
-                              padding: '3px 8px',
+                              padding: '4px 9px',
                               fontSize: '10.5px',
                               fontWeight: 800,
                               background: '#f1f5f9',
@@ -3619,7 +4420,7 @@ export default function ModalOrganizadorPastasCliente({
                             }
                             style={{
                               width: 'auto',
-                              padding: '3px 10px',
+                              padding: '4px 10px',
                               fontSize: '10.5px',
                               fontWeight: 800,
                               background: '#15803d',
@@ -3779,7 +4580,7 @@ export default function ModalOrganizadorPastasCliente({
                 <div
                   style={{
                     background: '#ffffff',
-                    borderRadius: '8px',
+                    borderRadius: '10px',
                     border: '1px solid #cbd5e1',
                     borderTop: '4px solid #8B1530',
                     padding: '12px 14px',
@@ -4051,6 +4852,757 @@ export default function ModalOrganizadorPastasCliente({
           </div>
         )}
       </div>
+
+      {/* ITEM 1: MODAL VISUALIZADOR DE DOCUMENTO SOBREPOSTO AO ORGANIZADOR + BARRA FLUTUANTE MINIMIZADA */}
+      {arqVisualizandoAtual && urlArqVisualizando && (
+        <>
+          {/* BARRINHA FLUTUANTE NO CANTO INFERIOR DIREITO QUANDO MINIMIZADO */}
+          {modalDocMinimizado && (
+            <div
+              style={{
+                position: 'fixed',
+                bottom: '18px',
+                right: '22px',
+                zIndex: 985000,
+                background: 'linear-gradient(90deg, #0f172a 0%, #1e293b 100%)',
+                color: '#ffffff',
+                padding: '10px 14px',
+                borderRadius: '10px',
+                border: executandoOcrOrg
+                  ? '2px solid #f59e0b'
+                  : '2px solid #38bdf8',
+                boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                maxWidth: '540px',
+              }}
+            >
+              <div style={{ overflow: 'hidden', flex: 1 }}>
+                <div
+                  style={{
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    color: '#f8fafc',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                  title={arqVisualizandoAtual.nomeOriginal}
+                >
+                  📄 {arqVisualizandoAtual.nomeOriginal}
+                </div>
+                <div
+                  style={{
+                    fontSize: '10px',
+                    fontWeight: 700,
+                    color: executandoOcrOrg
+                      ? '#fbbf24'
+                      : textosOcrOrg[arqVisualizandoAtual.nomeOriginal]
+                      ? '#4ade80'
+                      : '#94a3b8',
+                    marginTop: '2px',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {executandoOcrOrg
+                    ? `⏳ ${msgOcrOrg || 'Escaneando OCR em segundo plano...'}`
+                    : textosOcrOrg[arqVisualizandoAtual.nomeOriginal]
+                    ? '✅ OCR concluído neste documento!'
+                    : '🗕 Documento minimizado (pronto para restaurar)'}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setModalDocMinimizado(false)}
+                  title="Maximizar / Restaurar janela do documento"
+                  style={{
+                    width: 'auto',
+                    padding: '6px 12px',
+                    background: '#0284c7',
+                    color: '#ffffff',
+                    border: '1px solid #7dd3fc',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  🗖
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalDocMinimizado(false);
+                    setArqVisualizandoId(null);
+                  }}
+                  title="Fechar documento"
+                  style={{
+                    width: 'auto',
+                    padding: '6px 10px',
+                    background: '#dc2626',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ✖
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div
+            onClick={() => setModalDocMinimizado(true)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(15, 23, 42, 0.82)',
+              zIndex: 980000,
+              display: modalDocMinimizado ? 'none' : 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backdropFilter: 'blur(3px)',
+            }}
+          >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#ffffff',
+              width: '94vw',
+              maxWidth: '1280px',
+              height: '92vh',
+              borderRadius: '12px',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 60px rgba(0,0,0,0.55)',
+              borderTop: '4px solid #8B1530',
+            }}
+          >
+            {/* BARRA SUPERIOR DO MODAL DO PDF NO ORGANIZADOR */}
+            <div
+              style={{
+                padding: '10px 16px',
+                background: '#0f172a',
+                color: '#ffffff',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '10px',
+              }}
+            >
+              <div style={{ overflow: 'hidden', maxWidth: '340px' }}>
+                <strong
+                  style={{
+                    fontSize: '12.5px',
+                    display: 'block',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  🔎 {arqVisualizandoAtual.nomeOriginal}
+                </strong>
+                <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                  Subpasta:{' '}
+                  {arqVisualizandoAtual.origemSubpasta || 'Raiz da Pasta'}
+                </span>
+              </div>
+
+              {/* SELETOR DIRETO DE CLASSIFICAÇÃO E VITI ENQUANTO OLHA PARA O PDF! */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: '#1e293b',
+                  padding: '5px 10px',
+                  borderRadius: '8px',
+                  border: '1px solid #475569',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    fontWeight: 800,
+                    color: '#fbbf24',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  📂 Classificar:
+                </span>
+                <select
+                  value={arqVisualizandoAtual.categoria}
+                  onChange={(e) => {
+                    const novaCat = e.target.value as CategoriaDocPasta;
+                    setArquivosMapeados((prev) =>
+                      prev.map((item) =>
+                        item.id === arqVisualizandoAtual.id
+                          ? {
+                              ...item,
+                              categoria: novaCat,
+                              isViti: CATEGORIAS_QUE_ACEITAM_VITI.has(novaCat)
+                                ? item.isViti
+                                : false,
+                            }
+                          : item
+                      )
+                    );
+                  }}
+                  style={{
+                    width: '270px',
+                    height: '30px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    borderRadius: '5px',
+                    padding: '2px 6px',
+                    color: '#0f172a',
+                    background: '#ffffff',
+                  }}
+                >
+                  {OPCOES_SELECT_CATEGORIA.map((grp) => (
+                    <optgroup key={grp.grupo} label={grp.grupo}>
+                      {grp.itens.map((opt) => (
+                        <option key={opt.valor} value={opt.valor}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  <option value="IGNORAR">🚫 Ignorar / Não Mexer</option>
+                </select>
+
+                {CATEGORIAS_QUE_ACEITAM_VITI.has(
+                  arqVisualizandoAtual.categoria
+                ) && (
+                  <label
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      color: '#ffffff',
+                      cursor: 'pointer',
+                      margin: 0,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={arqVisualizandoAtual.isViti}
+                      onChange={(e) => {
+                        const marcado = e.target.checked;
+                        setArquivosMapeados((prev) =>
+                          prev.map((item) =>
+                            item.id === arqVisualizandoAtual.id
+                              ? { ...item, isViti: marcado }
+                              : item
+                          )
+                        );
+                      }}
+                      style={{ width: '14px', height: '14px', margin: 0 }}
+                    />
+                    É VITI?
+                  </label>
+                )}
+              </div>
+
+              {/* BOTÕES DE AÇÃO DO MODAL (OCR, COPILOT, LOCAL DO ARQUIVO, APAGAR, NOVA GUIA E FECHAR) */}
+              <div
+                style={{
+                  display: 'flex',
+                  gap: '6px',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setModalCopilotOrgAberto(true)}
+                  style={{
+                    width: 'auto',
+                    padding: '6px 10px',
+                    background:
+                      'linear-gradient(90deg, #1d4ed8 0%, #2563eb 100%)',
+                    color: '#ffffff',
+                    border: '1px solid #93c5fd',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title="Gerar Script personalizado deste documento para o Microsoft Copilot"
+                >
+                  🤖 Copilot
+                </button>
+
+                <button
+                  type="button"
+                  disabled={executandoOcrOrg}
+                  onClick={() => rodarOcrNoOrganizador(arqVisualizandoAtual)}
+                  style={{
+                    width: 'auto',
+                    padding: '6px 10px',
+                    background: executandoOcrOrg ? '#b45309' : '#7c3aed',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {executandoOcrOrg
+                    ? `⏳ ${msgOcrOrg || 'OCR...'}`
+                    : '🧠 Ler OCR'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    abrirLocalArquivoNoOrganizador(arqVisualizandoAtual)
+                  }
+                  style={{
+                    width: 'auto',
+                    padding: '6px 10px',
+                    background: '#0284c7',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  📂 Local
+                </button>
+
+                {!arqVisualizandoAtual.origemGaveta && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      apagarArquivoDiretoPeloOrganizador(arqVisualizandoAtual)
+                    }
+                    style={{
+                      width: 'auto',
+                      padding: '6px 10px',
+                      background: '#991b1b',
+                      color: '#ffffff',
+                      border: '1px solid #f87171',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    🗑️
+                  </button>
+                )}
+
+                <a
+                  href={urlArqVisualizando}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    padding: '6px 10px',
+                    background: '#334155',
+                    color: '#ffffff',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    textDecoration: 'none',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  ↗️ Nova Guia
+                </a>
+
+                <button
+  type="button"
+  onClick={() => setModalDocMinimizado(true)}
+  title="Minimizar documento para o canto inferior direito (permite usar o Organizador enquanto o OCR roda em segundo plano)"
+  aria-label="Minimizar documento"
+  style={{
+    width: 'auto',
+    padding: '6px 10px',
+    background: '#475569',
+    color: '#ffffff',
+    border: '1px solid #94a3b8',
+    borderRadius: '6px',
+    fontSize: '11px',
+    fontWeight: 800,
+    lineHeight: 1,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  }}
+>
+  ━
+</button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalDocMinimizado(false);
+                    setArqVisualizandoId(null);
+                  }}
+                  style={{
+                    width: 'auto',
+                    padding: '6px 14px',
+                    background: '#dc2626',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '11.5px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  ✖ Fechar
+                </button>
+              </div>
+            </div>
+
+            <iframe
+              src={urlArqVisualizando}
+              title={arqVisualizandoAtual.nomeOriginal}
+              style={{
+                flex: 1,
+                width: '100%',
+                border: 'none',
+                background: '#334155',
+              }}
+            />
+          </div>
+
+          <ModalScriptCopilotDocumento
+            aberto={modalCopilotOrgAberto}
+            onFechar={() => setModalCopilotOrgAberto(false)}
+            fileObj={arqVisualizandoAtual.fileObj}
+            onAbrirLocalArquivo={() =>
+              abrirLocalArquivoNoOrganizador(arqVisualizandoAtual)
+            }
+            contexto={{
+              nomeArquivo: arqVisualizandoAtual.nomeOriginal,
+              categoria: arqVisualizandoAtual.categoria,
+              porte: portePerfil,
+              escopo: cfgPerfil.escopo,
+              modalidadeDerivada,
+              modalidadeLimite,
+              titularNome,
+              titularCpf: cpfTitularDetectado,
+              estadoCivil: auditoriaPdf?.estadoCivilDetectado || '',
+              conjugeNome,
+              conjugeCpf: cpfConjugeDetectado,
+              imovelNome: paNome,
+              areaEsperadaHa:
+                auditoriaPdf?.dadosProjetoParaParecer?.areaImovelHa || '',
+              valorProposta: auditoriaPdf?.valorPropostaDetectado || cadValor,
+              prazoMeses: auditoriaPdf?.prazoMesesDetectado || '',
+              carenciaMeses: auditoriaPdf?.carenciaMesesDetectada || '',
+              imovelAcima600k: imovelAvaliadoAcima600k,
+            }}
+          />
+        </div>
+        </>
+      )}
+
+      {/* ITEM 3: MODAL COMPACTO PARA EDITAR / ADICIONAR / EXCLUIR IMÓVEIS DA PASTA */}
+      {modalGerenciarImoveisAberto && (
+        <div
+          onClick={() => setModalGerenciarImoveisAberto(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.72)',
+            zIndex: 990000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#ffffff',
+              width: '92vw',
+              maxWidth: '520px',
+              borderRadius: '12px',
+              borderTop: '5px solid #0369a1',
+              padding: '18px 20px',
+              boxShadow: '0 25px 50px rgba(0,0,0,0.45)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                borderBottom: '1px solid #e2e8f0',
+                paddingBottom: '8px',
+              }}
+            >
+              <div>
+                <h3
+                  style={{
+                    margin: 0,
+                    fontSize: '14.5px',
+                    color: '#0369a1',
+                    fontWeight: 900,
+                  }}
+                >
+                  🏕️ GERENCIAR IMÓVEL(IS) / P.A. DA PROPOSTA
+                </h3>
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  Edite o nome, apague imóveis identificados por engano ou
+                  adicione novos imóveis.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalGerenciarImoveisAberto(false)}
+                style={{
+                  width: 'auto',
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '22px',
+                  color: '#64748b',
+                  cursor: 'pointer',
+                  lineHeight: 1,
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                maxHeight: '280px',
+                overflowY: 'auto',
+                paddingRight: '2px',
+              }}
+            >
+              {listaImoveisNomes.map((nomeIm, idxIm) => (
+                <div
+                  key={idxIm}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    background: '#f8fafc',
+                    padding: '6px 8px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      fontWeight: 900,
+                      color: '#0369a1',
+                      minWidth: '62px',
+                    }}
+                  >
+                    Imóvel {idxIm + 1}:
+                  </span>
+                  <input
+                    type="text"
+                    value={nomeIm}
+                    onChange={(e) => {
+                      const valUp = e.target.value.toUpperCase();
+                      setImoveisEditadosManualmente(true);
+                      setListaImoveisNomes((prev) => {
+                        const copia = [...prev];
+                        copia[idxIm] = valUp;
+                        return copia;
+                      });
+                      if (idxIm === 0) setPaNome(valUp);
+                    }}
+                    placeholder="Ex: FAZ. DOIS IRMÃOS ou P.A. LAGO DA CARNAÚBA"
+                    style={{
+                      ...inputPadraoStyle,
+                      fontWeight: 800,
+                      flex: 1,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImoveisEditadosManualmente(true);
+                      if (listaImoveisNomes.length <= 1) {
+                        setListaImoveisNomes(['']);
+                        setPaNome('');
+                      } else {
+                        const nova = listaImoveisNomes.filter(
+                          (_, i) => i !== idxIm
+                        );
+                        setListaImoveisNomes(nova);
+                        setPaNome(nova[0] || '');
+                      }
+                    }}
+                    style={{
+                      width: 'auto',
+                      height: '32px',
+                      padding: '0 10px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      background: '#fee2e2',
+                      color: '#b91c1c',
+                      border: '1px solid #fca5a5',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title="Apagar este imóvel da lista"
+                  >
+                    🗑️ Apagar
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '8px',
+                borderTop: '1px dashed #cbd5e1',
+                paddingTop: '10px',
+              }}
+            >
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImoveisEditadosManualmente(true);
+                    setListaImoveisNomes((prev) => [
+                      ...prev,
+                      `FAZENDA ${prev.length + 1}`,
+                    ]);
+                  }}
+                  style={{
+                    width: 'auto',
+                    padding: '7px 12px',
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    background: '#e0f2fe',
+                    color: '#0369a1',
+                    border: '1px solid #7dd3fc',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ➕ Adicionar Imóvel
+                </button>
+
+                {listaImoveisNomes.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImoveisEditadosManualmente(true);
+                      const primeiro = listaImoveisNomes[0] || paNome;
+                      setListaImoveisNomes([primeiro]);
+                      setPaNome(primeiro);
+                    }}
+                    style={{
+                      width: 'auto',
+                      padding: '7px 12px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      background: '#fef3c7',
+                      color: '#92400e',
+                      border: '1px solid #fcd34d',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                    }}
+                    title="Remove todos os imóveis extras e mantém apenas o Imóvel 1"
+                  >
+                    🧹 Manter Só o 1º Imóvel
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const limpos = listaImoveisNomes
+                    .map((n) => n.trim().toUpperCase())
+                    .filter(Boolean);
+                  const finais =
+                    limpos.length > 0 ? limpos : [paNome || 'IMÓVEL'];
+                  setListaImoveisNomes(finais);
+                  setPaNome(finais[0]);
+
+                  // Sincroniza os arquivos da tabela: se algum arquivo tinha nomeImovelEspecifico de um imóvel apagado,
+                  // passa a usar o imóvel real definido pelo usuário!
+                  const setNomesValidos = new Set(
+                    finais.map((f) => removerAcentos(f).toUpperCase().trim())
+                  );
+                  setArquivosMapeados((prev) =>
+                    prev.map((item) => {
+                      if (!item.nomeImovelEspecifico) return item;
+                      const normEsp = removerAcentos(item.nomeImovelEspecifico)
+                        .toUpperCase()
+                        .trim();
+                      if (!setNomesValidos.has(normEsp)) {
+                        return {
+                          ...item,
+                          nomeImovelEspecifico:
+                            finais.length === 1 ? finais[0] : undefined,
+                        };
+                      }
+                      return item;
+                    })
+                  );
+
+                  setModalGerenciarImoveisAberto(false);
+                }}
+                style={{
+                  width: 'auto',
+                  padding: '8px 18px',
+                  fontSize: '12px',
+                  fontWeight: 900,
+                  background: '#15803d',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                ✅ Confirmar Imóvel(is)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL INICIAR PROPOSTA NO KANBAN */}
       {modalIniciarProposta && (

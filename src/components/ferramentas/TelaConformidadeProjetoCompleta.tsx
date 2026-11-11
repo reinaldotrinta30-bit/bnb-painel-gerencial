@@ -29,6 +29,7 @@ import {
 } from '@/lib/utils';
 import {
   executarAuditoriaCompletaDosPdfsDaPasta,
+  executarOcrEmPdfEscaneado,
   ResultadoAuditoriaPastaPdf,
   removerAcentos,
   normalizarSemAcento,
@@ -36,6 +37,7 @@ import {
 } from '@/lib/auditorInteligentePdfPasta';
 import ModalConferenciaDocumentacaoImoveis from '@/components/ferramentas/ModalConferenciaDocumentacaoImoveis';
 import PainelConsultasRapidasAgrupadas from '@/components/ferramentas/PainelConsultasRapidasAgrupadas';
+import ModalScriptCopilotDocumento from '@/components/ferramentas/ModalScriptCopilotDocumento';
 
 interface TelaConformidadeProjetoCompletaProps {
   aberto: boolean;
@@ -369,6 +371,7 @@ export default function TelaConformidadeProjetoCompleta({
     'TODOS' | 'PROBLEMAS' | 'OK'
   >('TODOS');
   const [modalImoveisAberto, setModalImoveisAberto] = useState(false);
+  const [modalCopilotAberto, setModalCopilotAberto] = useState(false);
 
   // ITEM 5: Estado do Leitor Leve de PDF Integrado na Coluna Central (Lupinha 🔎)
   const [arquivoVisualizando, setArquivoVisualizando] =
@@ -378,6 +381,312 @@ export default function TelaConformidadeProjetoCompleta({
   );
   const [painelEdicaoRapidaAberto, setPainelEdicaoRapidaAberto] =
     useState(false);
+  const [textosOcrExtraidos, setTextosOcrExtraidos] = useState<
+    Record<string, string>
+  >({});
+  const [executandoOcr, setExecutandoOcr] = useState(false);
+  const [progressoOcrMsg, setProgressoOcrMsg] = useState('');
+
+  // Reconstrói dinamicamente os alertas e diagnósticos (Itens 1, 2 e 10) sempre que o OCR,
+  // o Copilot ou a edição manual trouxerem novos dados (fazendo sumir os avisos antigos de "Não foi possível ler")!
+  const reconstruirAuditoriaComDadosAtuais = (
+    baseAud: ResultadoAuditoriaPastaPdf,
+    novos: {
+      titular: string;
+      cpfTit: string;
+      nascTit: string;
+      estCivil: string;
+      conjuge: string;
+      cpfConj: string;
+      nascConj: string;
+      procNome: string;
+      cpfProc: string;
+      nascProc: string;
+      valor: string;
+      prazo: string;
+      carencia: string;
+      cc: string;
+      projetista: string;
+      imovel: string;
+      area: string;
+      car: string;
+      itensTexto: string;
+    }
+  ): ResultadoAuditoriaPastaPdf => {
+    const linhasItens = (novos.itensTexto || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const novosDadosProj = {
+      ...baseAud.dadosProjetoParaParecer,
+      clienteNome: novos.titular,
+      clienteCpf: novos.cpfTit,
+      clienteDataNascimento: novos.nascTit,
+      estadoCivil: novos.estCivil,
+      conjugeNome: novos.conjuge,
+      conjugeCpf: novos.cpfConj,
+      conjugeDataNascimento: novos.nascConj,
+      procuradorNomeExtraido: novos.procNome,
+      procuradorCpfExtraido: novos.cpfProc,
+      procuradorDataNascimento: novos.nascProc,
+      valorTotalFinanciado: novos.valor,
+      prazoMeses: novos.prazo,
+      carenciaMeses: novos.carencia,
+      contaCorrenteExtraida: novos.cc,
+      projetistaNomeCurtoDetectado: novos.projetista,
+      denominacaoImovelPa: novos.imovel,
+      areaImovelHa: novos.area,
+      textoItensInversaoFormatado: novos.itensTexto,
+    };
+
+    const novosDiags = baseAud.itensDiagnostico.map((diag) => {
+      // Atualiza o Item 1 (Conta Corrente na Consolidada) se a conta foi lida via OCR/Copilot/Manual
+      if (diag.numero === 1 && novos.cc.trim()) {
+        return {
+          ...diag,
+          status: 'OK' as const,
+          resumo: `✅ Conta Corrente identificada/confirmada na Consolidada: ${novos.cc.trim()}.`,
+        };
+      }
+
+      // Atualiza o Item 2 (Valor, Prazo, Carência e Inversões do Projeto) removendo o alerta de "Não foi possível extrair"
+      if (
+        diag.numero === 2 &&
+        (novos.valor.trim() ||
+          novos.prazo.trim() ||
+          novos.carencia.trim() ||
+          linhasItens.length > 0)
+      ) {
+        return {
+          ...diag,
+          titulo:
+            escopoAtivo === 'LIMITE_PURO'
+              ? '2. Valor do Limite Identificado no PDF'
+              : '2. Valor, Prazo, Carência, Elaborador e Inversões Extraídos do Projeto',
+          status: 'OK' as const,
+          resumo: `Valor: R$ ${novos.valor.trim() || '0,00'}${
+            novos.prazo.trim() ? ` • Prazo: ${novos.prazo.trim()} meses` : ''
+          }${
+            novos.carencia.trim()
+              ? ` • Carência: ${novos.carencia.trim()} meses`
+              : ''
+          }${
+            novos.projetista.trim()
+              ? ` • Elaborador: ${novos.projetista.trim()}`
+              : ''
+          }`,
+          detalhes: [
+            novosDadosProj.programaCredito
+              ? `📑 Programa lido no PDF: ${novosDadosProj.programaCredito}`
+              : '',
+            ...linhasItens.map(
+              (linha) => `📦 Inversão: ${linha.replace(/^[-•*]\s*/, '')}`
+            ),
+          ].filter(Boolean),
+        };
+      }
+
+      // Atualiza o Item 10 (Estado Civil e Cônjuge) conforme o que estiver definido no Raio-X
+      if (diag.numero === 10) {
+        const estUp = novos.estCivil.toUpperCase().trim();
+        const semConjuge =
+          estUp.includes('SOLTEIR') ||
+          estUp.includes('DIVORCIAD') ||
+          estUp.includes('VIUV') ||
+          estUp.includes('VIÚV') ||
+          (!novos.conjuge.trim() && !estUp.includes('CASAD') && !estUp.includes('UNIAO') && !estUp.includes('UNIÃO'));
+
+        if (semConjuge) {
+          return {
+            ...diag,
+            status: 'OK' as const,
+            resumo: `Titular ${
+              novos.estCivil || 'Solteiro(a)'
+            } / Sem Cônjuge (Não exige certidões nem documentos de cônjuge).`,
+          };
+        }
+      }
+
+      return diag;
+    });
+
+    return {
+      ...baseAud,
+      valorPropostaDetectado: novos.valor,
+      prazoMesesDetectado: novos.prazo,
+      carenciaMesesDetectada: novos.carencia,
+      contaCorrenteConsolidada: novos.cc,
+      statusContaConsolidada: novos.cc.trim()
+        ? 'OK'
+        : baseAud.statusContaConsolidada,
+      carEspecificoDetectado: novos.car,
+      estadoCivilDetectado: novos.estCivil,
+      conjugeDetectadoNosPdfs: novos.conjuge,
+      projetistaCurtoDetectado: novos.projetista,
+      paDetectadoNoProjeto: novos.imovel,
+      textoItensInversaoFormatado: novos.itensTexto,
+      dadosProjetoParaParecer: novosDadosProj,
+      itensDiagnostico: novosDiags,
+    };
+  };
+
+  // ITEM 1 e 4: Executa OCR Óptico (Tesseract.js) nas páginas do PDF aberto na Lupinha,
+  // reclassifica o documento se necessário e atualiza imediatamente os alertas, Raio-X e Inversões!
+  const rodarOcrNoPdfAbertoEReauditar = async (
+    arqAlvo: ArquivoLidoConformidade
+  ) => {
+    if (executandoOcr) return;
+    setExecutandoOcr(true);
+    setProgressoOcrMsg(`⏳ Iniciando OCR em "${arqAlvo.nomeOriginal}"...`);
+    try {
+      const textoExtraidoOcr = await executarOcrEmPdfEscaneado(
+        arqAlvo.fileObj,
+        (msg) => setProgressoOcrMsg(msg)
+      );
+
+      if (!textoExtraidoOcr || textoExtraidoOcr.trim().length < 20) {
+        alert(
+          '⚠️ O OCR não conseguiu identificar texto legível suficiente nas imagens deste PDF.'
+        );
+        return;
+      }
+
+      const novoMapaOcr = {
+        ...textosOcrExtraidos,
+        [arqAlvo.nomeOriginal]: textoExtraidoOcr,
+      };
+      setTextosOcrExtraidos(novoMapaOcr);
+
+      setProgressoOcrMsg(
+        '🔄 Re-auditando documentos e atualizando alertas com o texto do OCR...'
+      );
+
+      const resAud = await executarAuditoriaCompletaDosPdfsDaPasta({
+        arquivos: arquivosLidos
+          .filter((m) => !m.ehTxtPendencia)
+          .map((m) => ({
+            fileObj: m.fileObj,
+            categoria: converterCategoriaParaAuditor(m.categoria),
+            isViti: m.isViti,
+            nomeOriginal: m.nomeOriginal,
+          })),
+        titularNome: titularDetectado,
+        conjugeNome: conjugeDetectado,
+        paEsperado: paDetectado,
+        porteSelecionado: porteAtivo,
+        escopoSelecionado: escopoAtivo,
+        modalidadeDerivada: modalidadeAtiva,
+        textosOcrOverride: novoMapaOcr,
+      });
+
+      // Se o OCR permitiu identificar a categoria real de um PDF antes não identificado, atualiza na lista!
+      const mapaConteudo = resAud.reclassificacoesPorConteudo || {};
+      const mapaSocio = resAud.reclassificacoesSocioambiental || {};
+      setArquivosLidos((prev) =>
+        prev.map((m) => {
+          if (m.ehTxtPendencia || m.isViti) return m;
+          const catS = mapaSocio[m.nomeOriginal];
+          if (catS) return { ...m, categoria: catS };
+          const catC = mapaConteudo[m.nomeOriginal] as
+            | CategoriaDocPasta
+            | undefined;
+          if (catC && m.categoria === 'OUTROS_NAO_IDENTIFICADO') {
+            return { ...m, categoria: catC };
+          }
+          return m;
+        })
+      );
+
+      // Atualiza imediatamente o Raio-X e a Gaveta de Transcrição com tudo o que o OCR descobriu!
+      const d = resAud.dadosProjetoParaParecer;
+      const novoTit = d?.clienteNome || titularDetectado;
+      const novoCpfTit = d?.clienteCpf || editCpfTitular;
+      const novoNascTit = d?.clienteDataNascimento || editNascTitular;
+      const novoEstCivil = resAud.estadoCivilDetectado || editEstadoCivil;
+      const novoConj = resAud.conjugeDetectadoNosPdfs || conjugeDetectado;
+      const novoCpfConj = d?.conjugeCpf || editCpfConjuge;
+      const novoNascConj = d?.conjugeDataNascimento || editNascConjuge;
+      const novoProc = d?.procuradorNomeExtraido || editProcuradorNome;
+      const novoCpfProc = d?.procuradorCpfExtraido || editCpfProcurador;
+      const novoNascProc = d?.procuradorDataNascimento || editNascProcurador;
+      const novoVal = resAud.valorPropostaDetectado || editValorProj;
+      const novoPrazo = resAud.prazoMesesDetectado || editPrazoProj;
+      const novaCar = resAud.carenciaMesesDetectada || editCarenciaProj;
+      const novaCc = resAud.contaCorrenteConsolidada || editCcConsol;
+      const novoProj = resAud.projetistaCurtoDetectado || projetistaDetectado;
+      const novoPa = resAud.paDetectadoNoProjeto || paDetectado;
+      const novaArea = d?.areaImovelHa || editAreaHa;
+      const novoCar = resAud.carEspecificoDetectado || editCarRecibo;
+      const novosItens = resAud.textoItensInversaoFormatado || editItensTexto;
+
+      setTitularDetectado(novoTit);
+      setEditCpfTitular(novoCpfTit);
+      setEditNascTitular(novoNascTit);
+      setEditEstadoCivil(novoEstCivil);
+      setConjugeDetectado(novoConj);
+      setEditCpfConjuge(novoCpfConj);
+      setEditNascConjuge(novoNascConj);
+      setEditProcuradorNome(novoProc);
+      setEditCpfProcurador(novoCpfProc);
+      setEditNascProcurador(novoNascProc);
+      setEditValorProj(novoVal);
+      setEditPrazoProj(novoPrazo);
+      setEditCarenciaProj(novaCar);
+      setEditCcConsol(novaCc);
+      setProjetistaDetectado(novoProj);
+      setPaDetectado(novoPa);
+      setEditAreaHa(novaArea);
+      setEditCarRecibo(novoCar);
+      setEditItensTexto(novosItens);
+
+      const audAtualizada = reconstruirAuditoriaComDadosAtuais(resAud, {
+        titular: novoTit,
+        cpfTit: novoCpfTit,
+        nascTit: novoNascTit,
+        estCivil: novoEstCivil,
+        conjuge: novoConj,
+        cpfConj: novoCpfConj,
+        nascConj: novoNascConj,
+        procNome: novoProc,
+        cpfProc: novoCpfProc,
+        nascProc: novoNascProc,
+        valor: novoVal,
+        prazo: novoPrazo,
+        carencia: novaCar,
+        cc: novaCc,
+        projetista: novoProj,
+        imovel: novoPa,
+        area: novaArea,
+        car: novoCar,
+        itensTexto: novosItens,
+      });
+
+      setAuditoriaPdf(audAtualizada);
+      salvarDadosExtraidosParaParecer(audAtualizada.dadosProjetoParaParecer);
+
+      // Se o arquivo lido via OCR era o Projeto ou Consolidada, já abre a barra de conferência para mostrar os dados preenchidos!
+      if (
+        arqAlvo.categoria === 'ITEM_PROJETO_PDF' ||
+        arqAlvo.categoria === 'ITEM_CONSOLIDADAS' ||
+        resAud.valorPropostaDetectado ||
+        resAud.textoItensInversaoFormatado ||
+        resAud.contaCorrenteConsolidada
+      ) {
+        setPainelEdicaoRapidaAberto(true);
+      }
+
+      alert(
+        `✅ OCR concluído com sucesso em "${arqAlvo.nomeOriginal}"!\n\nOs alertas, o Raio-X e os dados do documento foram revalidados e atualizados!`
+      );
+    } catch (err) {
+      console.error('Erro no OCR:', err);
+      alert('❌ Erro ao processar OCR neste documento.');
+    } finally {
+      setExecutandoOcr(false);
+      setProgressoOcrMsg('');
+    }
+  };
   // Estados Editáveis do "📋 RAIO-X EXTRAÍDO DO PROJETO" (Sincronizados com Nuvem + Cache Parecer)
   const [editCpfTitular, setEditCpfTitular] = useState('');
   const [editNascTitular, setEditNascTitular] = useState('');
@@ -622,10 +931,13 @@ export default function TelaConformidadeProjetoCompleta({
     return apontamentos;
   }, [registroConformidadePronafAVinculado]);
 
-  // Sincroniza os campos do Raio-X sempre que a auditoria de PDF terminar,
-  // mesclando com a Conformidade PRONAF A e com o Cache Salvo na Nuvem do Cliente!
+  // Controla para que a carga inicial do Raio-X ocorra apenas ao abrir a pasta (sem nunca sobrescrever ou travar edições manuais!)
+  const [pastaRaioXInicializada, setPastaRaioXInicializada] = useState('');
+
   useEffect(() => {
-    if (!auditoriaPdf) return;
+    if (!auditoriaPdf || !nomePasta) return;
+    if (pastaRaioXInicializada === nomePasta) return;
+
     const d = auditoriaPdf.dadosProjetoParaParecer;
     const regConf = registroConformidadePronafAVinculado;
 
@@ -645,137 +957,195 @@ export default function TelaConformidadeProjetoCompleta({
       nomePasta
     );
 
-    if (salvoManual?.titularNome && !titularDetectado) {
-      setTitularDetectado(salvoManual.titularNome);
-    }
-    if (
-      (salvoManual?.conjugeNome || regConf?.conjugeNome) &&
-      !conjugeDetectado
-    ) {
-      setConjugeDetectado(
-        salvoManual?.conjugeNome || regConf?.conjugeNome || ''
+    // Usa coalescência nula (??) quando existe salvoManual: se o usuário apagou um campo errado e deixou "",
+    // respeita o "" sem forçar de volta o dado equivocado da varredura!
+    const titFinal = salvoManual
+      ? salvoManual.titularNome ?? ''
+      : d?.clienteNome || titularDetectado || '';
+    const conjFinal = salvoManual
+      ? salvoManual.conjugeNome ?? ''
+      : auditoriaPdf.conjugeDetectadoNosPdfs ||
+        conjugeDetectado ||
+        regConf?.conjugeNome ||
+        '';
+    const projFinal = salvoManual
+      ? salvoManual.projetista ?? ''
+      : auditoriaPdf.projetistaCurtoDetectado || projetistaDetectado || '';
+    const paFinal = salvoManual
+      ? salvoManual.imovelPa ?? ''
+      : auditoriaPdf.paDetectadoNoProjeto || paDetectado || '';
+
+    const cpfTitFinal = salvoManual ? salvoManual.titularCpf ?? '' : cpfInicial;
+    const nascTitFinal = salvoManual
+      ? salvoManual.titularDataNasc ?? ''
+      : d?.clienteDataNascimento || '';
+    const estCivilFinal = salvoManual
+      ? salvoManual.estadoCivil ?? ''
+      : auditoriaPdf.estadoCivilDetectado || '';
+    const cpfConjFinal = salvoManual
+      ? salvoManual.conjugeCpf ?? ''
+      : d?.conjugeCpf || regConf?.conjugeCpf || '';
+    const nascConjFinal = salvoManual
+      ? salvoManual.conjugeDataNasc ?? ''
+      : d?.conjugeDataNascimento || '';
+    const procNomeFinal = salvoManual
+      ? salvoManual.procuradorNome ?? ''
+      : d?.procuradorNomeExtraido || regConf?.procuradorNome || '';
+    const cpfProcFinal = salvoManual
+      ? salvoManual.procuradorCpf ?? ''
+      : d?.procuradorCpfExtraido || regConf?.procuradorCpf || '';
+    const nascProcFinal = salvoManual
+      ? salvoManual.procuradorDataNasc ?? ''
+      : d?.procuradorDataNascimento || '';
+    const valFinal = salvoManual
+      ? salvoManual.valorFinanciado ?? ''
+      : auditoriaPdf.valorPropostaDetectado || '';
+    const prazoFinal = salvoManual
+      ? salvoManual.prazoMeses ?? ''
+      : auditoriaPdf.prazoMesesDetectado || '';
+    const carFinal = salvoManual
+      ? salvoManual.carenciaMeses ?? ''
+      : auditoriaPdf.carenciaMesesDetectada || '';
+    const ccFinal = salvoManual
+      ? salvoManual.contaCorrente ?? ''
+      : auditoriaPdf.contaCorrenteConsolidada || regConf?.contaCorrente || '';
+    const areaFinal = salvoManual
+      ? salvoManual.areaHa ?? ''
+      : d?.areaImovelHa || '';
+    const carReciboFinal = salvoManual
+      ? salvoManual.reciboCar ?? ''
+      : auditoriaPdf.carEspecificoDetectado || '';
+    const itensFinal = auditoriaPdf.textoItensInversaoFormatado || '';
+
+    setTitularDetectado(titFinal);
+    setConjugeDetectado(conjFinal);
+    setProjetistaDetectado(projFinal);
+    setPaDetectado(paFinal);
+    setEditCpfTitular(cpfTitFinal);
+    setEditNascTitular(nascTitFinal);
+    setEditEstadoCivil(estCivilFinal);
+    setEditCpfConjuge(cpfConjFinal);
+    setEditNascConjuge(nascConjFinal);
+    setEditProcuradorNome(procNomeFinal);
+    setEditCpfProcurador(cpfProcFinal);
+    setEditNascProcurador(nascProcFinal);
+    setEditValorProj(valFinal);
+    setEditPrazoProj(prazoFinal);
+    setEditCarenciaProj(carFinal);
+    setEditCcConsol(ccFinal);
+    setEditAreaHa(areaFinal);
+    setEditCarRecibo(carReciboFinal);
+    setEditItensTexto(itensFinal);
+
+    setPastaRaioXInicializada(nomePasta);
+
+    if (salvoManual) {
+      setAuditoriaPdf((prev) =>
+        prev
+          ? reconstruirAuditoriaComDadosAtuais(prev, {
+              titular: titFinal,
+              cpfTit: cpfTitFinal,
+              nascTit: nascTitFinal,
+              estCivil: estCivilFinal,
+              conjuge: conjFinal,
+              cpfConj: cpfConjFinal,
+              nascConj: nascConjFinal,
+              procNome: procNomeFinal,
+              cpfProc: cpfProcFinal,
+              nascProc: nascProcFinal,
+              valor: valFinal,
+              prazo: prazoFinal,
+              carencia: carFinal,
+              cc: ccFinal,
+              projetista: projFinal,
+              imovel: paFinal,
+              area: areaFinal,
+              car: carReciboFinal,
+              itensTexto: itensFinal,
+            })
+          : prev
       );
     }
-    if (salvoManual?.projetista && !projetistaDetectado) {
-      setProjetistaDetectado(salvoManual.projetista);
-    }
-    if (salvoManual?.imovelPa && !paDetectado) {
-      setPaDetectado(salvoManual.imovelPa);
-    }
+  }, [auditoriaPdf, nomePasta, pastaRaioXInicializada, registroConformidadePronafAVinculado]);
 
-    setEditCpfTitular(salvoManual?.titularCpf || cpfInicial);
-    setEditNascTitular(
-      salvoManual?.titularDataNasc || d?.clienteDataNascimento || ''
-    );
-    setEditEstadoCivil(
-      salvoManual?.estadoCivil || auditoriaPdf.estadoCivilDetectado || ''
-    );
-    setEditCpfConjuge(
-      salvoManual?.conjugeCpf || d?.conjugeCpf || regConf?.conjugeCpf || ''
-    );
-    setEditNascConjuge(
-      salvoManual?.conjugeDataNasc || d?.conjugeDataNascimento || ''
-    );
-    setEditProcuradorNome(
-      salvoManual?.procuradorNome ||
-        d?.procuradorNomeExtraido ||
-        regConf?.procuradorNome ||
-        ''
-    );
-    setEditCpfProcurador(
-      salvoManual?.procuradorCpf ||
-        d?.procuradorCpfExtraido ||
-        regConf?.procuradorCpf ||
-        ''
-    );
-    setEditNascProcurador(
-      salvoManual?.procuradorDataNasc || d?.procuradorDataNascimento || ''
-    );
-    setEditValorProj(
-      salvoManual?.valorFinanciado || auditoriaPdf.valorPropostaDetectado || ''
-    );
-    setEditPrazoProj(
-      salvoManual?.prazoMeses || auditoriaPdf.prazoMesesDetectado || ''
-    );
-    setEditCarenciaProj(
-      salvoManual?.carenciaMeses || auditoriaPdf.carenciaMesesDetectada || ''
-    );
-    setEditCcConsol(
-      salvoManual?.contaCorrente ||
-        auditoriaPdf.contaCorrenteConsolidada ||
-        regConf?.contaCorrente ||
-        ''
-    );
-    setEditAreaHa(salvoManual?.areaHa || d?.areaImovelHa || '');
-    setEditCarRecibo(
-      salvoManual?.reciboCar || auditoriaPdf.carEspecificoDetectado || ''
-    );
-    setEditItensTexto(auditoriaPdf.textoItensInversaoFormatado || '');
-  }, [auditoriaPdf, registroConformidadePronafAVinculado]);
+  const salvarAjustesManuaisDaLupinha = async (
+    silencioso = false,
+    overridesOpcionais?: Partial<{
+      titular: string;
+      cpfTit: string;
+      nascTit: string;
+      estCivil: string;
+      conjuge: string;
+      cpfConj: string;
+      nascConj: string;
+      procNome: string;
+      cpfProc: string;
+      nascProc: string;
+      valor: string;
+      prazo: string;
+      carencia: string;
+      cc: string;
+      projetista: string;
+      imovel: string;
+      area: string;
+      car: string;
+      itensTexto: string;
+    }>
+  ) => {
+    const atual = {
+      titular: overridesOpcionais?.titular ?? titularDetectado,
+      cpfTit: overridesOpcionais?.cpfTit ?? editCpfTitular,
+      nascTit: overridesOpcionais?.nascTit ?? editNascTitular,
+      estCivil: overridesOpcionais?.estCivil ?? editEstadoCivil,
+      conjuge: overridesOpcionais?.conjuge ?? conjugeDetectado,
+      cpfConj: overridesOpcionais?.cpfConj ?? editCpfConjuge,
+      nascConj: overridesOpcionais?.nascConj ?? editNascConjuge,
+      procNome: overridesOpcionais?.procNome ?? editProcuradorNome,
+      cpfProc: overridesOpcionais?.cpfProc ?? editCpfProcurador,
+      nascProc: overridesOpcionais?.nascProc ?? editNascProcurador,
+      valor: overridesOpcionais?.valor ?? editValorProj,
+      prazo: overridesOpcionais?.prazo ?? editPrazoProj,
+      carencia: overridesOpcionais?.carencia ?? editCarenciaProj,
+      cc: overridesOpcionais?.cc ?? editCcConsol,
+      projetista: overridesOpcionais?.projetista ?? projetistaDetectado,
+      imovel: overridesOpcionais?.imovel ?? paDetectado,
+      area: overridesOpcionais?.area ?? editAreaHa,
+      car: overridesOpcionais?.car ?? editCarRecibo,
+      itensTexto: overridesOpcionais?.itensTexto ?? editItensTexto,
+    };
 
-  const salvarAjustesManuaisDaLupinha = async (silencioso = false) => {
     const pacoteRaioX: DadosRaioXManualCliente = {
-      chaveCliente: normalizarSemAcento(titularDetectado || nomePasta),
-      titularNome: titularDetectado,
-      titularCpf: editCpfTitular,
-      titularDataNasc: editNascTitular,
-      estadoCivil: editEstadoCivil,
-      conjugeNome: conjugeDetectado,
-      conjugeCpf: editCpfConjuge,
-      conjugeDataNasc: editNascConjuge,
-      procuradorNome: editProcuradorNome,
-      procuradorCpf: editCpfProcurador,
-      procuradorDataNasc: editNascProcurador,
-      valorFinanciado: editValorProj,
-      prazoMeses: editPrazoProj,
-      carenciaMeses: editCarenciaProj,
-      contaCorrente: editCcConsol,
-      projetista: projetistaDetectado,
-      imovelPa: paDetectado,
-      areaHa: editAreaHa,
-      reciboCar: editCarRecibo,
+      chaveCliente: normalizarSemAcento(atual.titular || nomePasta),
+      titularNome: atual.titular,
+      titularCpf: atual.cpfTit,
+      titularDataNasc: atual.nascTit,
+      estadoCivil: atual.estCivil,
+      conjugeNome: atual.conjuge,
+      conjugeCpf: atual.cpfConj,
+      conjugeDataNasc: atual.nascConj,
+      procuradorNome: atual.procNome,
+      procuradorCpf: atual.cpfProc,
+      procuradorDataNasc: atual.nascProc,
+      valorFinanciado: atual.valor,
+      prazoMeses: atual.prazo,
+      carenciaMeses: atual.carencia,
+      contaCorrente: atual.cc,
+      projetista: atual.projetista,
+      imovelPa: atual.imovel,
+      areaHa: atual.area,
+      reciboCar: atual.car,
       atualizadoEm: new Date().toISOString(),
     };
 
     await salvarRaioXDoClienteLocalENuvem(pacoteRaioX);
 
     if (auditoriaPdf) {
-      const novosDadosProj = {
-        ...auditoriaPdf.dadosProjetoParaParecer,
-        clienteNome: titularDetectado,
-        clienteCpf: editCpfTitular,
-        clienteDataNascimento: editNascTitular,
-        estadoCivil: editEstadoCivil,
-        conjugeNome: conjugeDetectado,
-        conjugeCpf: editCpfConjuge,
-        conjugeDataNascimento: editNascConjuge,
-        procuradorNomeExtraido: editProcuradorNome,
-        procuradorCpfExtraido: editCpfProcurador,
-        procuradorDataNascimento: editNascProcurador,
-        valorTotalFinanciado: editValorProj,
-        prazoMeses: editPrazoProj,
-        carenciaMeses: editCarenciaProj,
-        contaCorrenteExtraida: editCcConsol,
-        denominacaoImovelPa: paDetectado,
-        areaImovelHa: editAreaHa,
-        textoItensInversaoFormatado: editItensTexto,
-      };
-      salvarDadosExtraidosParaParecer(novosDadosProj);
-
-      setAuditoriaPdf({
-        ...auditoriaPdf,
-        valorPropostaDetectado: editValorProj,
-        prazoMesesDetectado: editPrazoProj,
-        carenciaMesesDetectada: editCarenciaProj,
-        contaCorrenteConsolidada: editCcConsol,
-        carEspecificoDetectado: editCarRecibo,
-        estadoCivilDetectado: editEstadoCivil,
-        conjugeDetectadoNosPdfs: conjugeDetectado,
-        projetistaCurtoDetectado: projetistaDetectado,
-        paDetectadoNoProjeto: paDetectado,
-        textoItensInversaoFormatado: editItensTexto,
-        dadosProjetoParaParecer: novosDadosProj,
-      });
+      const audReconstruida = reconstruirAuditoriaComDadosAtuais(
+        auditoriaPdf,
+        atual
+      );
+      salvarDadosExtraidosParaParecer(audReconstruida.dadosProjetoParaParecer);
+      setAuditoriaPdf(audReconstruida);
     }
 
     setStatusSalvoRaioX('☁️ Salvo na Nuvem!');
@@ -784,7 +1154,7 @@ export default function TelaConformidadeProjetoCompleta({
     if (!silencioso) {
       setPainelEdicaoRapidaAberto(false);
       alert(
-        '✅ Dados do Raio-X salvos na Nuvem do cliente e sincronizados com o Parecer!'
+        '✅ Dados atualizados no Raio-X, nos Alertas da Auditoria e no Cache do Parecer!'
       );
     }
   };
@@ -809,6 +1179,7 @@ export default function TelaConformidadeProjetoCompleta({
   ) => {
     setDirHandleRoot(handle);
     setNomePasta(handle.name);
+    setPastaRaioXInicializada('');
     setAuditando(true);
     setArquivoVisualizando(null);
 
@@ -1394,10 +1765,16 @@ if (!titDet && handle.name) {
     const temLimite =
       escopoAtivo === 'LIMITE_PURO' ||
       escopoAtivo === 'COMBO_DERIVADA_E_LIMITE';
+    const estCivilAtivo = (
+      editEstadoCivil ||
+      auditoriaPdf?.estadoCivilDetectado ||
+      ''
+    ).toUpperCase();
     const temConjuge = Boolean(
       conjugeDetectado.trim() ||
-        auditoriaPdf?.estadoCivilDetectado?.includes('CASAD') ||
-        auditoriaPdf?.estadoCivilDetectado?.includes('UNIAO')
+        estCivilAtivo.includes('CASAD') ||
+        estCivilAtivo.includes('UNIAO') ||
+        estCivilAtivo.includes('UNIÃO')
     );
 
     const itens: ItemVerificacaoCompletaPasta[] = [];
@@ -1591,19 +1968,34 @@ if (!titDet && handle.name) {
     });
 
     const arqsConsol = buscarArqs(['ITEM_CONSOLIDADAS'], ['CONSOLIDADA']);
-    const temCcLida = Boolean(auditoriaPdf?.contaCorrenteConsolidada);
+    const ccConfirmada =
+       Boolean(editCcConsol.trim()) ||
+      Boolean(auditoriaPdf?.contaCorrenteConsolidada);
+    const statusCc = auditoriaPdf?.statusContaConsolidada;
+
     itens.push({
       id: 'AN_CC_CONSOLIDADA',
-      titulo: 'Verificação da Conta Corrente na Consolidada',
+      titulo: 'Conta Corrente na Declaração Consolidada',
       obrigatorio: true,
-      presente: arqsConsol.length > 0 && temCcLida,
-      responsavel: 'ANALISTA_BANCO',
+      presente: arqsConsol.length > 0 && ccConfirmada,
+      responsavel:
+        arqsConsol.length > 0 && !ccConfirmada && statusCc === 'FALTA'
+          ? 'PROJETISTA_CLIENTE'
+          : 'ANALISTA_BANCO',
       detalheStatus:
         arqsConsol.length === 0
           ? 'Falta a Declaração Consolidada na pasta.'
-          : temCcLida
-          ? `Conta Corrente (${auditoriaPdf?.contaCorrenteConsolidada}) confirmada na Consolidada.`
-          : 'Verificar se a Conta Corrente está preenchida na Declaração Consolidada.',
+          : ccConfirmada
+          ? `✅ Conta Corrente (${
+              editCcConsol || auditoriaPdf?.contaCorrenteConsolidada
+            }${
+              auditoriaPdf?.agenciaConsolidadaDetectada
+                ? ` • Ag. ${auditoriaPdf.agenciaConsolidadaDetectada}`
+                : ''
+            }) confirmada no trecho de débito da Consolidada.`
+          : statusCc === 'NAO_LIDO'
+          ? '⚠️ Não foi possível ler o texto da Consolidada (PDF em imagem). Abra na Lupinha (🔎) e use "🧠 Ler Imagem via OCR" ou confira visualmente.'
+          : '🚨 FALTA A CONTA CORRENTE no trecho "conta de depósito de livre movimentação de número..." da Consolidada!',
       arquivosRelacionados: arqsConsol,
     });
 
@@ -2003,11 +2395,8 @@ if (!titDet && handle.name) {
         arquivosRelacionados: arqsIdConj,
       });
 
-      // Se o Estado Civil no Projeto for CASADO(A), cobra obrigatoriamente a Certidão de Casamento!
-      // Se for UNIÃO ESTÁVEL, não cobra Certidão de Casamento!
-      const ehCasadoNoProjeto = (
-        auditoriaPdf?.estadoCivilDetectado || ''
-      ).includes('CASAD');
+      // Se o Estado Civil no Raio-X/Projeto for CASADO(A), cobra obrigatoriamente a Certidão de Casamento!
+      const ehCasadoNoProjeto = estCivilAtivo.includes('CASAD');
       if (ehCasadoNoProjeto) {
         const arqsCasamento = buscarArqs(['CAD_2_CERTIDAO_CASAMENTO'], [
           'CASAMENTO',
@@ -3634,8 +4023,66 @@ if (!titDet && handle.name) {
                 </div>
 
                 <div
-                  style={{ display: 'flex', gap: '8px', alignItems: 'center' }}
+                  style={{
+                    display: 'flex',
+                    gap: '8px',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                  }}
                 >
+                  <button
+                    type="button"
+                    disabled={executandoOcr}
+                    onClick={() =>
+                      rodarOcrNoPdfAbertoEReauditar(arquivoVisualizando)
+                    }
+                    style={{
+                      width: 'auto',
+                      padding: '6px 12px',
+                      background: executandoOcr
+                        ? '#b45309'
+                        : textosOcrExtraidos[arquivoVisualizando.nomeOriginal]
+                        ? '#0d9488'
+                        : '#7c3aed',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      cursor: executandoOcr ? 'wait' : 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title="Extrai o texto de PDFs escaneados como imagem (via OCR óptico) e re-audita automaticamente prazos, valores, Inteiro Teor (15 anos + aquisição) e cláusulas!"
+                  >
+                    {executandoOcr
+                      ? `⏳ ${progressoOcrMsg || 'Lendo OCR...'}`
+                      : textosOcrExtraidos[arquivoVisualizando.nomeOriginal]
+                      ? '✅ OCR Aplicado (Re-executar OCR)'
+                      : '🧠 Ler OCR & Re-Auditar'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setModalCopilotAberto(true)}
+                    style={{
+                      width: 'auto',
+                      padding: '6px 12px',
+                      background: 'linear-gradient(90deg, #1d4ed8 0%, #2563eb 100%)',
+                      color: '#ffffff',
+                      border: '1px solid #93c5fd',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: 900,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                      boxShadow: '0 2px 6px rgba(37, 99, 235, 0.35)',
+                    }}
+                    title="Gera o Script personalizado com os dados deste cliente e regras do documento para colar no Microsoft Copilot!"
+                  >
+                    🤖 Copilot
+                  </button>    
+
+
                   <button
                     type="button"
                     onClick={() =>
@@ -3659,7 +4106,7 @@ if (!titDet && handle.name) {
                     ✏️{' '}
                     {painelEdicaoRapidaAberto
                       ? 'Ocultar Painel de Transcrição'
-                      : 'Conferir / Editar Dados Lidos'}
+                      : 'Editar Dados'}
                   </button>
 
                   <button
@@ -3723,7 +4170,7 @@ if (!titDet && handle.name) {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    ↗️ Abrir em Nova Guia
+                    ↗️ Nova Guia
                   </a>
 
                   <button
@@ -3745,7 +4192,7 @@ if (!titDet && handle.name) {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    ✖ Fechar PDF
+                    ✖ Fechar
                   </button>
                 </div>
               </div>
@@ -4580,6 +5027,74 @@ if (!titDet && handle.name) {
         imovelEsperadoNome={paDetectado}
         arquivosImovelDaPasta={arquivosImovelPreCarregadosDaPasta}
       />
+
+      {arquivoVisualizando && (
+        <ModalScriptCopilotDocumento
+          aberto={modalCopilotAberto}
+          onFechar={() => setModalCopilotAberto(false)}
+          fileObj={arquivoVisualizando.fileObj}
+          onAbrirLocalArquivo={() =>
+            abrirLocalDoArquivoNoExplorer(arquivoVisualizando)
+          }
+          contexto={{
+            nomeArquivo: arquivoVisualizando.nomeOriginal,
+            categoria: arquivoVisualizando.categoria,
+            porte: porteAtivo,
+            escopo: escopoAtivo,
+            modalidadeDerivada: modalidadeAtiva,
+            titularNome: titularDetectado,
+            titularCpf: cpfTitular,
+            estadoCivil: editEstadoCivil,
+            conjugeNome: conjugeDetectado,
+            conjugeCpf: cpfConjuge,
+            imovelNome: paDetectado,
+            areaEsperadaHa: editAreaHa || dProj?.areaImovelHa || '',
+            valorProposta: editValorProj,
+            prazoMeses: editPrazoProj,
+            carenciaMeses: editCarenciaProj,
+          }}
+          onImportarDadosDoCopilot={(dados: any) => {
+            const novoVal = dados.valorFinanciado || editValorProj;
+            const novoPr = dados.prazoMeses || editPrazoProj;
+            const novaCar = dados.carenciaMeses || editCarenciaProj;
+            const novaCc = dados.contaCorrente || editCcConsol;
+            const novoEst = dados.estadoCivil || editEstadoCivil;
+            const novoConj = dados.conjugeNome ?? conjugeDetectado;
+            const novoCpfConj = dados.conjugeCpf || editCpfConjuge;
+            const novoNascConj = dados.conjugeNasc || editNascConjuge;
+            const novoNascTit = dados.titularNasc || editNascTitular;
+            const novaArea = dados.areaHa || editAreaHa;
+            const novosItens = dados.itensInversao || editItensTexto;
+
+            setEditValorProj(novoVal);
+            setEditPrazoProj(novoPr);
+            setEditCarenciaProj(novaCar);
+            setEditCcConsol(novaCc);
+            setEditEstadoCivil(novoEst);
+            setConjugeDetectado(novoConj);
+            setEditCpfConjuge(novoCpfConj);
+            setEditNascConjuge(novoNascConj);
+            setEditNascTitular(novoNascTit);
+            setEditAreaHa(novaArea);
+            setEditItensTexto(novosItens);
+
+            setPainelEdicaoRapidaAberto(true);
+            salvarAjustesManuaisDaLupinha(true, {
+              valor: novoVal,
+              prazo: novoPr,
+              carencia: novaCar,
+              cc: novaCc,
+              estCivil: novoEst,
+              conjuge: novoConj,
+              cpfConj: novoCpfConj,
+              nascConj: novoNascConj,
+              nascTit: novoNascTit,
+              area: novaArea,
+              itensTexto: novosItens,
+            });
+          }}
+        />
+      )}
     </div>,
     document.body
   );

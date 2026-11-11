@@ -572,7 +572,7 @@ export default function ModuloFerramentas({
         >
           <div>
             <strong style={{ color: '#15803d', fontSize: '15px', display: 'block' }}>
-              🎯 CONFORMIDADE CADASTRAL & PRIORIZAÇÃO AUTOMÁTICA — PRONAF A
+              🎯 VERIFICAÇÃO DE CONFORMIDADE CADASTRAL  — PRONAF A
             </strong>
             <span style={{ fontSize: '12px', color: '#475569' }}>
               Gerencie múltiplas listas salvas na nuvem (14 colunas), importe/exporte planilhas Excel (.XLSX) e envie propostas em 1 clique para a etapa de Cadastros do Kanban.
@@ -616,7 +616,7 @@ export default function ModuloFerramentas({
         >
           <div>
             <strong style={{ color: '#0369a1', fontSize: '15px', display: 'block' }}>
-              🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS DE CLIENTES & GAVETA DE CORINGAS
+              🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS
             </strong>
             <span style={{ fontSize: '12px', color: '#475569' }}>
               Organize automaticamente as pastas de clientes, com base em 6 critérios de ordenação, e armazene documentos coringa para uso rápido em qualquer proposta.
@@ -681,7 +681,7 @@ export default function ModuloFerramentas({
         >
           <div>
             <strong style={{ color: '#004C27', fontSize: '15px', display: 'block' }}>
-              🗺️ GEOPROCESSAMENTO GEODÉSICO (.KML) & AUDITORIA SOCIOAMBIENTAL
+              🗺️ ANALISADOR KML & AUDITORIA SOCIOAMBIENTAL
             </strong>
             <span style={{ fontSize: '12px', color: '#475569' }}>
               Edite polígonos no mapa satélite (recorte de APP/Reserva Legal e enquadramento no CAR) ou cruze o .KML com o PDF da Certificação Socioambiental.

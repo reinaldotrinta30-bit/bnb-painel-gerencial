@@ -88,6 +88,8 @@ export interface ResultadoAuditoriaPastaPdf {
   textoItensInversaoFormatado: string;
   dadosProjetoParaParecer: DadosExtraidosProjetoParecer;
   contaCorrenteConsolidada: string;
+  agenciaConsolidadaDetectada?: string;
+  statusContaConsolidada?: 'OK' | 'FALTA' | 'NAO_LIDO';
   paDetectadoNoProjeto: string;
   carEspecificoDetectado: string;
   estadoCivilDetectado: string;
@@ -99,6 +101,8 @@ export interface ResultadoAuditoriaPastaPdf {
     'ITEM_CERT_SOCIO_COM_KML' | 'ITEM_CERT_SOCIO_SEM_KML'
   >;
   reclassificacoesPorConteudo?: Record<string, string>;
+  imoveisDetectadosNosDocumentos?: string[];
+  categoriasComAssinaturaSemViti?: string[];
   kmlCorrigidoAutomaticamente?: {
     nomeArquivo: string;
     conteudoKml: string;
@@ -283,6 +287,70 @@ function detectarAssinaturaDigitalNoBinarioPdf(buffer: ArrayBuffer): boolean {
     );
   } catch {
     return false;
+  }
+}
+
+async function obterTesseractJs(): Promise<any> {
+  if (typeof window === 'undefined') return null;
+  const win = window as any;
+  if (win.Tesseract) return win.Tesseract;
+
+  return new Promise((resolve) => {
+    const script = document.createElement('script');
+    script.src =
+      'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    script.async = true;
+    script.onload = () => resolve(win.Tesseract || null);
+    script.onerror = () => resolve(null);
+    document.head.appendChild(script);
+  });
+}
+
+// ITEM 4: Motor de OCR Óptico Real para PDFs escaneados como imagem!
+// Renderiza as páginas do PDF em alta resolução num <canvas> e extrai o texto em Português via Tesseract.js
+export async function executarOcrEmPdfEscaneado(
+  file: File,
+  onProgresso?: (msg: string) => void,
+  maxPaginas = 12
+): Promise<string> {
+  try {
+    const [pdfjsLib, Tesseract] = await Promise.all([
+      obterPdfJsLib(),
+      obterTesseractJs(),
+    ]);
+    if (!pdfjsLib || !Tesseract) {
+      throw new Error('Bibliotecas de OCR não disponíveis.');
+    }
+
+    const buffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+    const totalPags = Math.min(pdf.numPages || 1, maxPaginas);
+    const textosPaginas: string[] = [];
+
+    for (let p = 1; p <= totalPags; p++) {
+      onProgresso?.(
+        `🔍 Executando ${p} de ${totalPags} de "${file.name}"...`
+      );
+      const page = await pdf.getPage(p);
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      if (ctx) {
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const dataUrl = canvas.toDataURL('image/png');
+        const result = await Tesseract.recognize(dataUrl, 'por');
+        const txtPag = result?.data?.text || '';
+        textosPaginas.push(`[PÁG ${p}]\n${txtPag}`);
+      }
+    }
+
+    return textosPaginas.join('\n\n');
+  } catch (err) {
+    console.error('Erro durante OCR do PDF:', err);
+    return '';
   }
 }
 
@@ -500,9 +568,11 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
     };
   }
 
-  // 4. Certificação Socioambiental (Distingue COM KML vs SEM KML pela presença do bloco "Glebas")
+  // 4. Certificação Socioambiental (Reconhece "Relatório de Conformidade Socioambiental" e distingue COM KML vs SEM KML)
   if (
     tCabecalho.includes('RELATORIO DE CERTIFICACAO SOCIOAMBIENTAL') ||
+    tCabecalho.includes('RELATORIO DE CONFORMIDADE SOCIOAMBIENTAL') ||
+    tCabecalho.includes('CONFORMIDADE SOCIOAMBIENTAL') ||
     (tUp.includes('DESMATAMENTO PRODES:') &&
       tUp.includes('SOBREPOSICOES DO CAR:'))
   ) {
@@ -725,7 +795,7 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
     };
   }
 
-  // 14. Inteiro Teor / Matrícula, Selo TJMA, Procuração e Casamento
+  // 14. Inteiro Teor / Matrícula, Título de Domínio, ECPV, Selo TJMA, Procuração e Casamento
   if (
     tCabecalho.includes('CERTIDAO DE INTEIRO TEOR') ||
     (tCabecalho.includes('REGISTRO DE IMOVEIS') &&
@@ -734,6 +804,28 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
     return {
       categoriaUniversal: 'ITEM_INTEIRO_TEOR',
       codigoAuditor: 'ITEM_INTEIRO_TEOR',
+    };
+  }
+
+  if (
+    tCabecalho.includes('TITULO DE DOMINIO') ||
+    tCabecalho.includes('TITULO DEFINITIVO') ||
+    (tCabecalho.includes('INSTITUTO NACIONAL DE COLONIZACAO E REFORMA AGRARIA') &&
+      tUp.includes('CLAUSULAS RESOLUTIVAS'))
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_TITULO_DOMINIO',
+      codigoAuditor: 'ITEM_TITULO_DOMINIO',
+    };
+  }
+
+  if (
+    tCabecalho.includes('ESCRITURA PUBLICA DE COMPRA E VENDA') ||
+    tCabecalho.includes('ESCRITURA DE COMPRA E VENDA')
+  ) {
+    return {
+      categoriaUniversal: 'ITEM_ECPV_ESCRITURA',
+      codigoAuditor: 'ITEM_ECPV_ESCRITURA',
     };
   }
 
@@ -1523,12 +1615,10 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   paEsperado: string;
   contaConformidade?: string;
   porteSelecionado?: 'PRONAF_A' | 'PRONAF_V' | 'MINI_PEQUENO';
-  escopoSelecionado?:
-    | 'PRONAF_A_PADRAO'
-    | 'DERIVADA_PURA'
-    | 'LIMITE_PURO'
-    | 'COMBO_DERIVADA_E_LIMITE';
+  escopoSelecionado?: string;
   modalidadeDerivada?: 'INVESTIMENTO' | 'CUSTEIO';
+  modalidadeLimite?: 'LCGH' | 'LCGA';
+  textosOcrOverride?: Record<string, string>;
 }): Promise<ResultadoAuditoriaPastaPdf> {
   const {
     arquivos,
@@ -1560,12 +1650,22 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   const extraidos: PdfExtraidoInfo[] = [];
   const reclassificacoesPorConteudo: Record<string, string> = {};
 
+  const mapaOcr = params.textosOcrOverride || {};
+
   for (const item of pdfsParaLer) {
     const info = await extrairTextoEAssinaturaDoPdf(
       item.fileObj,
       item.categoria,
       item.isViti
     );
+
+    // ITEM 4: Se este arquivo escaneado já passou pelo OCR na Lupinha, injeta o texto extraído pelo OCR!
+    const textoOcrSalvo = mapaOcr[item.nomeOriginal];
+    if (textoOcrSalvo && textoOcrSalvo.trim().length > 40) {
+      info.textoCompleto = textoOcrSalvo;
+      info.textoStreamBruto = textoOcrSalvo;
+      info.ehProvavelEscaneadoImagem = false;
+    }
 
     // PARTE 7.1: Identifica o documento pelo conteúdo interno do PDF mesmo que o nome esteja bagunçado!
     const idConteudo = identificarCategoriaRealPeloConteudoPdf({
@@ -1708,9 +1808,13 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
 
   const itensDiagnostico: ItemDiagnosticoPdf[] = [];
 
-  // 1. CONTA CORRENTE NA CONSOLIDADA
+  // 1. CONTA CORRENTE NA CONSOLIDADA (TRECHO DE AUTORIZAÇÃO DE DÉBITO EM CONTA DE LIVRE MOVIMENTAÇÃO)
   let contaCorrenteConsolidada = '';
+  let agenciaConsolidadaDetectada = '';
+  let statusContaConsolidada: 'OK' | 'FALTA' | 'NAO_LIDO' = 'NAO_LIDO';
+
   if (!pdfConsolidada) {
+    statusContaConsolidada = 'FALTA';
     itensDiagnostico.push({
       numero: 1,
       titulo: '1. Conta Corrente nas Declarações Consolidadas',
@@ -1718,45 +1822,90 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       resumo: 'Arquivo de Declarações Consolidadas não localizado na pasta.',
     });
   } else if (pdfConsolidada.ehProvavelEscaneadoImagem) {
+    statusContaConsolidada = 'NAO_LIDO';
     itensDiagnostico.push({
       numero: 1,
       titulo: '1. Conta Corrente nas Declarações Consolidadas',
       status: 'ALERTA',
       resumo:
-        'PDF da Consolidada está escaneado em imagem. Verifique visualmente o campo de débito em conta.',
+        '⚠️ Não foi possível ler o documento (PDF da Consolidada está em formato de imagem). Abra na Lupinha (🔎) e clique em "🧠 Ler Imagem via OCR" ou confira visualmente.',
     });
   } else {
-    const txtCons = removerAcentos(pdfConsolidada.textoCompleto).toUpperCase();
-    const matchCc =
-      txtCons.match(
-        /(?:MOVIMENTACAO\s+DE\s+N(?:º|°|UMERO)?|CONTA\s+CORRENTE\s*:?|DEBITAR\s+EM\s+SUA\s+CONTA[^0-9]{1,35})\s*([0-9]{3,10}\s*[-–]\s*[0-9X]|[0-9]{4,10})/i
-      ) ||
-      txtCons.match(
-        /AGENCIA\s+[0-9]{2,5}[^0-9]{1,25}C\/?C\s*:?\s*([0-9.\-X]{4,12})/i
-      );
+    // Combina o texto ordenado com o stream bruto para garantir leitura mesmo se o número estiver em caixa/quadrinho separado
+    const txtCons = removerAcentos(
+      `${pdfConsolidada.textoCompleto}\n${pdfConsolidada.textoStreamBruto || ''}`
+    )
+      .toUpperCase()
+      .replace(/\s+/g, ' ');
 
-    if (matchCc && matchCc[1]) {
-      contaCorrenteConsolidada = matchCc[1].replace(/\s+/g, '');
+    // Padrão 1 (Exato): "...debitar em sua conta de depósito de livre movimentação de número 66720-5, mantida na agência 103..."
+    const matchPadraoExato = txtCons.match(
+      /LIVRE\s+MOVIMENTACAO\s+DE\s+N(?:UMERO|º|°|\.)?\s*:?\s*([0-9][0-9.\-\s]{1,12}[0-9X])\s*,?\s*MANTIDA\s+NA\s+AGENCIA\s*:?\s*([0-9]{2,5})/i
+    );
+
+    // Padrão 2 (Flexível): Entre "DEBITAR EM SUA CONTA / LIVRE MOVIMENTACAO" e "MANTIDA NA AGENCIA / A SEU CRITERIO"
+    const matchPadraoFlexivel =
+      !matchPadraoExato &&
+      (txtCons.match(
+        /(?:LIVRE\s+MOVIMENTACAO\s+DE\s+N(?:UMERO|º|°|\.)?|DEBITAR\s+EM\s+SUA\s+CONTA[\s\S]{1,65}?N(?:UMERO|º|°|\.)?)\s*:?\s*([0-9]{2,10}\s*[-–]\s*[0-9X]|[0-9]{4,10})\b/i
+      ) ||
+        txtCons.match(
+          /CONTA\s+DE\s+DEPOSITO[\s\S]{1,90}?\b([0-9]{3,10}\s*[-–]\s*[0-9X])\b[\s\S]{1,60}?MANTIDA\s+NA\s+AGENCIA/i
+        ) ||
+        txtCons.match(
+          /AGENCIA\s+([0-9]{2,5})[^0-9]{1,25}C\/?C\s*:?\s*([0-9.\-X]{4,12})/i
+        ));
+
+    if (matchPadraoExato) {
+      contaCorrenteConsolidada = matchPadraoExato[1].replace(/\s+/g, '');
+      agenciaConsolidadaDetectada = matchPadraoExato[2].trim();
+    } else if (matchPadraoFlexivel) {
+      if (matchPadraoFlexivel.length >= 3 && matchPadraoFlexivel[2]) {
+        agenciaConsolidadaDetectada = matchPadraoFlexivel[1].trim();
+        contaCorrenteConsolidada = matchPadraoFlexivel[2].replace(/\s+/g, '');
+      } else if (matchPadraoFlexivel[1]) {
+        contaCorrenteConsolidada = matchPadraoFlexivel[1].replace(/\s+/g, '');
+      }
+      const mAg = txtCons.match(/MANTIDA\s+NA\s+AGENCIA\s*:?\s*([0-9]{2,5})/i);
+      if (mAg && mAg[1] && !agenciaConsolidadaDetectada) {
+        agenciaConsolidadaDetectada = mAg[1].trim();
+      }
+    }
+
+    // Valida se não capturou apenas zeros ("0", "0000-0")
+    const digitosConta = contaCorrenteConsolidada.replace(/[^0-9]/g, '');
+    const contaValida =
+      digitosConta.length >= 3 && !/^0+$/.test(digitosConta);
+
+    if (contaValida) {
+      statusContaConsolidada = 'OK';
       const confereComPlanilha =
         !contaConformidade ||
         contaConformidade.replace(/\D/g, '') ===
           contaCorrenteConsolidada.replace(/\D/g, '');
+
+      const sufixoAg = agenciaConsolidadaDetectada
+        ? ` (Agência ${agenciaConsolidadaDetectada})`
+        : '';
 
       itensDiagnostico.push({
         numero: 1,
         titulo: '1. Conta Corrente nas Declarações Consolidadas',
         status: confereComPlanilha ? 'OK' : 'ALERTA',
         resumo: confereComPlanilha
-          ? `Conta identificada na Consolidada: ${contaCorrenteConsolidada}.`
-          : `Conta na Consolidada (${contaCorrenteConsolidada}) diverge da planilha (${contaConformidade})!`,
+          ? `✅ Conta Corrente identificada na Consolidada: ${contaCorrenteConsolidada}${sufixoAg}.`
+          : `⚠️ Conta na Consolidada (${contaCorrenteConsolidada}${sufixoAg}) diverge da planilha (${contaConformidade})!`,
       });
     } else {
+      // Se o texto da Consolidada foi lido normalmente, mas não há conta no trecho de autorização de débito -> FALTA!
+      contaCorrenteConsolidada = '';
+      statusContaConsolidada = 'FALTA';
       itensDiagnostico.push({
         numero: 1,
         titulo: '1. Conta Corrente nas Declarações Consolidadas',
-        status: 'ALERTA',
+        status: 'ERRO',
         resumo:
-          'Não foi possível confirmar o nº da conta no texto da Consolidada. Confira manualmente.',
+          '🚨 FALTA CONTA CORRENTE NA CONSOLIDADA: O documento foi lido, mas não consta número de conta no trecho "debitar em sua conta de depósito de livre movimentação"!',
       });
     }
   }
@@ -2510,136 +2659,529 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   }
 
   // =========================================================================
-  // 15. IDEIA 4: AUDITORIA DE VALIDADE DE CERTIDÕES (CND, CNDT, ITR, CCIR)
-  //     E HISTÓRICO DE 15 ANOS DA MATRÍCULA (INTEIRO TEOR)
+  // 15. VALIDADE DE CERTIDÕES, INTEIRO TEOR (15 ANOS + MODO DE AQUISIÇÃO),
+  //     TÍTULO DE DOMÍNIO (CLÁUSULA DE INALIENABILIDADE × LCGA vs LCGH) E
+  //     CAPTURA DE TODOS OS IMÓVEIS NOS DOCUMENTOS
   // =========================================================================
+  const detalhesCertidoesEImovel: string[] = [];
+  let statusItem15: NivelStatusAuditoria = 'OK';
+
+  // ITEM 2: Captura nomes de imóveis presentes dentro dos PDFs (CAR, CCIR, ITR, Inteiro Teor, Título) e nomes de arquivos
+  const imoveisDetectadosSet = new Set<string>();
+  (dadosProjetoParaParecer.imoveisVinculados || []).forEach((im) => {
+    if (im.nome && im.nome.trim().length >= 3) {
+      imoveisDetectadosSet.add(im.nome.toUpperCase().trim());
+    }
+  });
+
+  extraidos.forEach((doc) => {
+    const tNorm = removerAcentos(doc.textoCompleto).toUpperCase();
+    // Procura "Nome do Imóvel Rural:", "Denominação do Imóvel:", "Imóvel:" no CAR, CCIR, ITR e Matrícula
+    const matchesIm = [
+      ...tNorm.matchAll(
+        /(?:NOME\s+DO\s+IMOVEL(?:\s+RURAL)?|DENOMINACAO\s+DO\s+IMOVEL(?:\s+RURAL)?)\s*:?\s*([A-Z0-9][A-Z0-9\s\-/]{3,42}?)(?:\s+MUNICIPIO|\s+UF:|\s+AREA|\s+CODIGO|\s+CPF|\s+CAR|\n|$)/gi
+      ),
+    ];
+    matchesIm.forEach((m) => {
+      const cand = (m[1] || '')
+        .replace(
+          /\b(RURAL|MUNICIPIO|SITUACAO|ATIVO|PENDENTE|CPF|CNPJ|PROPRIETARIO|DECLARANTE)\b/g,
+          ''
+        )
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cand.length >= 4 && cand.length <= 40 && !/^\d+$/.test(cand)) {
+        imoveisDetectadosSet.add(cand);
+      }
+    });
+
+    // Procura também no nome do arquivo padrões como FAZ. DOIS IRMAOS, FAZENDA X, SÍTIO Y, GLEBA Z, LOTE W, P.A.
+    const mArq = removerAcentos(doc.nomeOriginal)
+      .toUpperCase()
+      .replace(/_/g, ' ')
+      .match(
+        /\b((?:FAZENDA|FAZ\.?|SITIO|SIT\.?|CHACARA|CHAC\.?|LOTEAMENTO|LOTE|GLEBA|P\.?\s*A\.?)\s+[A-Z0-9.\s]{2,35}?)(?:\s+ASSINADO|\s+COMPRESSED|\s+MATRICULA|\.PDF|\s*-|$)/i
+      );
+    if (mArq && mArq[1]) {
+      const candIm = mArq[1].replace(/\s+/g, ' ').trim();
+      const primTitCheck = normalizarSemAcento(
+        (dadosProjetoParaParecer.clienteNome || titularNome).split(/\s+/)[0] ||
+          ''
+      );
+      const primConjCheck = normalizarSemAcento(
+        conjugeEfetivo.split(/\s+/)[0] || ''
+      );
+      const candNormCheck = normalizarSemAcento(candIm);
+
+      if (
+        candNormCheck !== primTitCheck &&
+        candNormCheck !== primConjCheck
+      ) {
+        imoveisDetectadosSet.add(candIm);
+      }
+    }
+  });
+
+  const imoveisDetectadosNosDocumentos = Array.from(imoveisDetectadosSet);
+  // Se o projeto não tinha preenchido imoveisVinculados mas encontramos imóveis nos documentos da pasta, sincroniza!
+  if (
+    dadosProjetoParaParecer.imoveisVinculados.length === 0 &&
+    imoveisDetectadosNosDocumentos.length > 0
+  ) {
+    dadosProjetoParaParecer.imoveisVinculados =
+      imoveisDetectadosNosDocumentos.map((nomeIm) => ({
+        nome: nomeIm,
+        municipioUf: dadosProjetoParaParecer.municipioImovel || '',
+        areaHa: dadosProjetoParaParecer.areaImovelHa || '',
+        realizaInversao: true,
+        compoeGarantia:
+          isSomenteLimite || escopoSelecionado === 'COMBO_DERIVADA_E_LIMITE',
+      }));
+    salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
+  }
+
+  const checarValidadeCertidaoPdf = (
+    pdfDoc: PdfExtraidoInfo | undefined,
+    nomeCurtoCert: string
+  ) => {
+    if (!pdfDoc) return;
+    if (pdfDoc.ehProvavelEscaneadoImagem) {
+      if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+      detalhesCertidoesEImovel.push(
+        `⚠️ ${nomeCurtoCert} ("${pdfDoc.nomeOriginal}") está como imagem escaneada. Abra na Lupinha (🔎) e clique em "🧠 Ler Imagem via OCR" para auditar automaticamente!`
+      );
+      return;
+    }
+
+    const txt = removerAcentos(pdfDoc.textoCompleto).toUpperCase();
+    const matchValidade =
+      txt.match(
+        /(?:VALIDA\s+ATE|VALIDADE\s*:?|VENCIMENTO\s*:?)[^0-9]{0,25}(\d{2}\/\d{2}\/20\d{2})/i
+      ) || txt.match(/ATE\s+(\d{2}\/\d{2}\/20\d{2})/i);
+
+    if (matchValidade && matchValidade[1]) {
+      const [dd, mm, aaaa] = matchValidade[1].split('/').map(Number);
+      const dtVenc = new Date(aaaa, mm - 1, dd, 23, 59, 59);
+      const diasRestantes = Math.ceil(
+        (dtVenc.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+      );
+
+      if (diasRestantes < 0) {
+        statusItem15 = 'ERRO';
+        detalhesCertidoesEImovel.push(
+          `🚨 ${nomeCurtoCert} VENCIDA em ${matchValidade[1]} (Venceu há ${Math.abs(
+            diasRestantes
+          )} dias)!`
+        );
+      } else if (diasRestantes <= 5) {
+        if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+        detalhesCertidoesEImovel.push(
+          `⚠️ ATENÇÃO: ${nomeCurtoCert} vence em apenas ${diasRestantes} dia(s) (${matchValidade[1]})!`
+        );
+      } else {
+        detalhesCertidoesEImovel.push(
+          `✅ ${nomeCurtoCert}: Vigente até ${matchValidade[1]} (${diasRestantes} dias restantes).`
+        );
+      }
+    }
+  };
+
   const pdfCndPf = obterPorCat('ITEM_CND_PF', false);
   const pdfCndtPf = obterPorCat('ITEM_CNDT_PF', false);
-  const pdfItr = obterPorCat('ITEM_CND_ITR_IMOVEL', false);
+  const pdfCndItr = obterPorCat('ITEM_CND_ITR_IMOVEL', false);
   const pdfCcir = obterPorCat('ITEM_CCIR', false);
-  const pdfsInteiroTeor = extraidos.filter(
-    (e) => e.categoria === 'ITEM_INTEIRO_TEOR' && !e.isViti
+
+  checarValidadeCertidaoPdf(pdfCndPf, 'CND Receita Federal (PF)');
+  checarValidadeCertidaoPdf(pdfCndtPf, 'CNDT Trabalhista');
+  checarValidadeCertidaoPdf(pdfCndItr, 'CND de ITR do Imóvel');
+
+  if (pdfCcir && !pdfCcir.ehProvavelEscaneadoImagem) {
+    const anoAtual = new Date().getFullYear();
+    const txtCcir = pdfCcir.textoCompleto;
+    if (
+      txtCcir.includes(String(anoAtual)) ||
+      txtCcir.includes(String(anoAtual - 1))
+    ) {
+      detalhesCertidoesEImovel.push(
+        `✅ CCIR do Imóvel: Exercício vigente (${anoAtual - 1}/${anoAtual}) confirmado.`
+      );
+    } else {
+      if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+      detalhesCertidoesEImovel.push(
+        `⚠️ CCIR do Imóvel: Não foi localizado o ano vigente (${anoAtual}) no texto do CCIR.`
+      );
+    }
+  }
+
+  // Auditoria de TODAS as Certidões de Inteiro Teor da pasta (Cadeia de 15 anos + Modo de Aquisição + Emissão 30 dias)
+  const todosPdfsInteiroTeor = extraidos.filter(
+    (e) => !e.isViti && e.categoria === 'ITEM_INTEIRO_TEOR'
   );
 
-  if (
-    !isPronafA ||
-    isSomenteLimite ||
-    pdfCndPf ||
-    pdfCndtPf ||
-    pdfItr ||
-    pdfCcir ||
-    pdfsInteiroTeor.length > 0
-  ) {
-    const detalhesValidade: string[] = [];
-    let statusValidade: NivelStatusAuditoria = 'OK';
-
-    const checarValidadeCertidao = (
-      docPdf: PdfExtraidoInfo | undefined,
-      rotulo: string
-    ) => {
-      if (!docPdf) return;
-      const txtNorm = removerAcentos(docPdf.textoCompleto).toUpperCase();
-      const mVal =
-        txtNorm.match(
-          /(?:VALIDA\s+ATE|VALIDADE\s*:?|DATA\s+DE\s+VALIDADE\s*:?|VENCIMENTO\s*:?)[^0-9]{0,30}(\d{2}\/\d{2}\/20\d{2})/i
-        ) || txtNorm.match(/ATE\s+(\d{2}\/\d{2}\/20\d{2})/i);
-
-      if (mVal && mVal[1]) {
-        const [dd, mm, aaaa] = mVal[1].split('/').map(Number);
-        const dtVenc = new Date(aaaa, mm - 1, dd, 23, 59, 59);
-        const diasRestantes = Math.ceil(
-          (dtVenc.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-        );
-        if (diasRestantes < 0) {
-          statusValidade = 'ERRO';
-          detalhesValidade.push(
-            `🚨 ${rotulo}: VENCIDA em ${mVal[1]}! Emitir nova certidão.`
-          );
-        } else if (diasRestantes <= 5) {
-          if (statusValidade === 'OK') statusValidade = 'ALERTA';
-          detalhesValidade.push(
-            `⚠️ ${rotulo}: Vence em ${diasRestantes} dia(s) (${mVal[1]}). Atenção ao prazo de contratação.`
-          );
-        } else {
-          detalhesValidade.push(
-            `✅ ${rotulo}: Vigente (Válida até ${mVal[1]} — ${diasRestantes} dias restantes).`
-          );
-        }
-      } else {
-        detalhesValidade.push(
-          `ℹ️ ${rotulo}: Presente na pasta (Confira visualmente a data de validade).`
-        );
-      }
-    };
-
-    checarValidadeCertidao(pdfCndPf, 'CND Pessoa Física');
-    checarValidadeCertidao(pdfCndtPf, 'CNDT Trabalhista');
-    checarValidadeCertidao(pdfItr, 'CND / ITR do Imóvel');
-
-    if (pdfCcir) {
-      const txtCcir = removerAcentos(pdfCcir.textoCompleto).toUpperCase();
-      const anoAtual = new Date().getFullYear();
-      const temExercicioVigente =
-        txtCcir.includes(String(anoAtual)) ||
-        txtCcir.includes(String(anoAtual - 1));
-      if (temExercicioVigente) {
-        detalhesValidade.push('✅ CCIR: Exercício vigente confirmado no PDF.');
-      } else {
-        if (statusValidade === 'OK') statusValidade = 'ALERTA';
-        detalhesValidade.push(
-          `⚠️ CCIR: Não foi localizado o ano vigente (${
-            anoAtual - 1
-          }/${anoAtual}) no texto do CCIR. Verifique se está atualizado!`
-        );
-      }
+  for (const docMat of todosPdfsInteiroTeor) {
+    if (docMat.ehProvavelEscaneadoImagem) {
+      if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+      detalhesCertidoesEImovel.push(
+        `⚠️ Inteiro Teor ("${docMat.nomeOriginal}") está como imagem escaneada. Clique na Lupinha (🔎) e use o botão "🧠 Ler Imagem via OCR" para verificar a cadeia de 15 anos e a forma de aquisição!`
+      );
+      continue;
     }
 
-    if (pdfsInteiroTeor.length > 0) {
-      const textoTodasMatriculas = pdfsInteiroTeor
-        .map((p) => p.textoCompleto)
-        .join('\n');
-      const anosEncontrados = (
-        textoTodasMatriculas.match(/\b(19[5-9]\d|20[0-2]\d)\b/g) || []
+    const txtMat = docMat.textoCompleto;
+    const txtMatNorm = removerAcentos(txtMat).toUpperCase();
+
+    // Identifica COMO FOI A AQUISIÇÃO DO IMÓVEL na matrícula
+    const formasAquisicaoDetectadas: string[] = [];
+    if (/\bCOMPRA\s+E\s+VENDA\b/.test(txtMatNorm))
+      formasAquisicaoDetectadas.push('Compra e Venda');
+    if (/\bDOACAO\b/.test(txtMatNorm))
+      formasAquisicaoDetectadas.push('Doação');
+    if (
+      /\bFORMAL\s+DE\s+PARTILHA\b|\bINVENTARIO\b|\bHERANCA\b|\bADJUDICACAO\b/.test(
+        txtMatNorm
       )
-        .map(Number)
-        .filter((a) => a >= 1950 && a <= new Date().getFullYear());
+    )
+      formasAquisicaoDetectadas.push('Herança / Partilha / Adjudicação');
+    if (/\bTITULO\s+DE\s+DOMINIO\b|\bTITULO\s+DEFINITIVO\b/.test(txtMatNorm))
+      formasAquisicaoDetectadas.push('Título de Domínio / Outorga Pública');
+    if (/\bUSUCAPIAO\b/.test(txtMatNorm))
+      formasAquisicaoDetectadas.push('Usucapião');
+    if (/\bPERMUTA\b/.test(txtMatNorm))
+      formasAquisicaoDetectadas.push('Permuta');
+    if (/\bDESMEMBRAMENTO\b|\bUNIFICACAO\b|\bAVERBACAO\b/.test(txtMatNorm))
+      formasAquisicaoDetectadas.push('Desmembramento / Averbação');
 
-      if (anosEncontrados.length > 0) {
-        const anoMaisAntigo = Math.min(...anosEncontrados);
-        const anosHistorico = new Date().getFullYear() - anoMaisAntigo;
-        if (anosHistorico >= 15) {
-          detalhesValidade.push(
-            `✅ Inteiro Teor (${pdfsInteiroTeor.length} arq.): Cadeia dominial atinge ${anosHistorico} anos (registro desde ${anoMaisAntigo} ≥ 15 anos).`
-          );
-        } else {
-          if (statusValidade === 'OK') statusValidade = 'ALERTA';
-          detalhesValidade.push(
-            `⚠️ Inteiro Teor: A data mais antiga lida nas matrículas é ${anoMaisAntigo} (${anosHistorico} anos). Verifique se faltam matrículas anteriores para completar 15 anos!`
-          );
-        }
+    const resumoAquisicao =
+      formasAquisicaoDetectadas.length > 0
+        ? `Forma(s) de aquisição/registro na matrícula: ${formasAquisicaoDetectadas.join(', ')}.`
+        : 'Forma de aquisição não isolada textualmente (conferir R-1 / AV-1).';
+
+    // Verifica cadeia dominial de 15 anos
+    const anosEncontrados = (
+      txtMat.match(/\b(19[5-9]\d|20[0-2]\d)\b/g) || []
+    )
+      .map(Number)
+      .filter((a) => a >= 1950 && a <= new Date().getFullYear());
+
+    if (anosEncontrados.length > 0) {
+      const menorAno = Math.min(...anosEncontrados);
+      const idadeCadeia = new Date().getFullYear() - menorAno;
+      if (idadeCadeia < 15) {
+        if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+        detalhesCertidoesEImovel.push(
+          `⚠️ Inteiro Teor ("${docMat.nomeOriginal}"): Registro mais antigo localizado data de ${menorAno} (${idadeCadeia} anos < 15 anos exigidos). Solicitar matrícula anterior de origem! • ${resumoAquisicao}`
+        );
       } else {
-        detalhesValidade.push(
-          `ℹ️ Inteiro Teor (${pdfsInteiroTeor.length} arq.): PDF escaneado em imagem. Confira visualmente a cadeia de 15 anos e a validade de 30 dias.`
+        detalhesCertidoesEImovel.push(
+          `✅ Inteiro Teor ("${docMat.nomeOriginal}"): Cadeia dominial de 15 anos comprovada (desde ${menorAno} — ${idadeCadeia} anos). • ${resumoAquisicao}`
+        );
+      }
+    } else {
+      detalhesCertidoesEImovel.push(
+        `ℹ️ Inteiro Teor ("${docMat.nomeOriginal}"): ${resumoAquisicao}`
+      );
+    }
+
+    // Verifica validade de 30 dias da emissão da certidão
+    const datasEmissao =
+      txtMat.match(/\b(\d{2}\/\d{2}\/202[4-9])\b/g) || [];
+    if (datasEmissao.length > 0) {
+      const ultimaData = datasEmissao[datasEmissao.length - 1];
+      const [dd, mm, aaaa] = ultimaData.split('/').map(Number);
+      const dtEm = new Date(aaaa, mm - 1, dd);
+      const diasDecorridos = Math.floor(
+        (Date.now() - dtEm.getTime()) / (1000 * 60 * 60 * 24)
+      );
+      if (diasDecorridos > 30) {
+        statusItem15 = 'ERRO';
+        detalhesCertidoesEImovel.push(
+          `🚨 Inteiro Teor ("${docMat.nomeOriginal}"): Data final localizada (${ultimaData}) tem ${diasDecorridos} dias (> 30 dias de validade)!`
         );
       }
     }
+  }
 
-    if (detalhesValidade.length > 0) {
-      const statusFinalValidade = statusValidade as NivelStatusAuditoria;
-      itensDiagnostico.push({
-        numero: 15,
-        titulo:
-          '15. Auditoria de Validade de Certidões (CND, CNDT, ITR, CCIR) e Inteiro Teor (15 Anos)',
-        status: statusFinalValidade,
-        resumo:
-          statusFinalValidade === 'ERRO'
-            ? '🚨 Detectada certidão VENCIDA na pasta! Verifique os detalhes abaixo.'
-            : statusFinalValidade === 'ALERTA'
-            ? '⚠️ Atenção aos prazos de validade / histórico de 15 anos nas certidões.'
-            : '✅ Certidões fiscais, CCIR e Inteiro Teor conferidos e dentro da validade.',
-        detalhes: detalhesValidade,
-      });
+  // =========================================================================
+  // ITEM 3: AUDITORIA DE TÍTULO DE DOMÍNIO × CLÁUSULA DE INALIENABILIDADE
+  //         (PREVALÊNCIA DA DATA DA TITULAÇÃO SOBRE AVERBAÇÃO NA INTEIRO TEOR)
+  // =========================================================================
+  // Isola APENAS os arquivos que são realmente Título de Domínio
+  // (Nunca inclui Certidão de Inteiro Teor / Matrícula, mesmo que ela cite "Título de Domínio" numa averbação!)
+  const todosPdfsTituloDominio = extraidos.filter((e) => {
+    if (e.isViti) return false;
+    const nUp = removerAcentos(e.nomeOriginal).toUpperCase();
+    const tCab = removerAcentos(e.textoCompleto).toUpperCase().substring(0, 1800);
+
+    const ehInteiroTeorOuMatricula =
+      e.categoria === 'ITEM_INTEIRO_TEOR' ||
+      nUp.includes('INTEIRO TEOR') ||
+      nUp.includes('MATRICULA') ||
+      tCab.includes('CERTIDAO DE INTEIRO TEOR') ||
+      tCab.includes('REGISTRO GERAL');
+
+    if (ehInteiroTeorOuMatricula) return false;
+
+    return (
+      e.categoria === 'ITEM_TITULO_DOMINIO' ||
+      nUp.includes('TITULO DE DOMINIO') ||
+      nUp.includes('TITULO DEFINITIVO') ||
+      tCab.includes('TITULO DE DOMINIO') ||
+      tCab.includes('TITULO DEFINITIVO')
+    );
+  });
+
+  // Detecta se a proposta / limite envolve LCGA (pelo parâmetro ou pelo texto/nome da Solicitação de Limite)
+  const txtSolLimNorm = removerAcentos(
+    (pdfSolicitacaoLim?.nomeOriginal || '') +
+      ' ' +
+      (pdfSolicitacaoLim?.textoCompleto || '')
+  ).toUpperCase();
+  const ehOperacaoLcga =
+    params.modalidadeLimite === 'LCGA' ||
+    txtSolLimNorm.includes('LCGA') ||
+    txtSolLimNorm.includes('ALIENACAO FIDUCIARIA');
+  const ehOperacaoLcgh =
+    params.modalidadeLimite === 'LCGH' ||
+    txtSolLimNorm.includes('LCGH') ||
+    txtSolLimNorm.includes('HIPOTECA');
+  const temGarantiaRealImovel =
+    isSomenteLimite ||
+    escopoSelecionado === 'COMBO_DERIVADA_E_LIMITE' ||
+    ehOperacaoLcga ||
+    ehOperacaoLcgh ||
+    dadosProjetoParaParecer.imoveisVinculados.some((im) => im.compoeGarantia);
+
+  const MESES_EXTENSO: Record<string, number> = {
+    JANEIRO: 1,
+    FEVEREIRO: 2,
+    MARCO: 3,
+    ABRIL: 4,
+    MAIO: 5,
+    JUNHO: 6,
+    JULHO: 7,
+    AGOSTO: 8,
+    SETEMBRO: 9,
+    OUTUBRO: 10,
+    NOVEMBRO: 11,
+    DEZEMBRO: 12,
+  };
+
+  let tituloDominioJaCumpriuPrazo = false;
+  let dataTitulacaoCumpridaRef = '';
+
+  for (const docTit of todosPdfsTituloDominio) {
+    if (docTit.ehProvavelEscaneadoImagem) {
+      if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+      detalhesCertidoesEImovel.push(
+        `⚠️ Título de Domínio ("${docTit.nomeOriginal}") está como imagem escaneada. Abra na Lupinha (🔎) e clique em "🧠 Ler Imagem via OCR" para auditar a Cláusula e o Prazo de Inalienabilidade (LCGH vs LCGA)!`
+      );
+      continue;
     }
+
+    const tNorm = removerAcentos(docTit.textoCompleto).toUpperCase();
+    const possuiClausulaInalienabilidade =
+      tNorm.includes('INALIENABILIDADE') ||
+      tNorm.includes('INALIENAVEL') ||
+      tNorm.includes('INAJENAVEL') ||
+      tNorm.includes('CLAUSULA RESOLUTIVA') ||
+      tNorm.includes('CLAUSULAS RESOLUTIVAS') ||
+      tNorm.includes('CONDICOES RESOLUTIVAS') ||
+      tNorm.includes('NAO PODERA SER ALIENADO') ||
+      tNorm.includes('VEDADA A ALIENACAO');
+
+    if (possuiClausulaInalienabilidade) {
+      // 1. Extrai o prazo em anos especificado no Título (padrão = 10 anos se não especificar outro)
+      const mPrazoAnos =
+        tNorm.match(
+          /(?:INALIENAVEL|INALIENABILIDADE|NAO\s+PODERA\s+SER\s+ALIENADO|NEGOCIADO)[\s\S]{1,120}?(?:PRAZO|PERIODO)\s+(?:MINIMO\s+)?DE\s+(\d{1,2})\s*(?:\([A-Z\s]+\)\s*)?ANOS/i
+        ) ||
+        tNorm.match(
+          /(?:PRAZO|PERIODO)\s+DE\s+(\d{1,2})\s*(?:\([A-Z\s]+\)\s*)?ANOS[\s\S]{1,90}?(?:INALIENABILIDADE|INALIENAVEL|CLAUSULA\s+RESOLUTIVA)/i
+        ) ||
+        tNorm.match(/\b(10|15|5)\s*\((?:DEZ|QUINZE|CINCO)\)\s*ANOS\b/i);
+
+      const prazoInalienabilidadeAnos =
+        mPrazoAnos && mPrazoAnos[1] ? Number(mPrazoAnos[1]) : 10;
+
+      // 2. Extrai a DATA DA TITULAÇÃO (emissão / expedição / outorga do Título de Domínio)
+      let dataEmissaoTitulo: Date | null = null;
+      let dataEmissaoFormatada = '';
+
+      // Prioriza primeiro datas explícitas de expedição/emissão (numéricas ou por extenso) antes de qualquer fallback genérico
+      const mDataExplicitaNum = tNorm.match(
+        /(?:EMITIDO\s+EM|EXPEDIDO\s+EM|DATA\s+DE\s+EMISSAO|DATA\s+DO\s+TITULO|DATA\s+DA\s+TITULACAO|OUTORGADO\s+EM)[^0-9]{0,25}(\d{2}\/\d{2}\/(?:19[7-9]\d|20[0-2]\d))/i
+      );
+      const mDataExplicitaExtenso = tNorm.match(
+        /(?:EMITIDO\s+EM|EXPEDIDO\s+EM|OUTORGADO\s+EM|DATA\s+DE\s+EMISSAO)?[^0-9]{0,20}\b(\d{1,2})\s+DE\s+(JANEIRO|FEVEREIRO|MARCO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)\s+DE\s+(19[7-9]\d|20[0-2]\d)\b/i
+      );
+      const mDataFallbackNum = docTit.textoCompleto.match(
+        /\b(\d{2}\/\d{2}\/(?:19[7-9]\d|20[0-2]\d))\b/
+      );
+
+      if (mDataExplicitaNum && mDataExplicitaNum[1]) {
+        const [dd, mm, aaaa] = mDataExplicitaNum[1].split('/').map(Number);
+        dataEmissaoTitulo = new Date(aaaa, mm - 1, dd);
+        dataEmissaoFormatada = mDataExplicitaNum[1];
+      } else if (mDataExplicitaExtenso) {
+        const dd = Number(mDataExplicitaExtenso[1]);
+        const mm = MESES_EXTENSO[mDataExplicitaExtenso[2].toUpperCase()] || 1;
+        const aaaa = Number(mDataExplicitaExtenso[3]);
+        dataEmissaoTitulo = new Date(aaaa, mm - 1, dd);
+        dataEmissaoFormatada = `${String(dd).padStart(2, '0')}/${String(
+          mm
+        ).padStart(2, '0')}/${aaaa}`;
+      } else if (mDataFallbackNum && mDataFallbackNum[1]) {
+        const [dd, mm, aaaa] = mDataFallbackNum[1].split('/').map(Number);
+        dataEmissaoTitulo = new Date(aaaa, mm - 1, dd);
+        dataEmissaoFormatada = mDataFallbackNum[1];
+      }
+
+      if (dataEmissaoTitulo) {
+        const anosDecorridos =
+          (Date.now() - dataEmissaoTitulo.getTime()) /
+          (1000 * 60 * 60 * 24 * 365.25);
+        const anoLiberacao =
+          dataEmissaoTitulo.getFullYear() + prazoInalienabilidadeAnos;
+        const jaCumpriuPrazo = anosDecorridos >= prazoInalienabilidadeAnos;
+
+        if (jaCumpriuPrazo) {
+          tituloDominioJaCumpriuPrazo = true;
+          dataTitulacaoCumpridaRef = dataEmissaoFormatada;
+          detalhesCertidoesEImovel.push(
+            `✅ Título de Domínio ("${docTit.nomeOriginal}"): Possui Cláusula de Inalienabilidade de ${prazoInalienabilidadeAnos} anos, porém o prazo JÁ FOI CUMPRIDO (Data da Titulação: ${dataEmissaoFormatada} — há ${anosDecorridos.toFixed(
+              1
+            )} anos). Imóvel apto tanto para LCGH quanto para LCGA!`
+          );
+        } else {
+          const anosRestantes = Math.max(
+            0.1,
+            prazoInalienabilidadeAnos - anosDecorridos
+          ).toFixed(1);
+
+          if (ehOperacaoLcga) {
+            statusItem15 = 'ERRO';
+            detalhesCertidoesEImovel.push(
+              `🚨 IMPEDIMENTO CRÍTICO (TÍTULO DE DOMÍNIO × LCGA): O Título ("${docTit.nomeOriginal}") possui Cláusula de Inalienabilidade VIGENTE de ${prazoInalienabilidadeAnos} anos (Data da Titulação: ${dataEmissaoFormatada} — faltam ${anosRestantes} anos, libera apenas em ${anoLiberacao}). Este imóvel NÃO PODE SER DADO EM GARANTIA POR LCGA (Alienação Fiduciária), admitindo-se SOMENTE LCGH (Hipoteca)!`
+            );
+          } else if (temGarantiaRealImovel) {
+            if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+            detalhesCertidoesEImovel.push(
+              `⚠️ RESTRIÇÃO DO TÍTULO DE DOMÍNIO ("${docTit.nomeOriginal}"): Cláusula de Inalienabilidade VIGENTE de ${prazoInalienabilidadeAnos} anos (Data da Titulação: ${dataEmissaoFormatada} — libera apenas em ${anoLiberacao}). Em garantia real, este imóvel SÓ PODE SER DADO POR LCGH (Hipoteca), sendo VEDADA a modalidade LCGA!`
+            );
+          } else {
+            detalhesCertidoesEImovel.push(
+              `ℹ️ Título de Domínio ("${docTit.nomeOriginal}"): Cláusula de Inalienabilidade vigente até ${anoLiberacao} (${prazoInalienabilidadeAnos} anos contados da Titulação em ${dataEmissaoFormatada}). Se houver garantia real, usar exclusivamente LCGH.`
+            );
+          }
+        }
+      } else {
+        if (ehOperacaoLcga) {
+          statusItem15 = 'ERRO';
+          detalhesCertidoesEImovel.push(
+            `🚨 IMPEDIMENTO (TÍTULO DE DOMÍNIO × LCGA): Foi identificada Cláusula de Inalienabilidade no Título ("${docTit.nomeOriginal}") (prazo padrão de ${prazoInalienabilidadeAnos} anos). Imóvel com inalienabilidade vigente NÃO pode ser dado em LCGA, somente em LCGH (verifique a data da titulação)!`
+          );
+        } else {
+          if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+          detalhesCertidoesEImovel.push(
+            `⚠️ Título de Domínio ("${docTit.nomeOriginal}"): Identificada Cláusula de Inalienabilidade (prazo de ${prazoInalienabilidadeAnos} anos). Caso ainda não tenha completado ${prazoInalienabilidadeAnos} anos da Data da Titulação, o imóvel SÓ pode ser dado em garantia via LCGH (vedada LCGA).`
+          );
+        }
+      }
+    } else {
+      detalhesCertidoesEImovel.push(
+        `✅ Título de Domínio ("${docTit.nomeOriginal}"): Inspecionado (sem cláusula de inalienabilidade impeditiva detectada).`
+      );
+    }
+  }
+
+  // Se a Certidão de Inteiro Teor possuir "AVERBAÇÃO DE INALIENABILIDADE":
+  // 1) Se o Título de Domínio na pasta já comprovou o cumprimento do prazo (contado da Data da Titulação),
+  //    NÃO gera alerta de impedimento pela data da averbação/certidão da Inteiro Teor e confirma que a LCGA é permitida!
+  // 2) Se NÃO houver arquivo de Título de Domínio separado na pasta, busca na averbação da Inteiro Teor
+  //    exclusivamente a data de expedição do Título ("Título de Domínio ... expedido em ..."), nunca a data final da certidão!
+  for (const docMat of todosPdfsInteiroTeor) {
+    if (docMat.ehProvavelEscaneadoImagem) continue;
+    const tMatNorm = removerAcentos(docMat.textoCompleto).toUpperCase();
+    const temAverbacaoInalienabilidade =
+      tMatNorm.includes('AVERBACAO DE INALIENABILIDADE') ||
+      tMatNorm.includes('GRAVADO COM CLAUSULA DE INALIENABILIDADE');
+
+    if (!temAverbacaoInalienabilidade) continue;
+
+    if (tituloDominioJaCumpriuPrazo) {
+      detalhesCertidoesEImovel.push(
+        `✅ Averbação de Inalienabilidade na Matrícula ("${docMat.nomeOriginal}"): Embora conste averbação na Inteiro Teor, o prazo é contado da Data da Titulação (${dataTitulacaoCumpridaRef}) comprovada no Título de Domínio. Prazo de 10 anos JÁ CUMPRIDO — permitido LCGA e LCGH!`
+      );
+    } else if (todosPdfsTituloDominio.length === 0) {
+      // Só analisa pela Inteiro Teor caso o PDF do Título de Domínio não esteja na pasta,
+      // extraindo estritamente a data de expedição do Título citada dentro do texto da averbação!
+      const mExpedicaoTitNaMat =
+        tMatNorm.match(
+          /TITULO\s+DE\s+DOMINIO[\s\S]{1,80}?(?:EXPEDIDO|EMITIDO|OUTORGADO)\s+EM\s+(\d{1,2})\s+DE\s+(JANEIRO|FEVEREIRO|MARCO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)\s+DE\s+(19[7-9]\d|20[0-2]\d)/i
+        ) ||
+        tMatNorm.match(
+          /TITULO\s+DE\s+DOMINIO[\s\S]{1,80}?(?:EXPEDIDO|EMITIDO|OUTORGADO)\s+EM\s+(\d{2}\/\d{2}\/(?:19[7-9]\d|20[0-2]\d))/i
+        );
+
+      if (mExpedicaoTitNaMat) {
+        let dtTitMat: Date;
+        let dtTitMatFmt = '';
+        if (mExpedicaoTitNaMat[2]) {
+          const dd = Number(mExpedicaoTitNaMat[1]);
+          const mm =
+            MESES_EXTENSO[mExpedicaoTitNaMat[2].toUpperCase()] || 1;
+          const aaaa = Number(mExpedicaoTitNaMat[3]);
+          dtTitMat = new Date(aaaa, mm - 1, dd);
+          dtTitMatFmt = `${String(dd).padStart(2, '0')}/${String(mm).padStart(
+            2,
+            '0'
+          )}/${aaaa}`;
+        } else {
+          const [dd, mm, aaaa] = mExpedicaoTitNaMat[1].split('/').map(Number);
+          dtTitMat = new Date(aaaa, mm - 1, dd);
+          dtTitMatFmt = mExpedicaoTitNaMat[1];
+        }
+
+        const anosTitMat =
+          (Date.now() - dtTitMat.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+        if (anosTitMat >= 10) {
+          detalhesCertidoesEImovel.push(
+            `✅ Averbação de Inalienabilidade na Matrícula ("${docMat.nomeOriginal}"): Prazo de 10 anos contado da Data da Titulação (${dtTitMatFmt} — há ${anosTitMat.toFixed(
+              1
+            )} anos) JÁ CUMPRIDO. Imóvel apto para LCGA e LCGH!`
+          );
+        } else {
+          const anoLibMat = dtTitMat.getFullYear() + 10;
+          if (ehOperacaoLcga) {
+            statusItem15 = 'ERRO';
+            detalhesCertidoesEImovel.push(
+              `🚨 IMPEDIMENTO (AVERBAÇÃO DE INALIENABILIDADE × LCGA): A matrícula ("${docMat.nomeOriginal}") registra Título de Domínio expedido em ${dtTitMatFmt} com Cláusula de Inalienabilidade vigente até ${anoLibMat}. Só pode ser dado em garantia por LCGH (vedada LCGA)!`
+            );
+          } else {
+            if (statusItem15 === 'OK') statusItem15 = 'ALERTA';
+            detalhesCertidoesEImovel.push(
+              `⚠️ Averbação de Inalienabilidade na Matrícula ("${docMat.nomeOriginal}"): Título expedido em ${dtTitMatFmt} (cláusula vigente até ${anoLibMat} — somente LCGH).`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  if (detalhesCertidoesEImovel.length > 0) {
+    itensDiagnostico.push({
+      numero: 15,
+      titulo:
+        '15. Prazos de Validade (CND, CNDT, ITR, CCIR), Inteiro Teor (15 Anos) e Título de Domínio (LCGH × LCGA)',
+      status: statusItem15,
+      resumo:
+        statusItem15 === 'ERRO'
+          ? '🚨 Há certidão vencida ou impedimento de Cláusula de Inalienabilidade (Título de Domínio × LCGA)!'
+          : statusItem15 === 'ALERTA'
+          ? '⚠️ Atenção para certidões próximas do vencimento, PDFs escaneados ou restrição de Título de Domínio (somente LCGH).'
+          : 'Todas as certidões, matrículas e títulos verificados estão dentro das regras.',
+      detalhes: detalhesCertidoesEImovel,
+    });
   }
 
   const pdfS400 = extraidos.find((e) => {
@@ -2762,6 +3304,8 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
       dadosProjetoParaParecer.textoItensInversaoFormatado,
     dadosProjetoParaParecer,
     contaCorrenteConsolidada,
+    agenciaConsolidadaDetectada,
+    statusContaConsolidada,
     paDetectadoNoProjeto,
     carEspecificoDetectado,
     estadoCivilDetectado,
@@ -2770,6 +3314,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     arquivosSemAssinaturaDigital,
     reclassificacoesSocioambiental,
     reclassificacoesPorConteudo,
+    imoveisDetectadosNosDocumentos,
     kmlCorrigidoAutomaticamente,
     exigenciasSocioambientaisDetectadas,
     itensDiagnostico: itensDiagnostico.sort((a, b) => a.numero - b.numero),
