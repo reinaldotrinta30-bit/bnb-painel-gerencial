@@ -697,6 +697,9 @@ export default function ModalOrganizadorPastasCliente({
 
   const [modalIniciarProposta, setModalIniciarProposta] =
     useState<ResultadoClassificacaoPronafA | null>(null);
+  // 'NOVA' = Cria nova operação (anexando ao Card existente se já houver) | string (ID) = Atualiza operação existente
+  const [modoOperacaoNoModalKanban, setModoOperacaoNoModalKanban] =
+    useState<string>('NOVA');
   const [cadCpf, setCadCpf] = useState('');
   const [cadValor, setCadValor] = useState('');
   const [cadTipo, setCadTipo] = useState('Investimento');
@@ -2471,7 +2474,7 @@ export default function ModalOrganizadorPastasCliente({
       // Re-escaneia a pasta para atualizar todos os FileHandles com os nomes novos
       await escanearHandleDaPasta(dirHandleRoot);
 
-      // 5. ITEM 1.1: Verifica se o cliente já possui Card no Kanban / Contratações
+      // 5. Verifica se o cliente já possui Card no Kanban e/ou Operações em Contratações
       const nomeTitNorm = removerAcentos(titularNome).toUpperCase().trim();
       const cpfTitLimpo = (
         auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
@@ -2481,6 +2484,7 @@ export default function ModalOrganizadorPastasCliente({
       ).replace(/\D/g, '');
 
       const cardExistenteNoKanban = listaCards.find((c) => {
+        if (c.etapa === 'NOTAS') return false;
         const cNome = removerAcentos(c.clienteVinculado || '')
           .toUpperCase()
           .trim();
@@ -2491,7 +2495,7 @@ export default function ModalOrganizadorPastasCliente({
         );
       });
 
-      const jaEstaNasContratacoes = listaContratacoes.some((r) => {
+      const opsExistentesDoCliente = listaContratacoes.filter((r) => {
         const rNome = removerAcentos(r.cliente || '')
           .toUpperCase()
           .trim();
@@ -2503,14 +2507,13 @@ export default function ModalOrganizadorPastasCliente({
       });
 
       const jaCadastradoNoPainel = Boolean(
-        cardExistenteNoKanban || jaEstaNasContratacoes
+        cardExistenteNoKanban || opsExistentesDoCliente.length > 0
       );
 
-      // Se a pasta já tem o cliente no Kanban E já tem o Parecer Gerencial na pasta,
-      // não abre novamente os modais de Kanban/Parecer — finaliza direto!
+      // Se a pasta já tem o Parecer Gerencial pronto E o cliente já está no painel, finaliza direto!
       if (jaCadastradoNoPainel && jaTemParecerGerencialNaPasta) {
         alert(
-          `✅ Organização complementar concluída!\n\n• ${qtdArquivosMovidosOuRenomeados} arquivo(s) novo(s)/restante(s) organizado(s).\n• Cliente já consta no Kanban e o Parecer Gerencial já está salvo na pasta.`
+          `✅ Organização complementar concluída!\n\n• ${qtdArquivosMovidosOuRenomeados} arquivo(s) organizado(s).\n• Cliente já consta no Kanban e o Parecer Gerencial já está salvo na pasta.`
         );
         return;
       }
@@ -2544,52 +2547,91 @@ export default function ModalOrganizadorPastasCliente({
       );
       const resClassif = classificados[0];
 
-      if (!jaCadastradoNoPainel && resClassif) {
-        setModalIniciarProposta(resClassif);
-        setCadCpf(
-          auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
-            resClassif.item.cpfCliente ||
-            ''
-        );
-        setCadValor(auditoriaPdf?.valorPropostaDetectado || '');
-        setCadTipo(
+      if (resClassif) {
+        const tipoDaPastaAtual =
           cfgPerfil.escopo === 'LIMITE_PURO'
             ? cfgPerfil.modalidadeLimite
             : cfgPerfil.modalidadeDerivada === 'CUSTEIO'
             ? 'Custeio'
-            : 'Investimento'
-        );
-        setCadProjetista(projetistaNome || '');
-        setCadPrograma(
-          cfgPerfil.porte === 'PRONAF_A'
+            : 'Investimento';
+
+        const progPadraoDaPasta =
+          auditoriaPdf?.dadosProjetoParaParecer?.programaCredito ||
+          (cfgPerfil.porte === 'PRONAF_A'
             ? 'FNE/PRONAF A - RES.5.183/24 (699)'
             : cfgPerfil.porte === 'PRONAF_V'
             ? 'FNE /PRONAF - COMUM (FNE) (433)'
-            : 'FNE /RURAL (226)'
-        );
-        setCadSituacao('Na Agência');
-        setCadData(getHojeBR());
-        setCadSitDetalhada(
-          `- PASTA DO CLIENTE ORGANIZADA (${cfgPerfil.porte.replace(
-            '_',
-            ' '
-          )} • ${cfgPerfil.escopo})`
-        );
-        setCadObsPendencias(
+            : 'FNE /RURAL (226)');
+
+        const sitDetPadraoDaPasta = `- PASTA DO CLIENTE ORGANIZADA (${cfgPerfil.porte.replace(
+          '_',
+          ' '
+        )} • ${cfgPerfil.escopo})`;
+
+        const obsPadraoDaPasta =
           planoLembretesTxt.length > 0
             ? planoLembretesTxt
                 .slice(0, 6)
                 .map((l) => `- ${l.nomeArquivoTxt.replace(/\.txt$/i, '')}`)
                 .join('\n')
-            : '- DOCUMENTAÇÃO CONFERIDA'
-        );
-        return;
-      } else if (
-        jaCadastradoNoPainel &&
-        !jaTemParecerGerencialNaPasta &&
-        cardExistenteNoKanban
-      ) {
-        setCardOverlayParecerId(cardExistenteNoKanban.id);
+            : '- DOCUMENTAÇÃO CONFERIDA';
+
+        // Verifica se já existe uma operação cadastrada do mesmo tipo da pasta atual (ex: Investimento, Custeio, LCGH)
+        const opMesmoTipoExistente =
+          opsExistentesDoCliente.find(
+            (op) =>
+              (op.tipo || '').toUpperCase().trim() ===
+              tipoDaPastaAtual.toUpperCase().trim()
+          ) || opsExistentesDoCliente[0];
+
+        setModalIniciarProposta(resClassif);
+
+        if (opMesmoTipoExistente) {
+          // Pré-seleciona a operação existente para edição/conferência automática (evitando duplicar!)
+          setModoOperacaoNoModalKanban(String(opMesmoTipoExistente.id));
+          setCadCpf(
+            opMesmoTipoExistente.cpf ||
+              auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+              resClassif.item.cpfCliente ||
+              ''
+          );
+          setCadValor(
+            opMesmoTipoExistente.valor ||
+              auditoriaPdf?.valorPropostaDetectado ||
+              ''
+          );
+          setCadTipo(opMesmoTipoExistente.tipo || tipoDaPastaAtual);
+          setCadProjetista(
+            opMesmoTipoExistente.projetista || projetistaNome || ''
+          );
+          setCadPrograma(opMesmoTipoExistente.programa || progPadraoDaPasta);
+          setCadSituacao(opMesmoTipoExistente.situacao || 'Na Agência');
+          setCadResponsavel(opMesmoTipoExistente.responsavel || '');
+          setCadTelefone(opMesmoTipoExistente.telefone || '');
+          setCadData(opMesmoTipoExistente.data || getHojeBR());
+          setCadSitDetalhada(
+            opMesmoTipoExistente.situacaoDetalhada || sitDetPadraoDaPasta
+          );
+          setCadObsPendencias(opMesmoTipoExistente.obs || obsPadraoDaPasta);
+        } else {
+          // Cliente ainda não tem operação cadastrada: abre em modo NOVA operação
+          setModoOperacaoNoModalKanban('NOVA');
+          setCadCpf(
+            auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+              resClassif.item.cpfCliente ||
+              ''
+          );
+          setCadValor(auditoriaPdf?.valorPropostaDetectado || '');
+          setCadTipo(tipoDaPastaAtual);
+          setCadProjetista(projetistaNome || '');
+          setCadPrograma(progPadraoDaPasta);
+          setCadSituacao('Na Agência');
+          setCadResponsavel('');
+          setCadTelefone('');
+          setCadData(getHojeBR());
+          setCadSitDetalhada(sitDetPadraoDaPasta);
+          setCadObsPendencias(obsPadraoDaPasta);
+        }
         return;
       }
 
@@ -2604,17 +2646,147 @@ export default function ModalOrganizadorPastasCliente({
     }
   };
 
+  // Lista todas as operações já existentes para o cliente/CPF atual no modal
+  const operacoesExistentesNoPainelParaModal = useMemo(() => {
+    const nomeTitNorm = removerAcentos(
+      modalIniciarProposta?.item.nomeCliente || titularNome
+    )
+      .toUpperCase()
+      .trim();
+    const cpfLimpo = (
+      cadCpf ||
+      modalIniciarProposta?.item.cpfCliente ||
+      auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+      ''
+    ).replace(/\D/g, '');
+
+    if (nomeTitNorm.length < 3 && cpfLimpo.length < 9) return [];
+
+    return listaContratacoes.filter((r) => {
+      const rNome = removerAcentos(r.cliente || '')
+        .toUpperCase()
+        .trim();
+      const rCpf = (r.cpf || '').replace(/\D/g, '');
+      return (
+        (cpfLimpo.length === 11 && rCpf === cpfLimpo) ||
+        (nomeTitNorm.length >= 4 && rNome === nomeTitNorm)
+      );
+    });
+  }, [
+    listaContratacoes,
+    modalIniciarProposta,
+    titularNome,
+    cadCpf,
+    auditoriaPdf,
+  ]);
+
+  const cardKanbanExistenteParaModal = useMemo(() => {
+    const nomeTitNorm = removerAcentos(
+      modalIniciarProposta?.item.nomeCliente || titularNome
+    )
+      .toUpperCase()
+      .trim();
+    const cpfLimpo = (
+      cadCpf ||
+      modalIniciarProposta?.item.cpfCliente ||
+      auditoriaPdf?.dadosProjetoParaParecer?.clienteCpf ||
+      ''
+    ).replace(/\D/g, '');
+
+    if (nomeTitNorm.length < 3 && cpfLimpo.length < 9) return null;
+
+    return (
+      listaCards.find((c) => {
+        if (c.etapa === 'NOTAS') return false;
+        const cNome = removerAcentos(c.clienteVinculado || '')
+          .toUpperCase()
+          .trim();
+        const cCpf = (c.cpfVinculado || '').replace(/\D/g, '');
+        return (
+          (cpfLimpo.length === 11 && cCpf === cpfLimpo) ||
+          (nomeTitNorm.length >= 4 && cNome === nomeTitNorm)
+        );
+      }) || null
+    );
+  }, [listaCards, modalIniciarProposta, titularNome, cadCpf, auditoriaPdf]);
+
+  // Troca entre uma Operação Existente e uma Nova Operação dentro do Modal
+  const selecionarModoOperacaoNoModal = (novoModoId: string) => {
+    setModoOperacaoNoModalKanban(novoModoId);
+
+    const tipoDaPastaAtual =
+      cfgPerfil.escopo === 'LIMITE_PURO'
+        ? cfgPerfil.modalidadeLimite
+        : cfgPerfil.modalidadeDerivada === 'CUSTEIO'
+        ? 'Custeio'
+        : 'Investimento';
+
+    const progPadraoDaPasta =
+      auditoriaPdf?.dadosProjetoParaParecer?.programaCredito ||
+      (cfgPerfil.porte === 'PRONAF_A'
+        ? 'FNE/PRONAF A - RES.5.183/24 (699)'
+        : cfgPerfil.porte === 'PRONAF_V'
+        ? 'FNE /PRONAF - COMUM (FNE) (433)'
+        : 'FNE /RURAL (226)');
+
+    const sitDetPadraoDaPasta = `- PASTA DO CLIENTE ORGANIZADA (${cfgPerfil.porte.replace(
+      '_',
+      ' '
+    )} • ${cfgPerfil.escopo})`;
+
+    const obsPadraoDaPasta =
+      planoLembretesTxt.length > 0
+        ? planoLembretesTxt
+            .slice(0, 6)
+            .map((l) => `- ${l.nomeArquivoTxt.replace(/\.txt$/i, '')}`)
+            .join('\n')
+        : '- DOCUMENTAÇÃO CONFERIDA';
+
+    if (novoModoId === 'NOVA') {
+      const refBase = operacoesExistentesNoPainelParaModal[0];
+      setCadTipo(tipoDaPastaAtual);
+      setCadValor(auditoriaPdf?.valorPropostaDetectado || '');
+      setCadProjetista(projetistaNome || refBase?.projetista || '');
+      setCadPrograma(progPadraoDaPasta);
+      setCadSituacao('Na Agência');
+      setCadResponsavel(refBase?.responsavel || '');
+      setCadTelefone(refBase?.telefone || '');
+      setCadData(getHojeBR());
+      setCadSitDetalhada(sitDetPadraoDaPasta);
+      setCadObsPendencias(obsPadraoDaPasta);
+    } else {
+      const opSel = operacoesExistentesNoPainelParaModal.find(
+        (o) => String(o.id) === String(novoModoId)
+      );
+      if (opSel) {
+        setCadCpf(opSel.cpf || cadCpf);
+        setCadTipo(opSel.tipo || tipoDaPastaAtual);
+        setCadValor(opSel.valor || auditoriaPdf?.valorPropostaDetectado || '');
+        setCadProjetista(opSel.projetista || projetistaNome || '');
+        setCadPrograma(opSel.programa || progPadraoDaPasta);
+        setCadSituacao(opSel.situacao || 'Na Agência');
+        setCadResponsavel(opSel.responsavel || '');
+        setCadTelefone(opSel.telefone || '');
+        setCadData(opSel.data || getHojeBR());
+        setCadSitDetalhada(opSel.situacaoDetalhada || sitDetPadraoDaPasta);
+        setCadObsPendencias(opSel.obs || obsPadraoDaPasta);
+      }
+    }
+  };
+
   const confirmarCadastroPropostaEAbrirParecer = async () => {
     if (!modalIniciarProposta) return;
     if (!cadValor.trim()) {
-      alert('Informe o Valor da Proposta (R$) para cadastrar a operação!');
+      alert('Informe o Valor da Proposta (R$) para salvar a operação!');
       return;
     }
 
     const { item } = modalIniciarProposta;
-    const idNovaOp = String(Date.now());
-    const nomeUpper = item.nomeCliente.toUpperCase().trim();
+    const nomeUpper = (item.nomeCliente || titularNome).toUpperCase().trim();
     const cpfFmt = (cadCpf || item.cpfCliente || '').trim();
+    const cpfLimpo = cpfFmt.replace(/\D/g, '');
+    const nomeNorm = removerAcentos(nomeUpper).toUpperCase().trim();
+
     const porteFormatado =
       cfgPerfil.porte === 'PRONAF_A'
         ? 'PRONAF A'
@@ -2622,8 +2794,18 @@ export default function ModalOrganizadorPastasCliente({
         ? 'PRONAF V'
         : 'MINI';
 
-    const novaContratacao: RegistroContratacao = {
-      id: idNovaOp,
+    const editandoOperacaoExistente =
+      modoOperacaoNoModalKanban !== 'NOVA' &&
+      operacoesExistentesNoPainelParaModal.some(
+        (o) => String(o.id) === String(modoOperacaoNoModalKanban)
+      );
+
+    const idOperacaoSalva = editandoOperacaoExistente
+      ? String(modoOperacaoNoModalKanban)
+      : String(Date.now());
+
+    const operacaoSalva: RegistroContratacao = {
+      id: idOperacaoSalva,
       porte: porteFormatado,
       cliente: nomeUpper,
       cpf: cpfFmt,
@@ -2646,51 +2828,114 @@ export default function ModalOrganizadorPastasCliente({
           : 'NENHUMA',
     };
 
+    // 1. Atualiza a operação existente OU adiciona a nova operação na lista de Contratações
+    const novasContratacoes = editandoOperacaoExistente
+      ? listaContratacoes.map((r) =>
+          String(r.id) === idOperacaoSalva ? { ...r, ...operacaoSalva } : r
+        )
+      : [operacaoSalva, ...listaContratacoes];
+
+    // 2. Reúne TODAS as operações deste cliente (para exibir unificadas no mesmo Card do Kanban)
+    const todasOpsDesteCliente = novasContratacoes.filter((r) => {
+      const rNome = removerAcentos(r.cliente || '')
+        .toUpperCase()
+        .trim();
+      const rCpf = (r.cpf || '').replace(/\D/g, '');
+      return (
+        String(r.id) === idOperacaoSalva ||
+        (cpfLimpo.length === 11 && rCpf === cpfLimpo) ||
+        (nomeNorm.length >= 4 && rNome === nomeNorm)
+      );
+    });
+
     const { html, textoPuro } = montarHtmlCardSincronizado({
       cliente: nomeUpper,
       cpf: cpfFmt,
       porte: porteFormatado,
-      projetista: novaContratacao.projetista,
-      tipo: novaContratacao.tipo,
-      valor: novaContratacao.valor,
-      situacaoMacro: novaContratacao.situacao,
-      situacaoDetalhada: novaContratacao.situacaoDetalhada,
-      pendenciasObs: novaContratacao.obs,
-      programa: novaContratacao.programa,
-      operacoesAgrupadas: [
-        {
-          id: idNovaOp,
-          tipo: novaContratacao.tipo,
-          valor: novaContratacao.valor,
-          situacao: novaContratacao.situacao,
-          detalheExtra: novaContratacao.programa,
-        },
-      ],
+      projetista: operacaoSalva.projetista,
+      tipo: operacaoSalva.tipo,
+      valor: operacaoSalva.valor,
+      situacaoMacro: operacaoSalva.situacao,
+      situacaoDetalhada: operacaoSalva.situacaoDetalhada,
+      pendenciasObs: operacaoSalva.obs,
+      programa: operacaoSalva.programa,
+      espacoAnalise: cardKanbanExistenteParaModal?.espacoAnaliseVinculado,
+      operacoesAgrupadas: todasOpsDesteCliente.map((op) => ({
+        id: String(op.id),
+        tipo: op.tipo,
+        valor: op.valor,
+        situacao: op.situacao,
+        detalheExtra: op.programa,
+      })),
     });
 
-    const etapaInicial: EtapaKanban = 'CADASTROS';
-    const novoCardKanban: CardKanban = {
-      id: `wk_org_${idNovaOp}`,
-      etapa: etapaInicial,
-      statusCor: 'azul',
-      texto: html,
-      textoPuro,
-      dataModificacao: getHojeISO(),
-      isNovo: true,
-      propostaIdVinculada: idNovaOp,
-      idsPropostasAgrupadas: [idNovaOp],
-      clienteVinculado: nomeUpper,
-      cpfVinculado: cpfFmt,
-      porteVinculado: porteFormatado,
-      valorVinculado: novaContratacao.valor,
-      tipoOpVinculado: novaContratacao.tipo,
-      situacaoVinculada: novaContratacao.situacao,
-      situacaoDetalhadaVinculada: novaContratacao.situacaoDetalhada,
-      obsVinculada: novaContratacao.obs,
-    };
+    let cardAlvoFinal: CardKanban;
+    let novosCards: CardKanban[];
 
-    const novasContratacoes = [novaContratacao, ...listaContratacoes];
-    const novosCards = [novoCardKanban, ...listaCards];
+    // 3. Se o cliente JÁ TEM um Card no Kanban, atualiza o MESMO Card (NUNCA duplica o Kanban para o mesmo CPF!)
+    if (cardKanbanExistenteParaModal) {
+      const idsAgrupadosUnicos = Array.from(
+        new Set([
+          ...(cardKanbanExistenteParaModal.idsPropostasAgrupadas || []),
+          ...todasOpsDesteCliente.map((o) => String(o.id)),
+          idOperacaoSalva,
+        ])
+      );
+
+      const isLim =
+        operacaoSalva.tipo.toUpperCase().trim() === 'LCGH' ||
+        operacaoSalva.tipo.toUpperCase().trim() === 'LCGA';
+
+      cardAlvoFinal = {
+        ...cardKanbanExistenteParaModal,
+        texto: html,
+        textoPuro,
+        dataModificacao: getHojeISO(),
+        propostaIdVinculada:
+          cardKanbanExistenteParaModal.propostaIdVinculada || idOperacaoSalva,
+        lcgPropostaIdVinculada: isLim
+          ? idOperacaoSalva
+          : cardKanbanExistenteParaModal.lcgPropostaIdVinculada,
+        idsPropostasAgrupadas: idsAgrupadosUnicos,
+        clienteVinculado: nomeUpper,
+        cpfVinculado: cpfFmt,
+        porteVinculado: porteFormatado,
+        valorVinculado: operacaoSalva.valor,
+        tipoOpVinculado: operacaoSalva.tipo,
+        situacaoVinculada: operacaoSalva.situacao,
+        situacaoDetalhadaVinculada: operacaoSalva.situacaoDetalhada,
+        obsVinculada: operacaoSalva.obs,
+      };
+
+      novosCards = listaCards.map((c) =>
+        c.id === cardKanbanExistenteParaModal.id ? cardAlvoFinal : c
+      );
+    } else {
+      // Cliente ainda não possuía Card no Kanban: cria o Card inicial unificado
+      const etapaInicial: EtapaKanban = 'CADASTROS';
+      cardAlvoFinal = {
+        id: `wk_org_${idOperacaoSalva}`,
+        etapa: etapaInicial,
+        statusCor: 'azul',
+        texto: html,
+        textoPuro,
+        dataModificacao: getHojeISO(),
+        isNovo: true,
+        propostaIdVinculada: idOperacaoSalva,
+        idsPropostasAgrupadas: todasOpsDesteCliente.map((o) => String(o.id)),
+        clienteVinculado: nomeUpper,
+        cpfVinculado: cpfFmt,
+        porteVinculado: porteFormatado,
+        valorVinculado: operacaoSalva.valor,
+        tipoOpVinculado: operacaoSalva.tipo,
+        situacaoVinculada: operacaoSalva.situacao,
+        situacaoDetalhadaVinculada: operacaoSalva.situacaoDetalhada,
+        obsVinculada: operacaoSalva.obs,
+      };
+
+      novosCards = [cardAlvoFinal, ...listaCards];
+      onCadastrarPropostaNoPainel?.(operacaoSalva, cardAlvoFinal);
+    }
 
     setListaContratacoes(novasContratacoes);
     setListaCards(novosCards);
@@ -2699,8 +2944,6 @@ export default function ModalOrganizadorPastasCliente({
       salvarContratacoesSync(novasContratacoes),
       salvarKanbanSync(novosCards),
     ]);
-
-    onCadastrarPropostaNoPainel?.(novaContratacao, novoCardKanban);
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
@@ -2711,7 +2954,7 @@ export default function ModalOrganizadorPastasCliente({
     }
 
     setModalIniciarProposta(null);
-    setCardOverlayParecerId(novoCardKanban.id);
+    setCardOverlayParecerId(cardAlvoFinal.id);
   };
 
   // =========================================================================
@@ -6013,7 +6256,7 @@ export default function ModalOrganizadorPastasCliente({
         </div>
       )}
 
-      {/* MODAL INICIAR PROPOSTA NO KANBAN */}
+      {/* MODAL INICIAR / ATUALIZAR PROPOSTA NO KANBAN (SEM DUPLICAR CARD DO MESMO CPF) */}
       {modalIniciarProposta && (
         <div
           style={{
@@ -6031,25 +6274,103 @@ export default function ModalOrganizadorPastasCliente({
               background: '#ffffff',
               padding: '22px',
               borderRadius: '10px',
-              width: '680px',
+              width: '720px',
               maxWidth: '95%',
+              maxHeight: '92vh',
+              overflowY: 'auto',
               borderTop: '5px solid #8B1530',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.45)',
             }}
           >
-            <h3 style={{ margin: '0 0 12px 0', color: '#8B1530' }}>
-              🚀 CADASTRAR PROPOSTA NO KANBAN & ABRIR PARECER GERENCIAL
-            </h3>
+            <div style={{ marginBottom: '12px' }}>
+              <h3 style={{ margin: '0 0 4px 0', color: '#8B1530', fontSize: '15.5px' }}>
+                🚀 CADASTRAR / SINCRONIZAR PROPOSTA NO KANBAN & ABRIR PARECER GERENCIAL
+              </h3>
+              <span style={{ fontSize: '11.5px', color: '#64748b' }}>
+                Cliente: <b>{modalIniciarProposta.item.nomeCliente}</b>
+                {cardKanbanExistenteParaModal
+                  ? ` • 🔗 Card já existente na etapa [${cardKanbanExistenteParaModal.etapa}] (Não será duplicado!)`
+                  : ' • 🆕 Primeiro Card deste cliente no Kanban'}
+              </span>
+            </div>
+
+            {/* SELETOR INTELIGENTE: APARECE QUANDO O CLIENTE JÁ TEM OPERAÇÃO OU CARD NO PAINEL */}
+            {(operacoesExistentesNoPainelParaModal.length > 0 ||
+              cardKanbanExistenteParaModal) && (
+              <div
+                style={{
+                  background:
+                    modoOperacaoNoModalKanban === 'NOVA'
+                      ? '#f0fdf4'
+                      : '#eff6ff',
+                  border: `1.5px solid ${
+                    modoOperacaoNoModalKanban === 'NOVA'
+                      ? '#86efac'
+                      : '#93c5fd'
+                  }`,
+                  borderRadius: '8px',
+                  padding: '10px 12px',
+                  marginBottom: '14px',
+                }}
+              >
+                <label
+                  style={{
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    color:
+                      modoOperacaoNoModalKanban === 'NOVA'
+                        ? '#15803d'
+                        : '#1e40af',
+                    display: 'block',
+                    marginBottom: '5px',
+                  }}
+                >
+                  🔄 Este cliente já possui registro no Painel/Kanban. O que deseja
+                  fazer?
+                </label>
+                <select
+                  value={modoOperacaoNoModalKanban}
+                  onChange={(e) =>
+                    selecionarModoOperacaoNoModal(e.target.value)
+                  }
+                  style={{
+                    width: '100%',
+                    height: '34px',
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    borderRadius: '6px',
+                    border: '1px solid #cbd5e1',
+                    padding: '0 8px',
+                    color: '#0f172a',
+                    background: '#ffffff',
+                  }}
+                >
+                  {operacoesExistentesNoPainelParaModal.map((opEx, idxOp) => (
+                    <option key={opEx.id} value={String(opEx.id)}>
+                      ✏️ Atualizar Operação Já Cadastrada #{idxOp + 1}: [
+                      {opEx.tipo} — R$ {opEx.valor || '0,00'} —{' '}
+                      {opEx.situacao || 'Na Agência'}]
+                    </option>
+                  ))}
+                  <option value="NOVA">
+                    ➕ Cadastrar como NOVA Operação para este Cliente (Anexar ao
+                    mesmo Card do Kanban)
+                  </option>
+                </select>
+              </div>
+            )}
+
             <div
               style={{
                 display: 'grid',
                 gridTemplateColumns: '1fr 1fr 1fr 1fr',
                 gap: '10px',
-                marginBottom: '12px',
+                marginBottom: '10px',
               }}
             >
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700 }}>
-                  Tipo
+                  Tipo de Operação
                 </label>
                 <select
                   value={cadTipo}
@@ -6057,6 +6378,7 @@ export default function ModalOrganizadorPastasCliente({
                 >
                   <option value="Investimento">Investimento</option>
                   <option value="Custeio">Custeio</option>
+                  <option value="Renovação - Custeio">Renovação - Custeio</option>
                   <option value="LCGH">LCGH</option>
                   <option value="LCGA">LCGA</option>
                 </select>
@@ -6087,6 +6409,7 @@ export default function ModalOrganizadorPastasCliente({
                 </label>
                 <input
                   type="text"
+                  list="dl_proj_organizador"
                   value={cadProjetista}
                   onChange={(e) => setCadProjetista(e.target.value)}
                 />
@@ -6106,9 +6429,9 @@ export default function ModalOrganizadorPastasCliente({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: '1.5fr 1fr 1fr',
+                gridTemplateColumns: '1.5fr 1fr 0.9fr 0.8fr',
                 gap: '10px',
-                marginBottom: '12px',
+                marginBottom: '10px',
               }}
             >
               <div>
@@ -6126,6 +6449,25 @@ export default function ModalOrganizadorPastasCliente({
                     <option key={pr} value={pr} />
                   ))}
                 </datalist>
+              </div>
+              <div>
+                <label style={{ fontSize: '11px', fontWeight: 700 }}>
+                  Situação Oficial
+                </label>
+                <select
+                  value={cadSituacao}
+                  onChange={(e) => setCadSituacao(e.target.value)}
+                >
+                  <option value="Com Cliente/Projetista">
+                    Com Cliente/Projetista
+                  </option>
+                  <option value="Na Agência">Na Agência (AG)</option>
+                  <option value="Devolvido AG">Devolvido AG</option>
+                  <option value="Na Central">Na Central (S522)</option>
+                  <option value="F. Assinar">F. Assinar</option>
+                  <option value="F. Conformidade">F. Conformidade</option>
+                  <option value="Contratado">Contratado</option>
+                </select>
               </div>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700 }}>
@@ -6153,10 +6495,56 @@ export default function ModalOrganizadorPastasCliente({
 
             <div
               style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '10px',
+                marginBottom: '12px',
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: '#8B1530',
+                  }}
+                >
+                  📊 SITUAÇÃO DETALHADA (No Card do Kanban)
+                </label>
+                <textarea
+                  rows={3}
+                  value={cadSitDetalhada}
+                  onChange={(e) => setCadSitDetalhada(e.target.value)}
+                  style={{ fontSize: '11.5px', width: '100%' }}
+                />
+              </div>
+              <div>
+                <label
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: '#b45309',
+                  }}
+                >
+                  📝 PENDÊNCIAS / OBSERVAÇÕES (No Card do Kanban)
+                </label>
+                <textarea
+                  rows={3}
+                  value={cadObsPendencias}
+                  onChange={(e) => setCadObsPendencias(e.target.value)}
+                  style={{ fontSize: '11.5px', width: '100%' }}
+                />
+              </div>
+            </div>
+
+            <div
+              style={{
                 display: 'flex',
                 justifyContent: 'flex-end',
                 gap: '10px',
                 marginTop: '14px',
+                borderTop: '1px solid #e2e8f0',
+                paddingTop: '12px',
               }}
             >
               <button
@@ -6173,7 +6561,7 @@ export default function ModalOrganizadorPastasCliente({
                   fontSize: '12px',
                 }}
               >
-                Pular Cadastro (Gerar FALTA PARECER GERENCIAL.txt)
+                Pular Etapa (Gerar FALTA PARECER GERENCIAL.txt)
               </button>
               <button
                 type="button"
@@ -6188,7 +6576,11 @@ export default function ModalOrganizadorPastasCliente({
                   cursor: 'pointer',
                 }}
               >
-                💾 Cadastrar no Kanban & Abrir Parecer Gerencial ➔
+                {modoOperacaoNoModalKanban === 'NOVA'
+                  ? cardKanbanExistenteParaModal
+                    ? '➕ Adicionar Nova Operação ao Card & Abrir Parecer ➔'
+                    : '💾 Cadastrar no Kanban & Abrir Parecer Gerencial ➔'
+                  : '💾 Atualizar Operação no Kanban & Abrir Parecer ➔'}
               </button>
             </div>
           </div>

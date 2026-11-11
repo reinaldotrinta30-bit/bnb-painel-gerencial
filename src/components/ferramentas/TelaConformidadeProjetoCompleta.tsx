@@ -1782,25 +1782,31 @@ if (!titDet && handle.name) {
     // -------------------------------------------------------------------------
     // GRUPO 1: TAREFAS E CONSULTAS QUE O ANALISTA (USUÁRIO) FAZ NO DIA (5.1)
     // -------------------------------------------------------------------------
-    const arqsCapa = buscarArqs(['ITEM_CAPA_ANALISADOR'], [
-      'CAPA DO ANALISADOR',
-      '1. CAPA',
-      '19. CAPA',
-      'CAPA DA PROPOSTA',
-      'CAPA -',
-    ]);
-    itens.push({
-      id: 'AN_CAPA',
-      titulo: 'Capa do Analisador',
-      obrigatorio: true,
-      presente: arqsCapa.length > 0,
-      responsavel: 'ANALISTA_BANCO',
-      detalheStatus:
-        arqsCapa.length > 0
-          ? 'Capa localizada na pasta.'
-          : 'Falta inserir a Capa da Proposta / Analisador.',
-      arquivosRelacionados: arqsCapa,
-    });
+    // ITEM 1: Quando for CUSTEIO de qualquer porte, NÃO exige Capa do Analisador!
+    const isOperacaoCusteio =
+      temDerivada && modalidadeAtiva === 'CUSTEIO';
+
+    if (!isOperacaoCusteio) {
+      const arqsCapa = buscarArqs(['ITEM_CAPA_ANALISADOR'], [
+        'CAPA DO ANALISADOR',
+        '1. CAPA',
+        '19. CAPA',
+        'CAPA DA PROPOSTA',
+        'CAPA -',
+      ]);
+      itens.push({
+        id: 'AN_CAPA',
+        titulo: 'Capa do Analisador',
+        obrigatorio: true,
+        presente: arqsCapa.length > 0,
+        responsavel: 'ANALISTA_BANCO',
+        detalheStatus:
+          arqsCapa.length > 0
+            ? 'Capa localizada na pasta.'
+            : 'Falta inserir a Capa da Proposta / Analisador.',
+        arquivosRelacionados: arqsCapa,
+      });
+    }
 
     const arqsEmbargos = buscarArqs(
       ['ITEM_EMBARGOS_TITULAR', 'ITEM_EMBARGOS_CONJUGE'],

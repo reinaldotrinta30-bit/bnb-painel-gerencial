@@ -2347,7 +2347,10 @@ export function gerarLembretesTxtPorPerfil(params: {
     if (!categoriasPresentes.has('ITEM_RB_PA')) add(`17 - RB ${pa}.txt`);
     if (!categoriasPresentes.has('ITEM_ORCAMENTO'))
       add(`18. ORÇAMENTO - ${tit}.txt`);
-    if (!categoriasPresentes.has('ITEM_CAPA_ANALISADOR'))
+    if (
+      cfg.modalidadeDerivada !== 'CUSTEIO' &&
+      !categoriasPresentes.has('ITEM_CAPA_ANALISADOR')
+    )
       add(`19. CAPA DO ANALISADOR - ${tit}.txt`);
     if (
       !categoriasPresentes.has('ITEM_PARECER_GERENCIAL') &&
@@ -2479,7 +2482,8 @@ export function gerarLembretesTxtPorPerfil(params: {
     ) {
       add(`2. ORÇAMENTO - ${tit}.txt`);
     }
-    if (!categoriasPresentes.has('ITEM_CAPA_ANALISADOR')) {
+    // ITEM 1: Quando for CUSTEIO de qualquer porte, NÃO exige Capa do Analisador!
+    if (!isCusteio && !categoriasPresentes.has('ITEM_CAPA_ANALISADOR')) {
       add(`3. CAPA DO ANALISADOR - ${tit}.txt`);
     }
     if (!categoriasPresentes.has('ITEM_CONTRATO_ASSESSORIA')) {
