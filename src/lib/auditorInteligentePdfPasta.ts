@@ -131,20 +131,38 @@ export function salvarDadosExtraidosParaParecer(
     const atualRaw = window.localStorage.getItem(
       STORAGE_KEY_DADOS_PROJETO_PARECER
     );
-    const mapa: Record<string, DadosExtraidosProjetoParecer> = atualRaw
+    const mapaBruto: Record<string, DadosExtraidosProjetoParecer> = atualRaw
       ? JSON.parse(atualRaw)
       : {};
 
+    // Mantém apenas os últimos 5 registros no cache local para NUNCA sobrecarregar o localStorage do Kanban!
+    const chavesExistentes = Object.keys(mapaBruto).filter(
+      (k) => k !== 'ULTIMO_PROJETO_LIDO'
+    );
+    const mapaEnxuto: Record<string, DadosExtraidosProjetoParecer> = {};
+    chavesExistentes.slice(-6).forEach((k) => {
+      mapaEnxuto[k] = mapaBruto[k];
+    });
+
     const chaveNome = normalizarSemAcento(dados.clienteNome);
     const chaveCpf = (dados.clienteCpf || '').replace(/\D/g, '');
-    if (chaveNome) mapa[chaveNome] = dados;
-    if (chaveCpf.length >= 9) mapa[chaveCpf] = dados;
-    mapa['ULTIMO_PROJETO_LIDO'] = dados;
+    if (chaveNome) mapaEnxuto[chaveNome] = dados;
+    if (chaveCpf.length >= 9) mapaEnxuto[chaveCpf] = dados;
+    mapaEnxuto['ULTIMO_PROJETO_LIDO'] = dados;
 
-    window.localStorage.setItem(
-      STORAGE_KEY_DADOS_PROJETO_PARECER,
-      JSON.stringify(mapa)
-    );
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY_DADOS_PROJETO_PARECER,
+        JSON.stringify(mapaEnxuto)
+      );
+    } catch {
+      // Se o localStorage estiver cheio, grava apenas o último projeto lido
+      window.localStorage.setItem(
+        STORAGE_KEY_DADOS_PROJETO_PARECER,
+        JSON.stringify({ ULTIMO_PROJETO_LIDO: dados })
+      );
+    }
+
     window.dispatchEvent(
       new CustomEvent('bnb_v2_dados_projeto_parecer_atualizados', {
         detail: dados,

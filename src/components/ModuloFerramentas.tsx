@@ -5,6 +5,7 @@ import ModalOrganizadorPastasCliente from '@/components/ferramentas/ModalOrganiz
 import ModalVerificadorKmlGeodesico from '@/components/ferramentas/ModalVerificadorKmlGeodesico';
 import ModalVerificarConformidadeSocioambiental from '@/components/ferramentas/ModalVerificarConformidadeSocioambiental';
 import TelaConformidadeProjetoCompleta from '@/components/ferramentas/TelaConformidadeProjetoCompleta';
+import { BotaoBackupNuvemCentral } from '@/components/ferramentas/ModalBackupNuvemSistema';
 import {
   salvarFerramentasSync,
   carregarFerramentasSync,
@@ -311,7 +312,7 @@ export default function ModuloFerramentas({
                 marginBottom: 0,
               }}
             >
-              📂 Restaurar Backup Geral (.JSON)
+              📂 Restaurar (.JSON)
               <input
                 type="file"
                 accept=".json"
@@ -319,6 +320,9 @@ export default function ModuloFerramentas({
                 style={{ display: 'none' }}
               />
             </label>
+
+               <BotaoBackupNuvemCentral />
+
             <button
               onClick={exportarBackupUnificado}
               style={{
@@ -329,10 +333,12 @@ export default function ModuloFerramentas({
                 width: 'auto',
               }}
             >
-              💾 Baixar Backup Geral Unificado
+              💾 Baixar Backup
             </button>
           </div>
         </div>
+
+       
 
         {/* CENTRAL GERADORA DE TODOS OS 16 DOCUMENTOS OFICIAIS (.DOCX) */}
         <div
