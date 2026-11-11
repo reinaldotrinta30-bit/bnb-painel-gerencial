@@ -1215,7 +1215,9 @@ export default function TelaConformidadeProjetoCompleta({
             const novoCaminho = caminhoRel
               ? `${caminhoRel}/${entryName}`
               : entryName;
-            subpastasSet.add(entryName.toUpperCase().trim());
+            const nomeDirUp = entryName.toUpperCase().trim();
+            subpastasSet.add(nomeDirUp);
+            subpastasSet.add(nomeDirUp.replace(/^\d+\.\s*/, '').trim());
             await varrerRecursivo(entryHandle, novoCaminho, profundidade + 1);
           }
         }

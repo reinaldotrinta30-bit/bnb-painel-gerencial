@@ -29,6 +29,7 @@ import {
   obterNomesCurtosDesambiguados,
   extrairPrimeiroNome,
   isArquivoParecerGerencialReal,
+  obterNomePastaOutrosRaiz,
 } from '@/lib/motorPerfisOrganizadorPastas';
 import {
   RegistroContratacao,
@@ -1821,7 +1822,10 @@ export default function ModalOrganizadorPastasCliente({
               );
             }
           } else if (entryHandle.kind === 'directory') {
-            const upDir = entryName.toUpperCase().trim();
+            const upDir = entryName
+              .toUpperCase()
+              .replace(/^\d+\.\s*/, '')
+              .trim();
             if (PASTAS_PADRAO_SISTEMA.has(upDir)) {
               tinhaSubpastaOrganizada = true;
             }
@@ -1952,7 +1956,9 @@ export default function ModalOrganizadorPastasCliente({
       if (filtroGrupoTabela === 'CADASTRO') {
         const vaiParaCad =
           arq.categoria.startsWith('CAD_') ||
-          destinos.some((d) => d.pastaRelativa === 'CADASTRO');
+          destinos.some(
+            (d) => d.pastaRelativa.replace(/^\d+\.\s*/, '') === 'CADASTRO'
+          );
         if (!vaiParaCad) return false;
       } else if (filtroGrupoTabela === 'IMOVEL') {
         const vaiParaImovel = destinos.some(
@@ -2011,7 +2017,9 @@ export default function ModalOrganizadorPastasCliente({
       const destinos = calcularTodosDestinosDoArquivo(arq, cfgPerfil);
       if (
         arq.categoria.startsWith('CAD_') ||
-        destinos.some((d) => d.pastaRelativa === 'CADASTRO')
+        destinos.some(
+          (d) => d.pastaRelativa.replace(/^\d+\.\s*/, '') === 'CADASTRO'
+        )
       ) {
         cadastro++;
       }
@@ -2310,6 +2318,9 @@ export default function ModalOrganizadorPastasCliente({
       );
 
       // 2.5. VARREDURA E LIMPEZA ESTRATÉGICA DE DUPLICATAS E ÁRVORES ANTIGAS:
+      const nomePastaOutrosOficial = obterNomePastaOutrosRaiz(cfgPerfil);
+      const nomePastaOutrosUp = nomePastaOutrosOficial.toUpperCase().trim();
+
       const varrerELimparArvoreAntiga = async (
         dirAtual: any,
         caminhoRel: string,
@@ -2318,7 +2329,11 @@ export default function ModalOrganizadorPastasCliente({
         if (profundidade > 4) return false;
         const caminhoUp = (caminhoRel || '').toUpperCase().trim();
 
-        if (caminhoUp === 'OUTROS' || caminhoUp.startsWith('OUTROS/')) {
+        // Protege a pasta OUTROS oficial do perfil ativo (ex: "4. OUTROS", "2. OUTROS" ou "OUTROS")
+        if (
+          caminhoUp === nomePastaOutrosUp ||
+          caminhoUp.startsWith(`${nomePastaOutrosUp}/`)
+        ) {
           return true;
         }
 
@@ -2332,7 +2347,6 @@ export default function ModalOrganizadorPastasCliente({
         }
 
         let possuiConteudoOficial = false;
-        // Mapa para garantir que na mesma pasta física nunca fiquem 2 arquivos com o mesmo hashBinario
         const hashesVistosNestaPasta = new Set<string>();
 
         for (const [entryName, entryHandle] of entradasAtuais) {
@@ -2363,7 +2377,6 @@ export default function ModalOrganizadorPastasCliente({
                 const fOficial: File = await entryHandle.getFile();
                 const hOficial = await calcularHashBinarioRapido(fOficial);
                 if (hashesVistosNestaPasta.has(hOficial)) {
-                  // Segundo arquivo idêntico na mesma pasta -> remove a duplicata!
                   await dirAtual.removeEntry(entryName);
                 } else {
                   hashesVistosNestaPasta.add(hOficial);
@@ -2373,8 +2386,6 @@ export default function ModalOrganizadorPastasCliente({
                 possuiConteudoOficial = true;
               }
             } else {
-              // Arquivo que não faz parte dos nomes finais gravados nesta pasta:
-              // Verifica se ele é uma cópia binária idêntica de um documento que já foi organizado (ex: "6. INTEIRO TEOR - ELANNE.pdf")!
               try {
                 const fileSobra: File = await entryHandle.getFile();
                 const hashSobra = await calcularHashBinarioRapido(fileSobra);
@@ -2383,14 +2394,16 @@ export default function ModalOrganizadorPastasCliente({
                   hashesOficiaisOrganizados.has(hashSobra) ||
                   hashesVistosNestaPasta.has(hashSobra)
                 ) {
-                  // É um documento repetido/antigo cujo conteúdo idêntico já está salvo com o nome novo -> Apaga a duplicata!
                   await dirAtual.removeEntry(entryName);
                 } else {
-                  // É um arquivo realmente diferente e não identificado -> Move para OUTROS mantendo a subpasta de origem!
                   const bufferSobra = await fileSobra.arrayBuffer();
-                  const destinoOutrosRel = caminhoRel
-                    ? `OUTROS/${caminhoRel}`
-                    : 'OUTROS';
+                  // Se veio de uma pasta OUTROS antiga com numeração diferente, move direto para a nova pasta OUTROS oficial sem duplicar "OUTROS/OUTROS"
+                  const caminhoRelSemOutrosAntigo = (caminhoRel || '')
+                    .replace(/^(?:\d+\.\s*)?OUTROS(?:\/|$)/i, '')
+                    .trim();
+                  const destinoOutrosRel = caminhoRelSemOutrosAntigo
+                    ? `${nomePastaOutrosOficial}/${caminhoRelSemOutrosAntigo}`
+                    : nomePastaOutrosOficial;
                   await gravarEmSubpasta(
                     destinoOutrosRel,
                     entryName,
@@ -2408,7 +2421,7 @@ export default function ModalOrganizadorPastasCliente({
               : entryName;
             const subCaminhoUp = subCaminho.toUpperCase().trim();
 
-            if (subCaminhoUp === 'OUTROS') {
+            if (subCaminhoUp === nomePastaOutrosUp) {
               possuiConteudoOficial = true;
               continue;
             }
@@ -4669,7 +4682,10 @@ export default function ModalOrganizadorPastasCliente({
                                 >
                                   {destinos.map((d, iD) => {
                                     const isCad =
-                                      d.pastaRelativa === 'CADASTRO';
+                                      d.pastaRelativa.replace(
+                                        /^\d+\.\s*/,
+                                        ''
+                                      ) === 'CADASTRO';
                                     const isSocio =
                                       d.pastaRelativa.includes(
                                         'SOCIOAMBIENTAL'

@@ -1605,7 +1605,78 @@ function formatarNomePadronizado(
   return `${prefNum} ${prefViti}${rotulo} - ${nomes.titular}${ext}`;
 }
 
+// Retorna o nome da pasta OUTROS na raiz seguindo a sequência numérica do perfil ativo
+// (Mantém sem número quando for PRONAF A Padrão)
+export function obterNomePastaOutrosRaiz(cfg: ConfiguracaoPerfilPasta): string {
+  if (cfg.porte === 'PRONAF_A' && cfg.escopo !== 'LIMITE_PURO') {
+    return 'OUTROS';
+  }
+  if (cfg.escopo === 'COMBO_DERIVADA_E_LIMITE') {
+    return '4. OUTROS';
+  }
+  return '2. OUTROS';
+}
+
+// Numera as pastas da raiz na sequência:
+// 1. CADASTRO -> 2. LIMITE (LCGH/LCGA) -> 3. DERIVADA (INVESTIMENTO/CUSTEIO) -> 4. OUTROS
+// (Mantém sem numeração quando for PRONAF A Padrão)
+export function aplicarNumeracaoPastasRaiz(
+  pastaRelativa: string,
+  cfg: ConfiguracaoPerfilPasta
+): string {
+  const limpa = (pastaRelativa || '').trim();
+  if (!limpa) return '';
+
+  const partes = limpa.split('/').filter(Boolean);
+  if (partes.length === 0) return '';
+
+  // Remove eventual numeração anterior do 1º nível para recalcular de forma limpa
+  const raizSemNumero = partes[0].replace(/^\d+\.\s*/, '').trim();
+  const raizUp = removerAcentos(raizSemNumero).toUpperCase();
+
+  // Quando for PRONAF A Padrão, mantém os nomes originais sem numeração
+  if (cfg.porte === 'PRONAF_A' && cfg.escopo !== 'LIMITE_PURO') {
+    partes[0] = raizSemNumero;
+    return partes.join('/');
+  }
+
+  const isCombo = cfg.escopo === 'COMBO_DERIVADA_E_LIMITE';
+
+  let novaRaiz = raizSemNumero;
+  if (raizUp === 'CADASTRO') {
+    novaRaiz = '1. CADASTRO';
+  } else if (raizUp === 'LCGH' || raizUp === 'LCGA') {
+    novaRaiz = `2. ${raizUp}`;
+  } else if (raizUp === 'INVESTIMENTO' || raizUp === 'CUSTEIO') {
+    novaRaiz = isCombo ? `3. ${raizUp}` : `2. ${raizUp}`;
+  } else if (raizUp === 'OUTROS') {
+    novaRaiz = isCombo ? '4. OUTROS' : '2. OUTROS';
+  }
+
+  partes[0] = novaRaiz;
+  return partes.join('/');
+}
+
 export function calcularTodosDestinosDoArquivo(
+  item: {
+    nomeOriginal: string;
+    extensao: string;
+    categoria: CategoriaDocPasta;
+    isViti: boolean;
+    origemSubpasta?: string;
+    subtipoAmbientalExtra?: string;
+    nomeImovelEspecifico?: string;
+    tagEnvolvidoEspecifico?: string;
+  },
+  cfg: ConfiguracaoPerfilPasta
+): DestinoArquivoCalculado[] {
+  return calcularTodosDestinosDoArquivoInterno(item, cfg).map((dest) => ({
+    ...dest,
+    pastaRelativa: aplicarNumeracaoPastasRaiz(dest.pastaRelativa, cfg),
+  }));
+}
+
+function calcularTodosDestinosDoArquivoInterno(
   item: {
     nomeOriginal: string;
     extensao: string;
@@ -1683,11 +1754,17 @@ export function calcularTodosDestinosDoArquivo(
       'DOCUMENTAÇÃO DO(S) IMÓVEL(IS)',
     ]);
 
+    const subOrigemSemNum = subOrigem.replace(/^\d+\.\s*/, '').trim();
+    const subOrigemSemNumUp = subOrigemSemNum.toUpperCase();
+
     let pastaDestinoOutros = 'OUTROS';
-    if (subOrigem) {
-      if (subOrigemUp === 'OUTROS' || subOrigemUp.startsWith('OUTROS/')) {
-        pastaDestinoOutros = subOrigem;
-      } else if (!PASTAS_OFICIAIS_RAIZ.has(subOrigemUp)) {
+    if (subOrigemSemNum) {
+      if (
+        subOrigemSemNumUp === 'OUTROS' ||
+        subOrigemSemNumUp.startsWith('OUTROS/')
+      ) {
+        pastaDestinoOutros = subOrigemSemNum;
+      } else if (!PASTAS_OFICIAIS_RAIZ.has(subOrigemSemNumUp)) {
         pastaDestinoOutros = `OUTROS/${subOrigem}`;
       }
     }
@@ -2764,8 +2841,8 @@ export function gerarLembretesTxtPorPerfil(params: {
         if (
           !lembretes.some(
             (l) =>
-              l.pastaRelativa === dest.pastaRelativa &&
-              l.nomeArquivoTxt === nomeTxtViti
+              aplicarNumeracaoPastasRaiz(l.pastaRelativa, cfg) ===
+                dest.pastaRelativa && l.nomeArquivoTxt === nomeTxtViti
           )
         ) {
           lembretes.push({
@@ -2777,5 +2854,8 @@ export function gerarLembretesTxtPorPerfil(params: {
     });
   }
 
-  return lembretes;
+  return lembretes.map((l) => ({
+    ...l,
+    pastaRelativa: aplicarNumeracaoPastasRaiz(l.pastaRelativa, cfg),
+  }));
 }
