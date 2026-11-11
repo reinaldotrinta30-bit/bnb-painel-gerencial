@@ -815,10 +815,73 @@ export default function ModalConformidadePronafA({
     salvarItensDaListaAtiva(copia);
   };
 
+  const [buscaClienteConformidade, setBuscaClienteConformidade] = useState('');
+
+  const correspondeBuscaConformidade = (
+    it: ItemConformidadePronafA,
+    termoBruto: string
+  ): boolean => {
+    const termoNorm = (termoBruto || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .trim();
+    if (!termoNorm) return true;
+
+    const termoDigitos = termoNorm.replace(/\D/g, '');
+    const camposTexto = [
+      it.nomeCliente,
+      it.cpfCliente,
+      it.contaCorrente,
+      it.restricaoClienteDetalhe,
+      it.conjugeNome,
+      it.conjugeCpf,
+      it.restricaoConjugeDetalhe,
+      it.procuradorNome,
+      it.procuradorCpf,
+    ]
+      .join(' ')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase();
+
+    if (camposTexto.includes(termoNorm)) return true;
+
+    if (termoDigitos.length >= 3) {
+      const cpfsConcatenados = [
+        it.cpfCliente,
+        it.conjugeCpf,
+        it.procuradorCpf,
+        it.contaCorrente,
+      ]
+        .join(' ')
+        .replace(/\D/g, '');
+      if (cpfsConcatenados.includes(termoDigitos)) return true;
+    }
+
+    return false;
+  };
+
+  // Mantém o índice original (idxOriginal) para que a edição/exclusão na Planilha nunca edite a linha errada durante uma busca!
+  const itensPlanilhaFiltrados = useMemo(() => {
+    return itens
+      .map((item, idxOriginal) => ({ item, idxOriginal }))
+      .filter(({ item }) =>
+        correspondeBuscaConformidade(item, buscaClienteConformidade)
+      );
+  }, [itens, buscaClienteConformidade]);
+
   const rankingClassificado = useMemo(
     () => classificarListaConformidadePronafA(itens, contratacoes),
     [itens, contratacoes]
   );
+
+  const rankingClassificadoFiltrado = useMemo(() => {
+    if (!buscaClienteConformidade.trim()) return rankingClassificado;
+    return rankingClassificado.filter((r) =>
+      correspondeBuscaConformidade(r.item, buscaClienteConformidade)
+    );
+  }, [rankingClassificado, buscaClienteConformidade]);
 
   // =========================================================================
   // INTEGRAÇÃO DIRETA COM EXCEL (.XLSX): MODELO, EXPORTAÇÃO E IMPORTAÇÃO
@@ -1431,7 +1494,7 @@ export default function ModalConformidadePronafA({
             </span>
           </div>
 
-          {/* BLOCO DIREITO: SELETOR DE LISTAS SALVAS + ALTERNADOR DE VISÃO + FECHAR */}
+          {/* BLOCO DIREITO: CAIXA DE BUSCA + SELETOR DE LISTAS SALVAS + ALTERNADOR DE VISÃO + FECHAR */}
           <div
             style={{
               display: 'flex',
@@ -1441,6 +1504,93 @@ export default function ModalConformidadePronafA({
               marginLeft: 'auto',
             }}
           >
+            {/* CAIXA DE BUSCA RÁPIDA DE CLIENTE (FUNCIONA NA PLANILHA E NA FILA DE PRIORIDADES) */}
+            <div
+              style={{
+                position: 'relative',
+                display: 'inline-flex',
+                alignItems: 'center',
+                background: buscaClienteConformidade.trim()
+                  ? '#fffbfd'
+                  : '#ffffff',
+                border: buscaClienteConformidade.trim()
+                  ? '1.5px solid #8B1530'
+                  : '1px solid #cbd5e1',
+                borderRadius: '8px',
+                padding: '2px 8px',
+                height: '36px',
+                minWidth: '275px',
+                boxShadow: buscaClienteConformidade.trim()
+                  ? '0 0 0 3px rgba(139, 21, 48, 0.08)'
+                  : '0 1px 2px rgba(0,0,0,0.04)',
+              }}
+            >
+              <span style={{ fontSize: '13px', marginRight: '6px' }}>🔍</span>
+              <input
+                type="search"
+                value={buscaClienteConformidade}
+                onChange={(e) => setBuscaClienteConformidade(e.target.value)}
+                placeholder="Buscar cliente, CPF, cônjuge, proc. ou C/C..."
+                style={{
+                  border: 'none',
+                  outline: 'none',
+                  background: 'transparent',
+                  fontSize: '11.5px',
+                  fontWeight: 700,
+                  color: '#0f172a',
+                  width: '100%',
+                  height: '28px',
+                  padding: 0,
+                }}
+              />
+              {buscaClienteConformidade.trim() !== '' && (
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    marginLeft: '6px',
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      background: '#fdf2f4',
+                      color: '#8B1530',
+                      border: '1px solid #f5c2c7',
+                      padding: '1px 6px',
+                      borderRadius: '10px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {abaAtiva === 'PLANILHA'
+                      ? `${itensPlanilhaFiltrados.length}/${itens.length}`
+                      : `${rankingClassificadoFiltrado.length}/${rankingClassificado.length}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setBuscaClienteConformidade('')}
+                    title="Limpar busca"
+                    style={{
+                      width: 'auto',
+                      padding: '2px 6px',
+                      fontSize: '10px',
+                      fontWeight: 900,
+                      background: '#fee2e2',
+                      color: '#991b1b',
+                      border: 'none',
+                      borderRadius: '5px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ✖
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* CAIXINHA DE SELEÇÃO E GESTÃO DE LISTAS SALVAS (ORGANIZADA À DIREITA DO TÍTULO) */}
             <div
               style={{
@@ -1650,7 +1800,10 @@ export default function ModalConformidadePronafA({
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                 <button
                   type="button"
-                  onClick={() => salvarItensDaListaAtiva([...itens, criarLinhaVazia()])}
+                  onClick={() => {
+                    setBuscaClienteConformidade('');
+                    salvarItensDaListaAtiva([...itens, criarLinhaVazia()]);
+                  }}
                   style={{
                     width: 'auto',
                     padding: '6px 14px',
@@ -1811,7 +1964,41 @@ export default function ModalConformidadePronafA({
                   </tr>
                 </thead>
                 <tbody>
-                  {itens.map((it, idx) => (
+                  {itensPlanilhaFiltrados.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={16}
+                        style={{
+                          padding: '32px',
+                          textAlign: 'center',
+                          color: '#64748b',
+                          fontSize: '12.5px',
+                        }}
+                      >
+                        Nenhum cliente encontrado na planilha para{' '}
+                        <b>&ldquo;{buscaClienteConformidade}&rdquo;</b>.{' '}
+                        <button
+                          type="button"
+                          onClick={() => setBuscaClienteConformidade('')}
+                          style={{
+                            width: 'auto',
+                            marginLeft: '8px',
+                            padding: '4px 10px',
+                            fontSize: '11px',
+                            fontWeight: 800,
+                            background: '#8B1530',
+                            color: '#ffffff',
+                            border: 'none',
+                            borderRadius: '5px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✖ Limpar Busca
+                        </button>
+                      </td>
+                    </tr>
+                  ) : (
+                    itensPlanilhaFiltrados.map(({ item: it, idxOriginal: idx }) => (
                     <tr key={it.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
                       <td
                         style={{
@@ -2161,7 +2348,8 @@ export default function ModalConformidadePronafA({
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -2186,10 +2374,41 @@ export default function ModalConformidadePronafA({
                 Nenhum cliente preenchido nesta lista ainda. Volte à aba{' '}
                 <b>1. Planilha (14 Colunas)</b> para inserir ou importar do Excel!
               </div>
+            ) : rankingClassificadoFiltrado.length === 0 ? (
+              <div
+                style={{
+                  background: '#ffffff',
+                  padding: '30px',
+                  borderRadius: '8px',
+                  textAlign: 'center',
+                  color: '#64748b',
+                }}
+              >
+                Nenhum cliente encontrado na Fila de Prioridades para{' '}
+                <b>&ldquo;{buscaClienteConformidade}&rdquo;</b>.{' '}
+                <button
+                  type="button"
+                  onClick={() => setBuscaClienteConformidade('')}
+                  style={{
+                    width: 'auto',
+                    marginLeft: '8px',
+                    padding: '5px 12px',
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    background: '#8B1530',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ✖ Limpar Busca
+                </button>
+              </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
                 {([1, 2, 3, 4] as const).map((numGrupo) => {
-                  const listaDoGrupo = rankingClassificado.filter(
+                  const listaDoGrupo = rankingClassificadoFiltrado.filter(
                     (r) => r.grupoNumero === numGrupo
                   );
                   if (listaDoGrupo.length === 0) return null;

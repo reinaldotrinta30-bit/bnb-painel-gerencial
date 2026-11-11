@@ -98,6 +98,7 @@ interface ArquivoMapeadoItem {
   hashBinario?: string;
   subtipoAmbientalExtra?: string;
   nomeImovelEspecifico?: string;
+  tagEnvolvidoEspecifico?: string;
 }
 
 // Calcula uma impressão digital binária ultrarrápida (Tamanho + Hash de amostras do início, meio e fim do arquivo)
@@ -401,37 +402,86 @@ const OPCOES_SELECT_CATEGORIA: Array<{
     ],
   },
   {
-    grupo: '🪪 Subpasta CADASTRO (1 a 9)',
+    grupo:
+      '🪪 Subpasta CADASTRO (Titular, Cônjuge, Avalista, Procurador e Cônjuges)',
     itens: [
       {
         valor: 'CAD_1_IDENTIDADE_TITULAR',
-        label: 'CAD 1. IDENTIDADE (TITULAR)',
+        label: 'CAD 1. IDENTIDADE — TITULAR',
       },
       {
         valor: 'CAD_1_IDENTIDADE_CONJUGE',
-        label: 'CAD 1. IDENTIDADE (CÔNJUGE)',
+        label: 'CAD 1. IDENTIDADE — CÔNJUGE DO TITULAR',
+      },
+      {
+        valor: 'CAD_1_IDENTIDADE_AVALISTA',
+        label: 'CAD 1. IDENTIDADE — AVALISTA',
+      },
+      {
+        valor: 'CAD_1_IDENTIDADE_CONJUGE_AVALISTA',
+        label: 'CAD 1. IDENTIDADE — CÔNJUGE / COMP. DO AVALISTA',
+      },
+      {
+        valor: 'CAD_1_IDENTIDADE_PROCURADOR',
+        label: 'CAD 1. IDENTIDADE — PROCURADOR(A)',
+      },
+      {
+        valor: 'CAD_1_IDENTIDADE_CONJUGE_PROCURADOR',
+        label: 'CAD 1. IDENTIDADE — CÔNJUGE / COMP. DO PROCURADOR',
       },
       {
         valor: 'CAD_1_IDENTIDADE_OUTRO',
-        label: 'CAD 1. IDENTIDADE (PROCURADOR / AVALISTA)',
+        label: 'CAD 1. IDENTIDADE — OUTRO ENVOLVIDO',
       },
       {
         valor: 'CAD_2_CERTIDAO_CASAMENTO',
-        label: 'CAD 2. CERTIDÃO DE CASAMENTO',
+        label: 'CAD 2. CERTIDÃO CASAMENTO / NASCIMENTO — TITULAR',
+      },
+      {
+        valor: 'CAD_2_CERTIDAO_ENVOLVIDO',
+        label:
+          'CAD 2. CERTIDÃO CASAMENTO / NASCIMENTO — AVALISTA / PROCURADOR / CÔNJUGES',
       },
       {
         valor: 'CAD_3_COMP_ENDERECO',
-        label: 'CAD 3. COMPROVANTE DE ENDEREÇO',
+        label: 'CAD 3. COMPROVANTE DE ENDEREÇO — TITULAR',
       },
-      { valor: 'CAD_4_COMP_RENDA', label: 'CAD 4. COMPROVANTE DE RENDA' },
+      {
+        valor: 'CAD_3_COMP_ENDERECO_ENVOLVIDO',
+        label:
+          'CAD 3. COMPROVANTE DE ENDEREÇO — AVALISTA / PROCURADOR / CÔNJUGES',
+      },
+      {
+        valor: 'CAD_4_COMP_RENDA',
+        label: 'CAD 4. COMPROVANTE DE RENDA / IRPF — TITULAR',
+      },
+      {
+        valor: 'CAD_4_COMP_RENDA_ENVOLVIDO',
+        label:
+          'CAD 4. COMPROVANTE DE RENDA / IRPF — AVALISTA / PROCURADOR / CÔNJUGES',
+      },
+      {
+        valor: 'CAD_5_CAF_ENVOLVIDO',
+        label: 'CAD 5. CAF / DAP — AVALISTA / PROCURADOR / CÔNJUGES',
+      },
       {
         valor: 'CAD_5_PROPOSTA_CADASTRO',
-        label: 'CAD 6. PROPOSTA DE CADASTRO (ACEITA VITI)',
+        label: 'CAD 6. PROPOSTA DE CADASTRO / S400 — TITULAR (ACEITA VITI)',
       },
-      { valor: 'CAD_6_PROCURACAO', label: 'CAD 7. PROCURAÇÃO' },
+      {
+        valor: 'CAD_5_PROPOSTA_CADASTRO_ENVOLVIDO',
+        label:
+          'CAD 6. PROPOSTA DE CADASTRO / S400 — CÔNJUGE / AVALISTA / PROCURADOR',
+      },
+      { valor: 'CAD_6_PROCURACAO', label: 'CAD 7. PROCURAÇÃO PÚBLICA' },
       {
         valor: 'CAD_8_SELO_CARTORIO',
-        label: 'CAD 8. SELO DE FISCALIZAÇÃO CARTORÁRIA',
+        label: 'CAD 8. SELO DE FISCALIZAÇÃO CARTORÁRIA (CERTIDÕES / PROCURAÇÃO)',
+      },
+      {
+        valor: 'CAD_9_DECLARACAO_ENVOLVIDO',
+        label:
+          'CAD 9. DECLARAÇÕES (CONSOLIDADA / SCR / DÉBITO) — CÔNJUGE / AVALISTA / PROCURADOR',
       },
       { valor: 'CAD_9_OUTROS_CADASTRO', label: 'CAD 9. OUTROS CADASTRAIS' },
     ],
@@ -466,7 +516,11 @@ export default function ModalOrganizadorPastasCliente({
   const [titularNome, setTitularNome] = useState('');
   const [conjugeNome, setConjugeNome] = useState('');
   const [procuradorNome, setProcuradorNome] = useState('');
+  const [conjugeProcuradorNome, setConjugeProcuradorNome] = useState('');
   const [avalistaNome, setAvalistaNome] = useState('');
+  const [conjugeAvalistaNome, setConjugeAvalistaNome] = useState('');
+  const [modalGerenciarEnvolvidosAberto, setModalGerenciarEnvolvidosAberto] =
+    useState(false);
   const [projetistaNome, setProjetistaNome] = useState('ZEZÃO');
   const [paNome, setPaNome] = useState('P.A LAGO DA CARNAÚBA');
   const [listaImoveisNomes, setListaImoveisNomes] = useState<string[]>([
@@ -726,7 +780,9 @@ export default function ModalOrganizadorPastasCliente({
       titularNome,
       conjugeNome,
       procuradorNome,
+      conjugeProcuradorNome,
       avalistaNome,
+      conjugeAvalistaNome,
       projetistaNome,
       paOuImovelNome:
         listaImoveisNomes.filter((x) => x.trim())[0] || paNome,
@@ -799,9 +855,18 @@ export default function ModalOrganizadorPastasCliente({
         titularCompleto: titularNome,
         conjugeCompleto: conjugeNome,
         procuradorCompleto: procuradorNome,
+        conjugeProcuradorCompleto: conjugeProcuradorNome,
         avalistaCompleto: avalistaNome,
+        conjugeAvalistaCompleto: conjugeAvalistaNome,
       }),
-    [titularNome, conjugeNome, procuradorNome, avalistaNome]
+    [
+      titularNome,
+      conjugeNome,
+      procuradorNome,
+      conjugeProcuradorNome,
+      avalistaNome,
+      conjugeAvalistaNome,
+    ]
   );
 
   // Obtém (ou cria recursivamente) qualquer subpasta como "LCGH/CERTIFICAÇÃO SOCIOAMBIENTAL"
@@ -1331,7 +1396,13 @@ export default function ModalOrganizadorPastasCliente({
           primTit,
           primConj,
           escopoAtivo,
-          auditoriaPdf?.dadosProjetoParaParecer?.imoveisVinculados
+          auditoriaPdf?.dadosProjetoParaParecer?.imoveisVinculados,
+          {
+            procuradorNome,
+            conjugeProcuradorNome,
+            avalistaNome,
+            conjugeAvalistaNome,
+          }
         );
         return {
           id: `arq_${idx}_${Date.now()}`,
@@ -1346,6 +1417,7 @@ export default function ModalOrganizadorPastasCliente({
             hashBinario || `SZ_${file.size}_${ext.toUpperCase()}`,
           subtipoAmbientalExtra: classif.subtipoAmbientalExtra,
           nomeImovelEspecifico: classif.nomeImovelEspecifico,
+          tagEnvolvidoEspecifico: classif.tagEnvolvidoEspecifico,
         };
       }
     );
@@ -1400,8 +1472,19 @@ export default function ModalOrganizadorPastasCliente({
 
       const permiteMultiplosLivres =
         m.categoria === 'OUTROS_NAO_IDENTIFICADO' ||
-        m.categoria === 'CAD_9_OUTROS_CADASTRO' ||
+        m.categoria === 'CAD_1_IDENTIDADE_AVALISTA' ||
+        m.categoria === 'CAD_1_IDENTIDADE_CONJUGE_AVALISTA' ||
+        m.categoria === 'CAD_1_IDENTIDADE_PROCURADOR' ||
+        m.categoria === 'CAD_1_IDENTIDADE_CONJUGE_PROCURADOR' ||
+        m.categoria === 'CAD_1_IDENTIDADE_OUTRO' ||
+        m.categoria === 'CAD_2_CERTIDAO_ENVOLVIDO' ||
+        m.categoria === 'CAD_3_COMP_ENDERECO_ENVOLVIDO' ||
+        m.categoria === 'CAD_4_COMP_RENDA_ENVOLVIDO' ||
+        m.categoria === 'CAD_5_CAF_ENVOLVIDO' ||
+        m.categoria === 'CAD_5_PROPOSTA_CADASTRO_ENVOLVIDO' ||
         m.categoria === 'CAD_8_SELO_CARTORIO' ||
+        m.categoria === 'CAD_9_DECLARACAO_ENVOLVIDO' ||
+        m.categoria === 'CAD_9_OUTROS_CADASTRO' ||
         m.categoria === 'ITEM_SELO_IMOVEL' ||
         m.categoria === 'ITEM_DEC_OUTRA_AMBIENTAL' ||
         m.categoria === 'ITEM_DOC_IMOVEL_GENERICO';
@@ -3471,23 +3554,92 @@ export default function ModalOrganizadorPastasCliente({
                   <label
                     style={{
                       fontSize: '10.5px',
-                      fontWeight: 700,
-                      color: '#334155',
+                      fontWeight: 800,
+                      color:
+                        procuradorNome.trim() ||
+                        conjugeProcuradorNome.trim() ||
+                        avalistaNome.trim() ||
+                        conjugeAvalistaNome.trim()
+                          ? '#6b21a8'
+                          : '#334155',
                       display: 'block',
                       marginBottom: '3px',
                     }}
                   >
-                    📝 Procurador / Avalista
+                    📝 Avalista / Procurador (+ Cônjuges)
                   </label>
-                  <input
-                    type="text"
-                    value={procuradorNome}
-                    onChange={(e) =>
-                      setProcuradorNome(e.target.value.toUpperCase())
-                    }
-                    placeholder="Se houver..."
-                    style={inputPadraoStyle}
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setModalGerenciarEnvolvidosAberto(true)}
+                    title="Clique para informar ou editar Avalista, Cônjuge do Avalista, Procurador(a) e Cônjuge do Procurador(a)"
+                    style={{
+                      ...inputPadraoStyle,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '6px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      background:
+                        procuradorNome.trim() ||
+                        conjugeProcuradorNome.trim() ||
+                        avalistaNome.trim() ||
+                        conjugeAvalistaNome.trim()
+                          ? '#faf5ff'
+                          : '#ffffff',
+                      border:
+                        procuradorNome.trim() ||
+                        conjugeProcuradorNome.trim() ||
+                        avalistaNome.trim() ||
+                        conjugeAvalistaNome.trim()
+                          ? '1px solid #d8b4fe'
+                          : '1px solid #cbd5e1',
+                    }}
+                  >
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: '#0f172a',
+                      }}
+                    >
+                      {[
+                        avalistaNome.trim()
+                          ? `Aval: ${extrairPrimeiroNome(avalistaNome)}`
+                          : '',
+                        conjugeAvalistaNome.trim()
+                          ? `Cônj.Aval: ${extrairPrimeiroNome(
+                              conjugeAvalistaNome
+                            )}`
+                          : '',
+                        procuradorNome.trim()
+                          ? `Proc: ${extrairPrimeiroNome(procuradorNome)}`
+                          : '',
+                        conjugeProcuradorNome.trim()
+                          ? `Cônj.Proc: ${extrairPrimeiroNome(
+                              conjugeProcuradorNome
+                            )}`
+                          : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' • ') || 'Se houver (Clique p/ definir)...'}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '10px',
+                        fontWeight: 900,
+                        color: '#6b21a8',
+                        background: '#f3e8ff',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      👥 Editar
+                    </span>
+                  </button>
                 </div>
 
                 <div>
@@ -5598,6 +5750,263 @@ export default function ModalOrganizadorPastasCliente({
                 }}
               >
                 ✅ Confirmar Imóvel(is)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL COMPACTO PARA DEFINIR AVALISTA, CÔNJUGE DO AVALISTA, PROCURADOR E CÔNJUGE DO PROCURADOR */}
+      {modalGerenciarEnvolvidosAberto && (
+        <div
+          onClick={() => setModalGerenciarEnvolvidosAberto(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.72)',
+            zIndex: 990000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#ffffff',
+              width: '92vw',
+              maxWidth: '540px',
+              borderRadius: '12px',
+              borderTop: '5px solid #6b21a8',
+              padding: '18px 20px',
+              boxShadow: '0 25px 50px rgba(0,0,0,0.45)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                borderBottom: '1px solid #e2e8f0',
+                paddingBottom: '8px',
+              }}
+            >
+              <div>
+                <h3
+                  style={{
+                    margin: 0,
+                    fontSize: '14.5px',
+                    color: '#6b21a8',
+                    fontWeight: 900,
+                  }}
+                >
+                  👥 AVALISTA, PROCURADOR E RESPECTIVOS CÔNJUGES (PASTA CADASTRO)
+                </h3>
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  Informe os nomes (se houver) para que o sistema identifique e
+                  renomeie automaticamente RG, Renda, Endereço, CAF, Certidões e
+                  Declarações de cada um na pasta CADASTRO.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalGerenciarEnvolvidosAberto(false)}
+                style={{
+                  width: 'auto',
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '22px',
+                  color: '#64748b',
+                  cursor: 'pointer',
+                  lineHeight: 1,
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '10px',
+              }}
+            >
+              <div
+                style={{
+                  background: '#faf5ff',
+                  border: '1px solid #e9d5ff',
+                  borderRadius: '8px',
+                  padding: '10px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                }}
+              >
+                <strong style={{ fontSize: '11.5px', color: '#6b21a8' }}>
+                  🛡️ Dados do Avalista / Interveniente
+                </strong>
+                <div>
+                  <label style={{ fontSize: '10.5px', fontWeight: 700 }}>
+                    Nome do Avalista:
+                  </label>
+                  <input
+                    type="text"
+                    value={avalistaNome}
+                    onChange={(e) =>
+                      setAvalistaNome(e.target.value.toUpperCase())
+                    }
+                    placeholder="Ex: JOÃO DA SILVA..."
+                    style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10.5px', fontWeight: 700 }}>
+                    Cônjuge / Comp. do Avalista:
+                  </label>
+                  <input
+                    type="text"
+                    value={conjugeAvalistaNome}
+                    onChange={(e) =>
+                      setConjugeAvalistaNome(e.target.value.toUpperCase())
+                    }
+                    placeholder="Ex: MARIA DA SILVA..."
+                    style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                  />
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: '#f0f9ff',
+                  border: '1px solid #bae6fd',
+                  borderRadius: '8px',
+                  padding: '10px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                }}
+              >
+                <strong style={{ fontSize: '11.5px', color: '#0369a1' }}>
+                  ⚖️ Dados do Procurador(a)
+                </strong>
+                <div>
+                  <label style={{ fontSize: '10.5px', fontWeight: 700 }}>
+                    Nome do Procurador(a):
+                  </label>
+                  <input
+                    type="text"
+                    value={procuradorNome}
+                    onChange={(e) =>
+                      setProcuradorNome(e.target.value.toUpperCase())
+                    }
+                    placeholder="Ex: PEDRO SOUZA..."
+                    style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10.5px', fontWeight: 700 }}>
+                    Cônjuge / Comp. do Procurador:
+                  </label>
+                  <input
+                    type="text"
+                    value={conjugeProcuradorNome}
+                    onChange={(e) =>
+                      setConjugeProcuradorNome(e.target.value.toUpperCase())
+                    }
+                    placeholder="Ex: ANA SOUZA..."
+                    style={{ ...inputPadraoStyle, fontWeight: 700 }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                borderTop: '1px dashed #cbd5e1',
+                paddingTop: '10px',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setAvalistaNome('');
+                  setConjugeAvalistaNome('');
+                  setProcuradorNome('');
+                  setConjugeProcuradorNome('');
+                }}
+                style={{
+                  width: 'auto',
+                  padding: '7px 12px',
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  background: '#fee2e2',
+                  color: '#b91c1c',
+                  border: '1px solid #fca5a5',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                🧹 Limpar Envolvidos
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  // Reavalia automaticamente os arquivos da tabela com os novos nomes de Avalista/Procurador/Cônjuges!
+                  const primTit = extrairPrimeiroNome(titularNome);
+                  const primConj = extrairPrimeiroNome(conjugeNome);
+                  setArquivosMapeados((prev) =>
+                    prev.map((arq) => {
+                      if (arq.categoria === 'IGNORAR' || arq.origemGaveta)
+                        return arq;
+                      const reclassif = classificarArquivoUniversal(
+                        arq.nomeOriginal,
+                        primTit,
+                        primConj,
+                        cfgPerfil.escopo,
+                        auditoriaPdf?.dadosProjetoParaParecer?.imoveisVinculados,
+                        {
+                          procuradorNome,
+                          conjugeProcuradorNome,
+                          avalistaNome,
+                          conjugeAvalistaNome,
+                        }
+                      );
+                      return {
+                        ...arq,
+                        categoria:
+                          reclassif.categoria !== 'OUTROS_NAO_IDENTIFICADO'
+                            ? reclassif.categoria
+                            : arq.categoria,
+                        tagEnvolvidoEspecifico:
+                          reclassif.tagEnvolvidoEspecifico ||
+                          arq.tagEnvolvidoEspecifico,
+                      };
+                    })
+                  );
+                  setModalGerenciarEnvolvidosAberto(false);
+                }}
+                style={{
+                  width: 'auto',
+                  padding: '8px 18px',
+                  fontSize: '12px',
+                  fontWeight: 900,
+                  background: '#15803d',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                ✅ Confirmar e Reclassificar Arquivos
               </button>
             </div>
           </div>

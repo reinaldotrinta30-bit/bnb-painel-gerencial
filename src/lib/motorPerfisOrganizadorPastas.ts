@@ -24,7 +24,9 @@ export interface ConfiguracaoPerfilPasta {
   titularNome: string;
   conjugeNome: string;
   procuradorNome: string;
+  conjugeProcuradorNome?: string;
   avalistaNome: string;
+  conjugeAvalistaNome?: string;
   projetistaNome: string;
   paOuImovelNome: string;
   imoveisExtraidosPdf?: ImovelExtraidoProjetoPdf[];
@@ -87,16 +89,26 @@ export type CategoriaDocPasta =
   | 'ITEM_RB_PA'
   | 'ITEM_PARECER_SEMA'
   | 'ITEM_SOLICITACAO_LIMITE'
-  // Subpasta CADASTRO
+  // Subpasta CADASTRO (Titular, Cônjuge, Avalista, Procurador e Cônjuges destes)
   | 'CAD_1_IDENTIDADE_TITULAR'
   | 'CAD_1_IDENTIDADE_CONJUGE'
+  | 'CAD_1_IDENTIDADE_AVALISTA'
+  | 'CAD_1_IDENTIDADE_CONJUGE_AVALISTA'
+  | 'CAD_1_IDENTIDADE_PROCURADOR'
+  | 'CAD_1_IDENTIDADE_CONJUGE_PROCURADOR'
   | 'CAD_1_IDENTIDADE_OUTRO'
   | 'CAD_2_CERTIDAO_CASAMENTO'
+  | 'CAD_2_CERTIDAO_ENVOLVIDO'
   | 'CAD_3_COMP_ENDERECO'
+  | 'CAD_3_COMP_ENDERECO_ENVOLVIDO'
   | 'CAD_4_COMP_RENDA'
+  | 'CAD_4_COMP_RENDA_ENVOLVIDO'
+  | 'CAD_5_CAF_ENVOLVIDO'
   | 'CAD_5_PROPOSTA_CADASTRO'
+  | 'CAD_5_PROPOSTA_CADASTRO_ENVOLVIDO'
   | 'CAD_6_PROCURACAO'
   | 'CAD_8_SELO_CARTORIO'
+  | 'CAD_9_DECLARACAO_ENVOLVIDO'
   | 'CAD_9_OUTROS_CADASTRO'
   // Subpasta OUTROS
   | 'OUTROS_NAO_IDENTIFICADO';
@@ -121,6 +133,8 @@ export const CATEGORIAS_QUE_ACEITAM_VITI = new Set<CategoriaDocPasta>([
   'ITEM_MEMORIAL_DESCRITIVO',
   'ITEM_PLANO_ATIVIDADE_RURAL',
   'CAD_5_PROPOSTA_CADASTRO',
+  'CAD_5_PROPOSTA_CADASTRO_ENVOLVIDO',
+  'CAD_9_DECLARACAO_ENVOLVIDO',
 ]);
 
 // Categorias que compõem o Kit Completo do Imóvel (numerados de 1 a 9 nas pastas de Imóveis e no Limite)
@@ -272,14 +286,20 @@ export function obterNomesCurtosDesambiguados(params: {
   titularCompleto: string;
   conjugeCompleto: string;
   procuradorCompleto: string;
+  conjugeProcuradorCompleto?: string;
   avalistaCompleto: string;
+  conjugeAvalistaCompleto?: string;
 }) {
   const pTit = extrairPrimeiroNome(params.titularCompleto) || 'CLIENTE';
   const pConj = extrairPrimeiroNome(params.conjugeCompleto);
   const pProc = extrairPrimeiroNome(params.procuradorCompleto);
+  const pConjProc = extrairPrimeiroNome(params.conjugeProcuradorCompleto || '');
   const pAval = extrairPrimeiroNome(params.avalistaCompleto);
+  const pConjAval = extrairPrimeiroNome(params.conjugeAvalistaCompleto || '');
 
-  const todos = [pTit, pConj, pProc, pAval].filter(Boolean);
+  const todos = [pTit, pConj, pProc, pConjProc, pAval, pConjAval].filter(
+    Boolean
+  );
   const contagem: Record<string, number> = {};
   todos.forEach((n) => {
     contagem[n] = (contagem[n] || 0) + 1;
@@ -288,29 +308,36 @@ export function obterNomesCurtosDesambiguados(params: {
   return {
     titular: contagem[pTit] > 1 ? `${pTit} (TITULAR)` : pTit,
     conjuge: pConj ? (contagem[pConj] > 1 ? `${pConj} (CÔNJUGE)` : pConj) : '',
-    procurador: pProc
-      ? contagem[pProc] > 1
-        ? `${pProc} (PROCURADOR)`
-        : pProc
-      : '',
-    avalista: pAval ? (contagem[pAval] > 1 ? `${pAval} (AVALISTA)` : pAval) : '',
+    procurador: pProc ? `${pProc} (PROCURADOR)` : '',
+    conjugeProcurador: pConjProc ? `${pConjProc} (CÔNJ. PROCURADOR)` : '',
+    avalista: pAval ? `${pAval} (AVALISTA)` : '',
+    conjugeAvalista: pConjAval ? `${pConjAval} (CÔNJ. AVALISTA)` : '',
   };
 }
 
 // ============================================================================
 // RECONHECIMENTO AUTOMÁTICO UNIVERSAL DE ARQUIVOS
 // ============================================================================
+export interface NomesEnvolvidosExtrasClassificacao {
+  procuradorNome?: string;
+  conjugeProcuradorNome?: string;
+  avalistaNome?: string;
+  conjugeAvalistaNome?: string;
+}
+
 export function classificarArquivoUniversal(
   nomeArquivo: string,
   primeiroNomeTitular: string,
   primeiroNomeConjuge: string,
   escopoAtual: EscopoOperacaoPasta,
-  imoveisConhecidos?: ImovelExtraidoProjetoPdf[]
+  imoveisConhecidos?: ImovelExtraidoProjetoPdf[],
+  envolvidosExtras?: NomesEnvolvidosExtrasClassificacao
 ): {
   categoria: CategoriaDocPasta;
   isViti: boolean;
   subtipoAmbientalExtra?: string;
   nomeImovelEspecifico?: string;
+  tagEnvolvidoEspecifico?: string;
 } {
   const semExt = nomeArquivo.replace(/\.[^/.]+$/, '');
   const ext = (nomeArquivo.split('.').pop() || '').toUpperCase();
@@ -327,10 +354,32 @@ export function classificarArquivoUniversal(
     return { categoria: 'IGNORAR', isViti: false };
   }
 
+  const primProc = extrairPrimeiroNome(envolvidosExtras?.procuradorNome || '');
+  const primConjProc = extrairPrimeiroNome(
+    envolvidosExtras?.conjugeProcuradorNome || ''
+  );
+  const primAval = extrairPrimeiroNome(envolvidosExtras?.avalistaNome || '');
+  const primConjAval = extrairPrimeiroNome(
+    envolvidosExtras?.conjugeAvalistaNome || ''
+  );
+
+  const listaPessoasIgnorarImovel = [
+    primeiroNomeTitular,
+    primeiroNomeConjuge,
+    primProc,
+    primConjProc,
+    primAval,
+    primConjAval,
+    envolvidosExtras?.procuradorNome || '',
+    envolvidosExtras?.conjugeProcuradorNome || '',
+    envolvidosExtras?.avalistaNome || '',
+    envolvidosExtras?.conjugeAvalistaNome || '',
+  ].filter(Boolean);
+
   const nomeImovelEsp = extrairNomeImovelDoNomeArquivo(
     nomeArquivo,
     imoveisConhecidos,
-    [primeiroNomeTitular, primeiroNomeConjuge]
+    listaPessoasIgnorarImovel
   );
 
   if (ext === 'KML' || ext === 'KMZ') {
@@ -380,26 +429,90 @@ export function classificarArquivoUniversal(
     .replace(/^\d+(\.\d+)?\s*[.\-–]\s*/, '')
     .trim();
 
-  const mencionaConjuge = Boolean(
-    (primeiroNomeConjuge &&
-      primeiroNomeConjuge.length > 2 &&
-      new RegExp(
-        `\\b${removerAcentos(primeiroNomeConjuge).toUpperCase()}\\b`
-      ).test(miolo)) ||
-      /\b(CONJUGE|ESPOSA|MARIDO|COMPANHEIR[OA])\b/.test(miolo)
-  );
+  const contemNomeIsolado = (nomeCurto: string) =>
+    Boolean(
+      nomeCurto &&
+        nomeCurto.length > 2 &&
+        new RegExp(`\\b${removerAcentos(nomeCurto).toUpperCase()}\\b`).test(
+          miolo
+        )
+    );
 
-  const mencionaAvalistaOuProcurador =
-    /\b(AVALISTA|PROCURADOR|PROCURADORA|INTERVENIENTE|ANUENTE)\b/.test(miolo);
+  // Detecta se o arquivo refere-se especificamente ao Avalista, Procurador ou Cônjuges destes!
+  const mencionaConjugeAvalista =
+    /\b(CONJUGE|CONJ\.?|ESPOSA|MARIDO|COMPANHEIR[OA])\s+(?:D[OAE]\s+)?(?:AVALISTA|FIADOR|INTERVENIENTE)\b/.test(
+      miolo
+    ) ||
+    /\b(?:AVALISTA)\s*[-–/]\s*(?:CONJUGE|CONJ\.?|COMPANHEIR[OA])\b/.test(
+      miolo
+    ) ||
+    contemNomeIsolado(primConjAval);
+
+  const mencionaConjugeProcurador =
+    /\b(CONJUGE|CONJ\.?|ESPOSA|MARIDO|COMPANHEIR[OA])\s+(?:D[OAE]\s+)?(?:PROCURADOR|PROCURADORA)\b/.test(
+      miolo
+    ) ||
+    /\b(?:PROCURADOR|PROCURADORA)\s*[-–/]\s*(?:CONJUGE|CONJ\.?|COMPANHEIR[OA])\b/.test(
+      miolo
+    ) ||
+    contemNomeIsolado(primConjProc);
+
+  const mencionaAvalista =
+    !mencionaConjugeAvalista &&
+    (/\b(AVALISTA|FIADOR|FIADORA|INTERVENIENTE|ANUENTE)\b/.test(miolo) ||
+      contemNomeIsolado(primAval));
+
+  const mencionaProcurador =
+    !mencionaConjugeProcurador &&
+    !miolo.includes('PROCURACAO') &&
+    (/\b(PROCURADOR|PROCURADORA)\b/.test(miolo) || contemNomeIsolado(primProc));
+
+  const mencionaConjugeTitular =
+    !mencionaConjugeAvalista &&
+    !mencionaConjugeProcurador &&
+    !mencionaAvalista &&
+    !mencionaProcurador &&
+    (contemNomeIsolado(primeiroNomeConjuge) ||
+      /\b(CONJUGE|ESPOSA|MARIDO|COMPANHEIR[OA])\b/.test(miolo));
+
+  const ehEnvolvidoSecundario =
+    mencionaConjugeAvalista ||
+    mencionaConjugeProcurador ||
+    mencionaAvalista ||
+    mencionaProcurador;
+
+  // Monta a tag descritiva do envolvido para usar no nome final dentro da pasta CADASTRO
+  let tagEnvolvidoDetectado: string | undefined;
+  if (mencionaConjugeAvalista) {
+    tagEnvolvidoDetectado = primConjAval
+      ? `${primConjAval} (CÔNJ. AVALISTA)`
+      : 'CÔNJUGE DO AVALISTA';
+  } else if (mencionaConjugeProcurador) {
+    tagEnvolvidoDetectado = primConjProc
+      ? `${primConjProc} (CÔNJ. PROCURADOR)`
+      : 'CÔNJUGE DO PROCURADOR';
+  } else if (mencionaAvalista) {
+    tagEnvolvidoDetectado = primAval ? `${primAval} (AVALISTA)` : 'AVALISTA';
+  } else if (mencionaProcurador) {
+    tagEnvolvidoDetectado = primProc
+      ? `${primProc} (PROCURADOR)`
+      : 'PROCURADOR';
+  } else if (mencionaConjugeTitular) {
+    tagEnvolvidoDetectado = primeiroNomeConjuge
+      ? `${removerAcentos(primeiroNomeConjuge).toUpperCase()} (CÔNJUGE)`
+      : 'CÔNJUGE';
+  }
 
   const finalizar = (
     categoria: CategoriaDocPasta,
-    subtipoAmbientalExtra?: string
+    subtipoAmbientalExtra?: string,
+    tagOverride?: string
   ) => ({
     categoria,
     isViti: pareceVitiPeloNome && CATEGORIAS_QUE_ACEITAM_VITI.has(categoria),
     subtipoAmbientalExtra,
     nomeImovelEspecifico: nomeImovelEsp || undefined,
+    tagEnvolvidoEspecifico: tagOverride || tagEnvolvidoDetectado,
   });
 
   if (
@@ -409,10 +522,13 @@ export function classificarArquivoUniversal(
     miolo.includes('ESPELHO CADASTRO') ||
     miolo.includes('FICHA CADASTRO')
   ) {
+    if (ehEnvolvidoSecundario || mencionaConjugeTitular) {
+      return finalizar('CAD_5_PROPOSTA_CADASTRO_ENVOLVIDO');
+    }
     return finalizar('CAD_5_PROPOSTA_CADASTRO');
   }
 
-  // Distingue SELO DO IMÓVEL (Inteiro Teor / Escritura / Matrícula / Fazenda) vs SELO PESSOAL (Procuração / Casamento)
+  // Distingue SELO DO IMÓVEL vs SELO PESSOAL (Procuração / Casamento / Nascimento)
   if (
     /\bSELOS?\b/.test(miolo) ||
     miolo.includes('CONSULTA DE SELO') ||
@@ -425,7 +541,12 @@ export function classificarArquivoUniversal(
       /\b(IMOVEL|FAZENDA|SITIO|GLEBA|LOTE|MATRICULA|INTEIRO TEOR|ESCRITURA|ECPV|TITULO|HIPOTECA|ONUS)\b/.test(
         miolo
       );
-    if (ehSeloDeImovel && !miolo.includes('CASAMENTO') && !miolo.includes('PROCURACAO')) {
+    if (
+      ehSeloDeImovel &&
+      !miolo.includes('CASAMENTO') &&
+      !miolo.includes('NASCIMENTO') &&
+      !miolo.includes('PROCURACAO')
+    ) {
       return finalizar('ITEM_SELO_IMOVEL');
     }
     return finalizar('CAD_8_SELO_CARTORIO');
@@ -457,7 +578,7 @@ export function classificarArquivoUniversal(
   }
 
   // Declarações de Débito / Autorização de Consulta / SCR / SICOR:
-  // Se forem do Cônjuge, Avalista ou Procurador -> vão para a raiz do CADASTRO!
+  // Se forem do Cônjuge, Avalista, Procurador ou Cônjuges destes -> vão para a raiz do CADASTRO!
   if (
     miolo.includes('AUTORIZACAO DE DEBITO') ||
     miolo.includes('DEBITO EM CONTA') ||
@@ -466,20 +587,24 @@ export function classificarArquivoUniversal(
     miolo.includes('CONSULTA AO SICOR') ||
     miolo.includes('AUTORIZACAO DE CONSULTA')
   ) {
-    if (mencionaConjuge || mencionaAvalistaOuProcurador) {
-      return finalizar('CAD_9_OUTROS_CADASTRO');
+    if (ehEnvolvidoSecundario || mencionaConjugeTitular) {
+      return finalizar('CAD_9_DECLARACAO_ENVOLVIDO');
     }
     return finalizar('ITEM_AUT_DEBITO_CONTA');
   }
 
   if (miolo.includes('EMBARGO') || miolo.includes('IBAMA')) {
     return finalizar(
-      mencionaConjuge ? 'ITEM_EMBARGOS_CONJUGE' : 'ITEM_EMBARGOS_TITULAR'
+      mencionaConjugeTitular
+        ? 'ITEM_EMBARGOS_CONJUGE'
+        : 'ITEM_EMBARGOS_TITULAR'
     );
   }
   if (miolo.includes('IMPROBIDADE') || miolo.includes('CNJ')) {
     return finalizar(
-      mencionaConjuge ? 'ITEM_IMPROBIDADE_CONJUGE' : 'ITEM_IMPROBIDADE_TITULAR'
+      mencionaConjugeTitular
+        ? 'ITEM_IMPROBIDADE_CONJUGE'
+        : 'ITEM_IMPROBIDADE_TITULAR'
     );
   }
 
@@ -517,7 +642,7 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_EXTRATO_SICOR');
   }
 
-  // Declarações Consolidadas: se forem do Cônjuge, Avalista ou Procurador -> vão para a raiz do CADASTRO!
+  // Declarações Consolidadas: se forem do Cônjuge, Avalista, Procurador ou Cônjuges destes -> vão para a raiz do CADASTRO!
   if (
     miolo.includes('CONSOLIDADA') ||
     miolo.includes('DECLARACOES UNIFICADAS') ||
@@ -525,13 +650,13 @@ export function classificarArquivoUniversal(
     miolo.includes('UNIFICADA RURAL') ||
     miolo.includes('UNIFICADA PRONAF')
   ) {
-    if (mencionaConjuge || mencionaAvalistaOuProcurador) {
-      return finalizar('CAD_9_OUTROS_CADASTRO');
+    if (ehEnvolvidoSecundario || mencionaConjugeTitular) {
+      return finalizar('CAD_9_DECLARACAO_ENVOLVIDO');
     }
     return finalizar('ITEM_CONSOLIDADAS');
   }
 
-  // Declarações Ambientais (Obrigatórias e Complementares)
+  // Declarações Ambientais
   if (
     miolo.includes('TRABALHO INFANTIL') ||
     miolo.includes('EXPLORACAO DE TRABALHO') ||
@@ -597,11 +722,21 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_DEC_AMBIENTAIS');
   }
 
+  // Qualquer outra Declaração que mencione Avalista, Procurador ou Cônjuges destes vai para CADASTRO
+  if (
+    ehEnvolvidoSecundario &&
+    (miolo.includes('DECLARACAO') || miolo.includes('AUTORIZACAO'))
+  ) {
+    return finalizar('CAD_9_DECLARACAO_ENVOLVIDO');
+  }
+
   if (/\bCCIR\b/.test(miolo)) {
     return finalizar('ITEM_CCIR');
   }
   if (/\bCNDT\b/.test(miolo) || miolo.includes('DEBITOS TRABALHISTAS')) {
-    return finalizar(mencionaConjuge ? 'ITEM_CNDT_CONJUGE' : 'ITEM_CNDT_PF');
+    return finalizar(
+      mencionaConjugeTitular ? 'ITEM_CNDT_CONJUGE' : 'ITEM_CNDT_PF'
+    );
   }
   if (
     /\bITR\b/.test(miolo) ||
@@ -614,7 +749,9 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_CND_ITR_IMOVEL');
   }
   if (/\bCND\b/.test(miolo) || miolo.includes('RECEITA FEDERAL')) {
-    return finalizar(mencionaConjuge ? 'ITEM_CND_CONJUGE' : 'ITEM_CND_PF');
+    return finalizar(
+      mencionaConjugeTitular ? 'ITEM_CND_CONJUGE' : 'ITEM_CND_PF'
+    );
   }
 
   if (
@@ -707,9 +844,16 @@ export function classificarArquivoUniversal(
     miolo.includes('EXTRATO CAF') ||
     miolo.includes('CONSULTA CAF')
   ) {
+    if (ehEnvolvidoSecundario) {
+      return finalizar('CAD_5_CAF_ENVOLVIDO');
+    }
     return finalizar('ITEM_EXTRATO_CAF');
   }
   if (/\b(CAF|DAP)\b/.test(miolo)) {
+    // Se for CAF do Avalista, Procurador ou Cônjuge destes -> vai direto para a raiz da pasta CADASTRO!
+    if (ehEnvolvidoSecundario) {
+      return finalizar('CAD_5_CAF_ENVOLVIDO');
+    }
     return finalizar('ITEM_CAF');
   }
 
@@ -729,13 +873,25 @@ export function classificarArquivoUniversal(
     return finalizar('ITEM_PARECER_SEMA');
   }
 
-  // Documentos Pessoais -> Raiz da Subpasta CADASTRO
+  // Documentos Pessoais -> Raiz da Subpasta CADASTRO (Titular, Cônjuge, Avalista, Procurador e Cônjuges destes)
   if (
     miolo.includes('IDENTIDADE') ||
     miolo.includes('CNH') ||
     /\b(RG|CPF|CIN)\b/.test(miolo)
   ) {
-    if (mencionaConjuge) {
+    if (mencionaConjugeAvalista) {
+      return finalizar('CAD_1_IDENTIDADE_CONJUGE_AVALISTA');
+    }
+    if (mencionaConjugeProcurador) {
+      return finalizar('CAD_1_IDENTIDADE_CONJUGE_PROCURADOR');
+    }
+    if (mencionaAvalista) {
+      return finalizar('CAD_1_IDENTIDADE_AVALISTA');
+    }
+    if (mencionaProcurador) {
+      return finalizar('CAD_1_IDENTIDADE_PROCURADOR');
+    }
+    if (mencionaConjugeTitular) {
       return finalizar('CAD_1_IDENTIDADE_CONJUGE');
     }
     const titNorm = removerAcentos(primeiroNomeTitular).toUpperCase();
@@ -744,6 +900,7 @@ export function classificarArquivoUniversal(
     }
     return finalizar('CAD_1_IDENTIDADE_OUTRO');
   }
+
   if (
     miolo.includes('CASAMENTO') ||
     miolo.includes('NASCIMENTO') ||
@@ -752,24 +909,36 @@ export function classificarArquivoUniversal(
     miolo.includes('AVERBACAO') ||
     miolo.includes('UNIAO ESTAVEL')
   ) {
+    if (ehEnvolvidoSecundario) {
+      return finalizar('CAD_2_CERTIDAO_ENVOLVIDO');
+    }
     return finalizar('CAD_2_CERTIDAO_CASAMENTO');
   }
+
   if (
     miolo.includes('ENDERECO') ||
     miolo.includes('RESIDENCIA') ||
     miolo.includes('EQUATORIAL') ||
     miolo.includes('CAEMA')
   ) {
+    if (ehEnvolvidoSecundario || mencionaConjugeTitular) {
+      return finalizar('CAD_3_COMP_ENDERECO_ENVOLVIDO');
+    }
     return finalizar('CAD_3_COMP_ENDERECO');
   }
+
   if (
     miolo.includes('RENDA') ||
     miolo.includes('IRPF') ||
     miolo.includes('IMPOSTO DE RENDA') ||
     miolo.includes('CONTRACHEQUE')
   ) {
+    if (ehEnvolvidoSecundario || mencionaConjugeTitular) {
+      return finalizar('CAD_4_COMP_RENDA_ENVOLVIDO');
+    }
     return finalizar('CAD_4_COMP_RENDA');
   }
+
   if (miolo.includes('PROCURACAO')) {
     return finalizar('CAD_6_PROCURACAO');
   }
@@ -1445,6 +1614,7 @@ export function calcularTodosDestinosDoArquivo(
     origemSubpasta?: string;
     subtipoAmbientalExtra?: string;
     nomeImovelEspecifico?: string;
+    tagEnvolvidoEspecifico?: string;
   },
   cfg: ConfiguracaoPerfilPasta
 ): DestinoArquivoCalculado[] {
@@ -1454,7 +1624,9 @@ export function calcularTodosDestinosDoArquivo(
     titularCompleto: cfg.titularNome,
     conjugeCompleto: cfg.conjugeNome,
     procuradorCompleto: cfg.procuradorNome,
+    conjugeProcuradorCompleto: cfg.conjugeProcuradorNome,
     avalistaCompleto: cfg.avalistaNome,
+    conjugeAvalistaCompleto: cfg.conjugeAvalistaNome,
   });
 
   const ext = item.extensao ? `.${item.extensao}` : '.pdf';
@@ -1462,9 +1634,41 @@ export function calcularTodosDestinosDoArquivo(
   const prefViti = item.isViti && aceitaViti ? 'VITI - ' : '';
   const tit = nomes.titular || 'CLIENTE';
   const conj = nomes.conjuge || 'CÔNJUGE';
+  const aval = nomes.avalista || 'AVALISTA';
+  const conjAval = nomes.conjugeAvalista || 'CÔNJUGE DO AVALISTA';
+  const proc = nomes.procurador || 'PROCURADOR';
+  const conjProc = nomes.conjugeProcurador || 'CÔNJUGE DO PROCURADOR';
 
-  // Se o arquivo não é pertinente / não foi identificado, vai para a pasta "OUTROS" na raiz,
-  // preservando estrategicamente a árvore da subpasta antiga de onde ele veio!
+  // Descobre automaticamente a tag da pessoa caso o arquivo seja de um envolvido (Avalista, Procurador ou Cônjuges)
+  const resolverTagEnvolvidoDoItem = (padraoFallback: string): string => {
+    if (item.tagEnvolvidoEspecifico) return item.tagEnvolvidoEspecifico;
+    const nUp = removerAcentos(item.nomeOriginal).toUpperCase();
+    if (
+      /\b(CONJUGE|CONJ\.?|ESPOSA|MARIDO|COMPANHEIR[OA])\s+(?:D[OAE]\s+)?AVALISTA\b/.test(
+        nUp
+      )
+    ) {
+      return conjAval;
+    }
+    if (
+      /\b(CONJUGE|CONJ\.?|ESPOSA|MARIDO|COMPANHEIR[OA])\s+(?:D[OAE]\s+)?PROCURADOR/.test(
+        nUp
+      )
+    ) {
+      return conjProc;
+    }
+    if (/\b(AVALISTA|FIADOR|INTERVENIENTE)\b/.test(nUp)) return aval;
+    if (/\bPROCURADOR/.test(nUp)) return proc;
+    if (/\b(CONJUGE|ESPOSA|MARIDO|COMPANHEIR[OA])\b/.test(nUp)) return conj;
+    return (
+      nomes.avalista ||
+      nomes.procurador ||
+      nomes.conjugeAvalista ||
+      nomes.conjugeProcurador ||
+      padraoFallback
+    );
+  };
+
   if (item.categoria === 'OUTROS_NAO_IDENTIFICADO') {
     const subOrigem = (item.origemSubpasta || '').trim();
     const subOrigemUp = subOrigem.toUpperCase();
@@ -1497,10 +1701,13 @@ export function calcularTodosDestinosDoArquivo(
     ];
   }
 
-  // Raiz da Subpasta CADASTRO (Documentos Pessoais + Declarações de Cônjuge/Avalista/Procurador)
+  // Raiz da Subpasta CADASTRO (Documentos Pessoais do Titular, Cônjuge, Avalista, Procurador e Cônjuges destes)
   if (item.categoria.startsWith('CAD_')) {
     let nomeCad = '';
     let ordem = 300;
+    const tagEnv = resolverTagEnvolvidoDoItem('ENVOLVIDO');
+    const nOrigUp = removerAcentos(item.nomeOriginal).toUpperCase();
+
     switch (item.categoria) {
       case 'CAD_1_IDENTIDADE_TITULAR':
         nomeCad = `1. IDENTIDADE - ${tit}${ext}`;
@@ -1510,38 +1717,107 @@ export function calcularTodosDestinosDoArquivo(
         nomeCad = `1. IDENTIDADE - ${conj}${ext}`;
         ordem = 302;
         break;
+      case 'CAD_1_IDENTIDADE_AVALISTA':
+        nomeCad = `1. IDENTIDADE - ${aval}${ext}`;
+        ordem = 302.2;
+        break;
+      case 'CAD_1_IDENTIDADE_CONJUGE_AVALISTA':
+        nomeCad = `1. IDENTIDADE - ${conjAval}${ext}`;
+        ordem = 302.4;
+        break;
+      case 'CAD_1_IDENTIDADE_PROCURADOR':
+        nomeCad = `1. IDENTIDADE - ${proc}${ext}`;
+        ordem = 302.6;
+        break;
+      case 'CAD_1_IDENTIDADE_CONJUGE_PROCURADOR':
+        nomeCad = `1. IDENTIDADE - ${conjProc}${ext}`;
+        ordem = 302.8;
+        break;
       case 'CAD_1_IDENTIDADE_OUTRO':
-        nomeCad = `1. IDENTIDADE - ${
-          nomes.procurador || nomes.avalista || 'ENVOLVIDO'
-        }${ext}`;
+        nomeCad = `1. IDENTIDADE - ${tagEnv}${ext}`;
         ordem = 303;
         break;
-      case 'CAD_2_CERTIDAO_CASAMENTO':
-        nomeCad = `2. CERTIDÃO DE CASAMENTO - ${tit}${ext}`;
+      case 'CAD_2_CERTIDAO_CASAMENTO': {
+        const tipoCertTit = nOrigUp.includes('NASCIMENTO')
+          ? 'CERTIDÃO DE NASCIMENTO'
+          : nOrigUp.includes('OBITO')
+          ? 'CERTIDÃO DE ÓBITO'
+          : nOrigUp.includes('DIVORCIO')
+          ? 'AVERBAÇÃO DE DIVÓRCIO'
+          : 'CERTIDÃO DE CASAMENTO';
+        nomeCad = `2. ${tipoCertTit} - ${tit}${ext}`;
         ordem = 304;
         break;
+      }
+      case 'CAD_2_CERTIDAO_ENVOLVIDO': {
+        const tipoCertEnv = nOrigUp.includes('NASCIMENTO')
+          ? 'CERTIDÃO DE NASCIMENTO'
+          : nOrigUp.includes('OBITO')
+          ? 'CERTIDÃO DE ÓBITO'
+          : nOrigUp.includes('DIVORCIO')
+          ? 'AVERBAÇÃO DE DIVÓRCIO'
+          : 'CERTIDÃO DE CASAMENTO';
+        nomeCad = `2. ${tipoCertEnv} - ${tagEnv}${ext}`;
+        ordem = 304.5;
+        break;
+      }
       case 'CAD_3_COMP_ENDERECO':
         nomeCad = `3. COMPROVANTE DE ENDEREÇO - ${tit}${ext}`;
         ordem = 305;
+        break;
+      case 'CAD_3_COMP_ENDERECO_ENVOLVIDO':
+        nomeCad = `3. COMPROVANTE DE ENDEREÇO - ${tagEnv}${ext}`;
+        ordem = 305.5;
         break;
       case 'CAD_4_COMP_RENDA':
         nomeCad = `4. COMPROVANTE DE RENDA - ${tit}${ext}`;
         ordem = 306;
         break;
+      case 'CAD_4_COMP_RENDA_ENVOLVIDO': {
+        const rotRenda =
+          nOrigUp.includes('IRPF') || nOrigUp.includes('IMPOSTO DE RENDA')
+            ? 'IRPF - COMPROVANTE DE RENDA'
+            : 'COMPROVANTE DE RENDA';
+        nomeCad = `4. ${rotRenda} - ${tagEnv}${ext}`;
+        ordem = 306.2;
+        break;
+      }
+      case 'CAD_5_CAF_ENVOLVIDO':
+        nomeCad = `5. CAF - ${tagEnv}${ext}`;
+        ordem = 306.7;
+        break;
       case 'CAD_5_PROPOSTA_CADASTRO':
         nomeCad = `6. ${prefViti}PROPOSTA DE CADASTRO - ${tit}${ext}`;
         ordem = 307;
+        break;
+      case 'CAD_5_PROPOSTA_CADASTRO_ENVOLVIDO':
+        nomeCad = `6. ${prefViti}PROPOSTA DE CADASTRO - ${tagEnv}${ext}`;
+        ordem = 307.5;
         break;
       case 'CAD_6_PROCURACAO':
         nomeCad = `7. PROCURAÇÃO - ${nomes.procurador || tit}${ext}`;
         ordem = 308;
         break;
       case 'CAD_8_SELO_CARTORIO':
-        nomeCad = `8. SELO DE FISCALIZAÇÃO - ${tit}${ext}`;
+        nomeCad = `8. SELO DE FISCALIZAÇÃO - ${
+          item.tagEnvolvidoEspecifico || tit
+        }${ext}`;
         ordem = 309;
         break;
+      case 'CAD_9_DECLARACAO_ENVOLVIDO': {
+        let rotDec = 'DECLARAÇÃO';
+        if (nOrigUp.includes('CONSOLIDADA'))
+          rotDec = 'DECLARAÇÕES CONSOLIDADAS';
+        else if (nOrigUp.includes('SCR')) rotDec = 'AUTORIZAÇÃO CONSULTA SCR';
+        else if (nOrigUp.includes('DEBITO')) rotDec = 'AUTORIZAÇÃO DE DÉBITO';
+        else if (nOrigUp.includes('SICOR'))
+          rotDec = 'AUTORIZAÇÃO CONSULTA SICOR';
+        nomeCad = `9. ${prefViti}${rotDec} - ${tagEnv}${ext}`;
+        ordem = 309.5;
+        break;
+      }
       default:
-        nomeCad = `9. DOC. CADASTRAL - ${item.nomeOriginal}`;
+        nomeCad = `9. DOC. CADASTRAL (${tagEnv}) - ${item.nomeOriginal}`;
         ordem = 310;
         break;
     }
@@ -1549,7 +1825,7 @@ export function calcularTodosDestinosDoArquivo(
       {
         pastaRelativa: 'CADASTRO',
         nomeArquivoFinal: nomeCad,
-        ordemExibicao: ordem + (item.isViti ? 0.5 : 0),
+        ordemExibicao: ordem + (item.isViti ? 0.25 : 0),
       },
     ];
   }
