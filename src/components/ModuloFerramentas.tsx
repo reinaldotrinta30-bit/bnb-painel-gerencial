@@ -6,6 +6,7 @@ import ModalVerificadorKmlGeodesico from '@/components/ferramentas/ModalVerifica
 import ModalVerificarConformidadeSocioambiental from '@/components/ferramentas/ModalVerificarConformidadeSocioambiental';
 import TelaConformidadeProjetoCompleta from '@/components/ferramentas/TelaConformidadeProjetoCompleta';
 import { BotaoBackupNuvemCentral } from '@/components/ferramentas/ModalBackupNuvemSistema';
+import TelaConformidadeContratos from '@/components/ferramentas/TelaConformidadeContratos';
 import {
   salvarFerramentasSync,
   carregarFerramentasSync,
@@ -84,6 +85,8 @@ export default function ModuloFerramentas({
     modalConformidadeSocioambientalAberto,
     setModalConformidadeSocioambientalAberto,
   ] = useState(false);
+
+  const [modalConformidadeContratosAberto, setModalConformidadeContratosAberto] = useState(false);
 
   const [modalConformidadePronafAberto, setModalConformidadePronafAberto] =
     useState(false); 
@@ -622,7 +625,7 @@ export default function ModuloFerramentas({
         >
           <div>
             <strong style={{ color: '#0369a1', fontSize: '15px', display: 'block' }}>
-              🗂️ ORGANIZADOR AUTOMÁTICO DE PASTAS
+              🗂️ MOTOR DE ORGANIZAÇÃO E CONFORMIDADES
             </strong>
             <span style={{ fontSize: '12px', color: '#475569' }}>
               Organize automaticamente as pastas de clientes, com base em 6 critérios de ordenação, e armazene documentos coringa para uso rápido em qualquer proposta.
@@ -667,6 +670,34 @@ export default function ModuloFerramentas({
             >
               🛡️ Verificar Conformidade do Projeto
             </button>
+
+              <button
+  type="button"
+  onClick={() => setModalConformidadeContratosAberto(true)}
+  style={{
+    width: 'auto',
+    padding: '8px 14px',
+    background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
+    color: '#ffffff',
+    border: '1px solid #f59e0b',
+    borderRadius: '8px',
+    fontSize: '12px',
+    fontWeight: 800,
+    cursor: 'pointer',
+  }}
+>
+  📝 Conformidade de Contratos
+</button>
+
+<TelaConformidadeContratos
+  aberto={modalConformidadeContratosAberto}
+  onFechar={() => setModalConformidadeContratosAberto(false)}
+  contratacoes={contratacoes}
+/>
+
+
+
+
           </div>
         </div>
 
@@ -740,6 +771,7 @@ export default function ModuloFerramentas({
             </button>
           </div>
         </div>
+        
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '20px' }}>
           {/* COLUNA 1: GESTÃO DE PROGRAMAS DE CRÉDITO */}

@@ -575,10 +575,13 @@ export function identificarCategoriaRealPeloConteudoPdf(params: {
     };
   }
 
-  // 3. Solicitação de Abertura de Limite (LCGH / LCGA)
+  // 3. Solicitação ou Contrato de Abertura de Limite (LCGH / LCGA)
   if (
     tCabecalho.includes('SOLICITACAO DE ABERTURA DE LIMITE') ||
-    tCabecalho.includes('PROPOSTA DE LIMITE DE CREDITO GARANTIDO')
+    tCabecalho.includes('PROPOSTA DE LIMITE DE CREDITO GARANTIDO') ||
+    tCabecalho.includes('CONTRATO DE ABERTURA DE LIMITE DE CREDITO GARANTIDO') ||
+    tCabecalho.includes('ALIENACAO FIDUCIARIA DE IMOVEL (LCGA)') ||
+    tCabecalho.includes('GARANTIDO POR HIPOTECA (LCGH)')
   ) {
     return {
       categoriaUniversal: 'ITEM_SOLICITACAO_LIMITE',
@@ -1575,6 +1578,103 @@ export function extrairDadosDetalhadosDoPdfProjeto(
         resultado.valorAssessoriaExtraido =
           resultado.valorAssessoriaExtraido || formatarMoedaBD(recPropNum);
         resultado.assessoriaRecursosProprios = true;
+      }
+    }
+  }
+
+  // =========================================================================
+  // SUPORTE DIRETO A CONTRATOS DE LIMITE (LCGA / LCGH) QUANDO PRESENTES NA PASTA
+  // =========================================================================
+  if (
+    normSemAcento.includes('CONTRATO DE ABERTURA DE LIMITE') ||
+    normSemAcento.includes('ALIENACAO FIDUCIARIA DE IMOVEL (LCGA)') ||
+    normSemAcento.includes('CONTINUACAO DO CONTRATO PARTICULAR')
+  ) {
+    const txtSemCabecalho = textoCombinado
+      .replace(
+        /Continua[çc][ãa]o\s+do\s+CONTRATO\s+PARTICULAR[\s\S]{1,260}?vencimento\s+em\s+\d{2}\/\d{2}\/20\d{2}\s*\./gi,
+        ' '
+      )
+      .replace(/P[áa]gina\s+\d+\s+de\s+\d+/gi, ' ')
+      .replace(/\s+/g, ' ');
+
+    // 1. Porte pelo código de subproduto no nº do contrato (489 = MINI, 613 = PRONAF)
+    const mNumContr = textoCombinado.match(
+      /\b(\d{3})\.(20\d{2})\.(\d{1,5})\.(\d{3,8})\b/
+    );
+    if (mNumContr && !resultado.porteSugeridoPeloPdf) {
+      if (mNumContr[3] === '613') resultado.porteSugeridoPeloPdf = 'PRONAF_V';
+      else if (mNumContr[3] === '489')
+        resultado.porteSugeridoPeloPdf = 'MINI_PEQUENO';
+    }
+
+    // 2. Nome e CPF do Creditado (Titular)
+    const mCliContr =
+      textoCombinado.match(
+        /celebrado\s+pelo\s+Banco\s+do\s+Nordeste\s+do\s+Brasil\s+S\.A\.\s+e\s+([A-ZÀ-Ú\s]{5,65}?)\s*,\s*em\s+\d{1,2}\s+de/i
+      ) ||
+      textoCombinado.match(
+        /abre\s+em\s+favor\s+de\s+([A-ZÀ-Ú\s]{5,65}?)\s*,\s*doravante/i
+      );
+    if (mCliContr && !resultado.clienteNome) {
+      resultado.clienteNome = mCliContr[1].replace(/\s+/g, ' ').trim().toUpperCase();
+    }
+
+    if (!resultado.clienteCpf) {
+      const mCpfProp = txtSemCabecalho.match(
+        /propriet[áa]rio\s*\(s\)\s*[A-ZÀ-Úa-zà-ú\s]{4,60}?\s*,?\s*CPF\s*:?\s*(\d{3}\.\d{3}\.\d{3}-\d{2})/i
+      );
+      if (mCpfProp) resultado.clienteCpf = mCpfProp[1].trim();
+    }
+
+    // 3. Valor do Limite / Contrato
+    if (!resultado.valorTotalFinanciado) {
+      const mValContr =
+        textoCombinado.match(
+          /no\s+valor\s+de\s+R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/i
+        ) ||
+        txtSemCabecalho.match(
+          /quantia\s+de\s+R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/i
+        );
+      if (mValContr) resultado.valorTotalFinanciado = mValContr[1].trim();
+    }
+
+    // 4. Prazo (240 meses / 20 anos)
+    if (!resultado.prazoMeses) {
+      resultado.prazoMeses = '240';
+    }
+
+    // 5. Cônjuge e Estado Civil pela Cláusula 11 (Outorga)
+    const mOutorga = txtSemCabecalho.match(
+      /CL[ÁA]USULA\s+D[ÉE]CIMA\s+PRIMEIRA[\s\S]{1,80}?(?:Sra\.|Sr\.)\s+([A-ZÀ-Úa-zà-ú\s]{5,60}?)\s*,\s*(?:esposa|esposo|c[ôo]njuge)/i
+    );
+    if (mOutorga && !resultado.conjugeNome) {
+      resultado.conjugeNome = mOutorga[1].replace(/\s+/g, ' ').trim().toUpperCase();
+      resultado.estadoCivil = 'CASADO(A)';
+    }
+
+    // 6. Imóvel da Garantia, Área e Município na Cláusula Décima §2º
+    const mImovelContr = txtSemCabecalho.match(
+      /im[óo]vel\s+rural\s+denominado\s+([\s\S]{3,90}?)\s*,\s*(?:de\s+)?propriedade[\s\S]{5,180}?[áa]rea(?:\s+de|\s*:)?\s*([0-9.,]+)\s*ha[\s\S]{10,260}?Munic[íi]p?io\s+de\s+([A-ZÀ-Ú\s]{3,35}?)(?:\s*,\s*Estado|\s+MA\b)/i
+    );
+    if (mImovelContr) {
+      const nomeIm = mImovelContr[1].replace(/\s+/g, ' ').trim().toUpperCase();
+      const areaIm = mImovelContr[2].trim();
+      const munIm = `${mImovelContr[3].replace(/\s+/g, ' ').trim().toUpperCase()}-MA`;
+
+      if (!resultado.denominacaoImovelPa) resultado.denominacaoImovelPa = nomeIm;
+      if (!resultado.areaImovelHa) resultado.areaImovelHa = areaIm;
+      if (!resultado.municipioImovel) resultado.municipioImovel = munIm;
+
+      if (resultado.imoveisVinculados.length === 0) {
+        resultado.imoveisVinculados.push({
+          nome: nomeIm,
+          municipioUf: munIm,
+          areaHa: areaIm,
+          realizaInversao: true,
+          compoeGarantia: true,
+          valorAvaliado: resultado.valorTotalFinanciado,
+        });
       }
     }
   }
