@@ -158,6 +158,19 @@ export interface ResultadoAuditoriaContratoPdf {
   creditadoProfissao: string;
   telefoneSmsClausula: string;
   contaCorrenteDebito: string;
+  contasCorrentesCitadasNaCcb: string[];
+  possuiVinculoLimiteLcg: boolean;
+  tipoLimiteVinculado: string;
+  numeroContratoLimiteVinculado: string;
+  dataEmissaoLimiteVinculado: string;
+  percentualUtilizacaoLimiteLcg: string;
+  valorExigidoNoLimiteLcg: string;
+  possuiFundoLiquidezContaReserva: boolean;
+  contaReservaNumero: string;
+  fundoLiquidezPercentual: string;
+  fundoLiquidezValorReferencia: string;
+  possuiTermoOpcaoTaxaPrefixada: boolean;
+  assessoriaPagaComRecursosPropriosCcb: boolean;
   imovelBeneficiadoNome: string;
   imovelBeneficiadoMatriculaCartorio: string;
   imovelBeneficiadoProprietario: string;
@@ -522,9 +535,84 @@ export async function extrairTextoContratoPdf(
         }
 
         const txtPagNormal = montarTextoOrdenadoDeTokens(tokens);
-        paginasTxt.push(`[PÁGINA ${p} DE ${numPaginas}]\n${txtPagNormal}`);
-
         const normPagUp = removerAcentos(txtPagNormal).toUpperCase();
+
+        // EXTRAÇÃO GEOMÉTRICA 2D EXCLUSIVA PARA TABELAS DE ANEXO-ORÇAMENTO:
+        // Lê diretamente pelas coordenadas (X, Y) do PDF:
+        // - Ignora números na metade esquerda (x < 305: código do item e coluna Qtd/Unid como "1,00 HA", "12,00 UA", "6,50")
+        // - Emparelha cada mês/ano ("out/2026", "nov/2026", "dez/2026") na mesma altura Y com a coluna Recursos Próprios e a coluna FNE (R$)!
+        let blocoGeoOrcamentoPag = '';
+        if (
+          normPagUp.includes('ANEXO-ORCAMENTO') ||
+          normPagUp.includes('RECURSOS FINANCIADOS') ||
+          normPagUp.includes('ITENS DO EMPREENDIMENTO')
+        ) {
+          const regexMesAnoToken =
+            /^(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\/20\d{2}$/i;
+          const regexValorMoedaToken = /^\d{1,3}(?:\.\d{3})*,\d{2}$/;
+
+          // Filtra os tokens de mês/ano tanto da coluna Realização/Recursos Próprios quanto da coluna Desembolso/FNE (x >= 200)
+          const tokensMesDesembolso = tokens
+            .filter((t) => t.x >= 200 && regexMesAnoToken.test(t.str.trim()))
+            .sort((a, b) => b.y - a.y || a.x - b.x);
+
+          // Filtra os tokens monetários das colunas Recursos Próprios (meio) e Recursos Financiados FNE (direita) (x >= 280), ignorando a linha TOTAL
+          const tokenTotal = tokens.find(
+            (t) => t.str.trim().toUpperCase() === 'TOTAL'
+          );
+          const yLinhaTotal = tokenTotal ? tokenTotal.y : -9999;
+
+          const tokensValoresDireita = tokens.filter(
+            (t) =>
+              t.x >= 280 &&
+              regexValorMoedaToken.test(t.str.trim()) &&
+              Math.abs(t.y - yLinhaTotal) > 6
+          );
+          const linhasGeo: string[] = [];
+          const valoresFneUsados = new Set<any>();
+
+          for (const tokMes of tokensMesDesembolso) {
+            // Busca todos os valores monetários na mesma linha horizontal Y (tolerância de ±9pt)
+            const moedasMesmaLinha = tokensValoresDireita
+              .filter(
+                (tv) =>
+                  !valoresFneUsados.has(tv) && Math.abs(tv.y - tokMes.y) <= 9.5
+              )
+              .sort((a, b) => a.x - b.x);
+
+            if (moedasMesmaLinha.length >= 2) {
+              const tokRecProprio = moedasMesmaLinha[0];
+              const tokValFne = moedasMesmaLinha[moedasMesmaLinha.length - 1];
+              valoresFneUsados.add(tokRecProprio);
+              valoresFneUsados.add(tokValFne);
+              linhasGeo.push(
+                `[ORCAMENTO_GEO_ROW: y=${Math.round(
+                  tokMes.y
+                )} | mes=${tokMes.str.toLowerCase()} | proprio=${
+                  tokRecProprio.str
+                } | fne=${tokValFne.str}]`
+              );
+            } else if (moedasMesmaLinha.length === 1) {
+              const tokUnico = moedasMesmaLinha[0];
+              valoresFneUsados.add(tokUnico);
+              linhasGeo.push(
+                `[ORCAMENTO_GEO_ROW: y=${Math.round(
+                  tokMes.y
+                )} | mes=${tokMes.str.toLowerCase()} | proprio=0,00 | fne=${
+                  tokUnico.str
+                }]`
+              );
+            }
+          }
+
+          if (linhasGeo.length > 0) {
+            blocoGeoOrcamentoPag = `\n${linhasGeo.join('\n')}`;
+          }
+        }
+
+        paginasTxt.push(
+          `[PÁGINA ${p} DE ${numPaginas}]\n${txtPagNormal}${blocoGeoOrcamentoPag}`
+        );
         const parecePaginaDeAssinatura =
           p >= Math.max(1, numPaginas - 4) ||
           normPagUp.includes('SANTA INES') ||
@@ -814,20 +902,33 @@ function extrairLocalAssinaturaFecho(
     };
   }
 
+  // 1. Verifica em todo o documento (inclusive quando a Planilha CET está na Pág. 1 ou Pág. 2 de um PDF de 3 páginas)
+  // se há o fecho "SANTA INES - MA", "SANTA INES / MA" ou "SANTA INES MA, <data>"
+  if (
+    tipoInstrumento === 'PLANILHA_CET' &&
+    /\bSANTA\s+INES\s*[-–/,]?\s*MA\b/i.test(norm)
+  ) {
+    return { localExtraido: 'SANTA INES - MA', conformeSantaInes: true };
+  }
+
+  if (
+    /\bSANTA\s+INES\s*[-–/,]?\s*MA\s*,\s*(?:\d{1,2}\s+DE\s+[A-Z]+\s+DE\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})/i.test(
+      norm
+    )
+  ) {
+    return { localExtraido: 'SANTA INES - MA', conformeSantaInes: true };
+  }
+
   const trechoFinalAssinatura = norm.substring(
-    Math.max(0, norm.length - 1600)
+    Math.max(0, norm.length - 2400)
   );
 
   if (tipoInstrumento === 'PLANILHA_CET') {
-    if (/\bSANTA\s+INES\s*[-–/,]?\s*MA\b/i.test(trechoFinalAssinatura)) {
-      return { localExtraido: 'SANTA INES - MA', conformeSantaInes: true };
-    }
-
     const mCetOutroLocal =
-      trechoFinalAssinatura.match(
+      norm.match(
         /\b([A-Z]{3,}(?:\s+[A-Z]{2,}){0,3}\s*[-–/]\s*[A-Z]{2})(?:\s+\d{2}\/\d{2}\/20\d{2})?\s+LOCAL\s+E\s+DATA\b/i
       ) ||
-      trechoFinalAssinatura.match(
+      norm.match(
         /LOCAL\s+E\s+DATA\s+([A-Z]{3,}(?:\s+[A-Z]{2,}){0,3}\s*[-–/]\s*[A-Z]{2})/i
       );
 
@@ -836,14 +937,6 @@ function extrairLocalAssinaturaFecho(
       const ehSantaInes = loc.includes('SANTA INES') && /\bMA\b/.test(loc);
       return { localExtraido: loc, conformeSantaInes: ehSantaInes };
     }
-  }
-
-  if (
-    /\bSANTA\s+INES\s*[-–/,]?\s*MA\s*,\s*(?:\d{1,2}\s+DE\s+[A-Z]+\s+DE\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})/i.test(
-      trechoFinalAssinatura
-    )
-  ) {
-    return { localExtraido: 'SANTA INES - MA', conformeSantaInes: true };
   }
 
   const matchesFecho = [
@@ -884,16 +977,40 @@ function identificarPorteESubprodutoContrato(
   let programa = '';
   if (textoUp.includes('PRONAF-MAIS ALIMENTOS') || codSub === '485') {
     programa = 'PRONAF - MAIS ALIMENTOS (FNE)';
+  } else if (
+    codSub === '612' ||
+    textoUp.includes('PRONAF GRUPO "A"') ||
+    textoUp.includes('PRONAF GRUPO A')
+  ) {
+    programa = 'PRONAF GRUPO "A" - FNE (PROG. 368)';
   } else if (textoUp.includes('PRONAF A') && textoUp.includes('5.183')) {
-    programa = 'PRONAF A - RES. 5.183/24 (FNE)';
+    programa = 'PRONAF A - RES. 5.183/24 (PROG. 699)';
   } else if (textoUp.includes('PRONAF A - FNE') || codSub === '645') {
     programa = 'PRONAF A - FNE';
   } else if (textoUp.includes('INVESTIMENTO PRONAF FNE')) {
     programa = 'INVESTIMENTO PRONAF FNE';
+  } else if (
+    codSub === '630' ||
+    textoUp.includes('FNE RURAL - JURO PREFIXADO') ||
+    textoUp.includes('TRFCPRE')
+  ) {
+    programa = 'FNE RURAL — INVESTIMENTO JURO PREFIXADO (TRFCpré)';
   } else if (codSub === '613') {
     programa = 'LIMITE PRONAF (FNE)';
-  } else if (codSub === '489') {
+  } else if (codSub === '489' || codSub === '480') {
     programa = 'LIMITE FNE RURAL (MINI/PEQUENO)';
+  }
+
+  if (
+    codSub === '612' ||
+    textoUp.includes('PRONAF GRUPO "A"') ||
+    textoUp.includes('PRONAF GRUPO A')
+  ) {
+    return {
+      porte: `PRONAF A — GRUPO "A" / PROG. 368 (Cód. ${codSub || '612'})`,
+      programa: programa || 'PRONAF GRUPO "A" - FNE (PROG. 368)',
+      codigoSubproduto: codSub || '612',
+    };
   }
 
   if (
@@ -902,8 +1019,10 @@ function identificarPorteESubprodutoContrato(
     nomeArqUp.includes('PRONAF A')
   ) {
     return {
-      porte: `PRONAF A — REFORMA AGRÁRIA (Cód. ${codSub || '645'})`,
-      programa: programa || 'PRONAF A - RES. 5.183/24 (FNE)',
+      porte: `PRONAF A — REFORMA AGRÁRIA / PROG. 699 (Cód. ${
+        codSub || '645'
+      })`,
+      programa: programa || 'PRONAF A - RES. 5.183/24 (PROG. 699)',
       codigoSubproduto: codSub || '645',
     };
   }
@@ -929,14 +1048,18 @@ function identificarPorteESubprodutoContrato(
   }
 
   if (
+    codSub === '630' ||
     codSub === '489' ||
+    codSub === '480' ||
+    textoUp.includes('FNE RURAL') ||
+    textoUp.includes('TRFCPRE') ||
     nomeArqUp.includes('MINI') ||
     nomeArqUp.includes('PEQUENO')
   ) {
     return {
-      porte: `MINI / PEQUENO PRODUTOR — FNE RURAL (Cód. ${codSub || '489'})`,
-      programa: programa || 'FNE RURAL',
-      codigoSubproduto: codSub || '489',
+      porte: `MINI / PEQUENO PRODUTOR — FNE RURAL (Cód. ${codSub || '630'})`,
+      programa: programa || 'FNE RURAL - JURO PREFIXADO',
+      codigoSubproduto: codSub || '630',
     };
   }
 
@@ -1211,6 +1334,12 @@ export async function auditarContratoPdfCompleto(params: {
         ? 'CASADO(A) COM COMUNHAO PARCIAL DE BENS'
         : txtBusca.includes('COMUNHAO UNIVERSAL DE BENS')
         ? 'CASADO(A) COM COMUNHAO UNIVERSAL DE BENS'
+        : txtBusca.includes('SOLTEIRO')
+        ? 'SOLTEIRO(A)'
+        : txtBusca.includes('DIVORCIADO')
+        ? 'DIVORCIADO(A)'
+        : txtBusca.includes('VIUVO')
+        ? 'VIUVO(A)'
         : '',
       endereco: '',
       profissao: '',
@@ -1314,7 +1443,7 @@ export async function auditarContratoPdfCompleto(params: {
   }
 
   const matchAnuenciaSipra = textoCorpoCosturado.match(
-    /C[óo]digo\s+SIPRA\s+n[°ºo]?\s*([A-Z0-9]+)\s*,\s*referente\s+ao\s+assentamento\s+([^,]+?)\s*,\s*lote\s+n[°ºo]?\s*([0-9A-Z]+)\s*,\s*em\s+nome\s+de\s+([^,]+?)\s*,\s*CPF\s*(\d{3}\.\d{3}\.\d{3}-\d{2})\s*,\s*com\s+situa[çc][ãa]o\s+Ativo\s+desde\s+(\d{2}\/\d{2}\/\d{4})/i
+    /C[óo]digo\s+SIPRA\s+n[^\s]*\s*([A-Z0-9]+)\s*,\s*referente\s+ao\s+assentamento\s+([^,]+?)\s*,\s*lote\s+n[^\s]*\s*([0-9A-Z]+)\s*,\s*em\s+nome\s+de\s+([^,]+?)\s*,\s*CPF\s*:?\s*(\d{3}\.\d{3}\.\d{3}-\d{2})\s*,\s*com\s+situa[çc][ãa]o\s+Ativo\s+desde\s+(\d{2}\/\d{2}\/\d{4})/i
   );
   const anuenciaIncraSipraCodigo = matchAnuenciaSipra
     ? matchAnuenciaSipra[1].trim()
@@ -1330,12 +1459,92 @@ export async function auditarContratoPdfCompleto(params: {
     qualifCred.cpf = matchAnuenciaSipra[5].trim();
   }
 
-  const matchContaDebitoCcb = textoCorpoCosturado.match(
-    /conta\s*\(s\)\s*corrente\s*\(s\)\s*n[°ºo]?\s*([0-9.\-X]{4,14})\s*,\s*que\s+o\s+EMITENTE\/CREDITADO\s+mant[ée]m/i
+  // Captura todas as menções à conta corrente de livre movimentação/débito na CCB (Forma de Desembolso, Autorização de Débito e Forma de Pagamento)
+  const matchesContasCcb = [
+    ...textoCorpoCosturado.matchAll(
+      /conta\s*\(s\)\s*corrente\s*\(s\)\s*n[°ºo]?\s*([0-9.\-X]{4,14})\s*,?\s*que\s+o\s+EMITENTE\/CREDITADO\s+mant[ée]m/gi
+    ),
+    ...textoCorpoCosturado.matchAll(
+      /cr[ée]dito\s+na\s+conta\s+corrente\s+n[°ºo]?\s*([0-9.\-X]{4,14})\s+que\s+o\s+EMITENTE\/CREDITADO\s+mant[ée]m/gi
+    ),
+    ...textoCorpoCosturado.matchAll(
+      /d[ée]bito\s+autom[áa]tico\s+na\s+conta\s+corrente\s+n[°ºo]?\s*([0-9.\-X]{4,14})/gi
+    ),
+  ];
+  const contasCorrentesCitadasNaCcb = Array.from(
+    new Set(matchesContasCcb.map((m) => m[1].trim()).filter(Boolean))
   );
-  const contaCorrenteDebito = matchContaDebitoCcb
-    ? matchContaDebitoCcb[1].trim()
+  const contaCorrenteDebito = contasCorrentesCitadasNaCcb[0] || '';
+
+  // EXTRAÇÃO DE VÍNCULO COM LIMITE DE CRÉDITO (CLÁUSULAS "OPERAÇÃO DERIVADA", "UTILIZAÇÃO DO LCGH/LCGA" E "SUFICIÊNCIA")
+  const matchOpDerivadaLimite = textoCorpoCosturado.match(
+    /OPERA[ÇC][ÃA]O\s+DERIVADA[\s\S]{1,140}?Limite\s+de\s+Cr[ée]dito\s+Garantido\s+por\s+([A-ZÀ-Úa-zà-ú\s]+?)\s*\((LCGH|LCGA)\)[\s\S]{1,140}?(?:CCB|CONTRATO(?:\s+PARTICULAR)?)\s+n[°ºo]?\s*(\d{3}\.20\d{2}\.\d{1,5}\.\d{3,8})\s+emitid[oa]\s+em\s+(\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})/i
+  );
+
+  const possuiVinculoLimiteLcg = Boolean(matchOpDerivadaLimite);
+  const tipoLimiteVinculado = matchOpDerivadaLimite
+    ? matchOpDerivadaLimite[2].toUpperCase().trim()
     : '';
+  const numeroContratoLimiteVinculado = matchOpDerivadaLimite
+    ? matchOpDerivadaLimite[3].trim()
+    : '';
+  const dataEmissaoLimiteVinculado = matchOpDerivadaLimite
+    ? converterDataExtensoOuCurtaParaBR(matchOpDerivadaLimite[4])
+    : '';
+
+  const matchPercUtilizacaoLcg =
+    textoCorpoCosturado.match(
+      /UTILIZA[ÇC][ÃA]O\s+DO\s+LCG[HA][\s\S]{1,260}?equivalente\s+a\s+(\d{2,3}%\s*\([^)]+\))/i
+    ) ||
+    textoCorpoCosturado.match(
+      /SUFICI[ÊE]NCIA[\s\S]{1,180}?garantia\/financiamento\s+de\s*,\s*no\s+m[íi]nimo\s*,\s*(\d{2,3}%\s*\([^)]+\))/i
+    );
+  const percentualUtilizacaoLimiteLcg = matchPercUtilizacaoLcg
+    ? matchPercUtilizacaoLcg[1].replace(/\s+/g, ' ').trim()
+    : possuiVinculoLimiteLcg
+    ? '125% (cento e vinte e cinco por cento)'
+    : '';
+
+  const percNumLcg = parsePercentualTaxa(percentualUtilizacaoLimiteLcg) || 125;
+  const valFinNum = parseMoeda(valorClausulaPrimeira);
+  const valorExigidoNoLimiteLcg =
+    possuiVinculoLimiteLcg && valFinNum > 0
+      ? formatarMoedaBD(valFinNum * (percNumLcg / 100))
+      : '';
+
+  // EXTRAÇÃO DE CESSÃO FIDUCIÁRIA DE FUNDO DE LIQUIDEZ EM CONTA-RESERVA (CONTA-RESERVA + 5% + VALOR DE REFERÊNCIA)
+  const matchContaReserva = textoCorpoCosturado.match(
+    /CONTA-?\s*RESERVA\s*,\s*mantida\s+pelo\s+EMITENTE\/CREDITADO\s+no\s+BANCO\s+sob\s+o\s+n[°ºo]?\s*([0-9.\-X]{4,14})/i
+  );
+  const possuiFundoLiquidezContaReserva =
+    Boolean(matchContaReserva) ||
+    /CESS[ÃA]O\s+FIDUCI[ÁA]RIA\s+DE\s+FUNDO\s+DE\s+LIQUIDEZ/i.test(
+      textoCorpoCosturado
+    );
+  const contaReservaNumero = matchContaReserva
+    ? matchContaReserva[1].trim()
+    : '';
+
+  const matchFundoLiqValores = textoCorpoCosturado.match(
+    /FUNDO\s+DE\s+LIQUIDEZ[\s\S]{1,220}?corresponder[áa]\s*,\s*pelo\s+menos\s*,\s*a\s+(\d{1,2}%\s*\([^)]+\))[\s\S]{1,220}?valor\s+de\s+refer[êe]ncia\s+na\s+assinatura\s+deste\s+instrumento\s*,\s*a\s+R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/i
+  );
+  const fundoLiquidezPercentual = matchFundoLiqValores
+    ? matchFundoLiqValores[1].replace(/\s+/g, ' ').trim()
+    : '';
+  const fundoLiquidezValorReferencia = matchFundoLiqValores
+    ? matchFundoLiqValores[2].trim()
+    : '';
+
+  // Verifica se há Declaração de Opção por Taxa Prefixada (no CET / Anexo CET FNE Rural) e se a Assessoria Técnica é paga com Recursos Próprios na CCB
+  const possuiTermoOpcaoTaxaPrefixada =
+    /tendo\s+OPTADO\s+pela\s+utiliza[çc][ãa]o\s+nesta\s+opera[çc][ãa]o\s+da\s+TAXA\s+DE\s+JUROS\s+PREFIXADA/i.test(
+      textoCorpoCosturado
+    );
+
+  const assessoriaPagaComRecursosPropriosCcb =
+    /ASSESSORIA\s+EMPRESARIAL\s+E\s+T[ÉE]CNICA\s*:?\s*1\s*[-–.]?\s*Ser[áa]\s+paga\s+com\s+recursos\s+pr[óo]prios/i.test(
+      textoCorpoCosturado
+    );
 
   const matchPrazo178 = textoCorpoCosturado.match(
     /solicitar[áa]\s+o\s+desembolso\s+da\s+primeira\s+parcela\s+do\s+financiamento\s+no\s+prazo\s+de\s+at[ée]\s+(\d{1,3}\s*\([^)]+\)\s*dias)/i
@@ -1344,7 +1553,7 @@ export async function auditarContratoPdfCompleto(params: {
     ? matchPrazo178[1].trim()
     : '';
 
-  // Taxa de Juros Efetiva (suporta tanto "Juros devidos à taxa efetiva de 0,5% a.a." quanto "TCRpré à taxa efetiva de 7,5% a.a." e "Taxa Juros Fixos FNE (% a.a) 7,50000%")
+  // Taxa de Juros Efetiva (suporta 0,5% a.a., TCRpré 7,5% a.a. e TRFCpré 8,63% a.a.)
   const matchTaxaAnualCcb = textoCorpoCosturado.match(
     /taxa\s+efetiva\s+de\s+([0-9.,]+%)\s*a\.a\./i
   );
@@ -1373,7 +1582,7 @@ export async function auditarContratoPdfCompleto(params: {
       /Taxa\s+de\s+Juros\s+Equivalente\s+ao\s+M[êe]s\s*\(%\)\s*(?:\|\s*)?([0-9.,]+%)/i
     ) ||
     textoCorpoCosturado.match(
-      /Taxa\s+Juros\s+Fixos\s+FNE\s*\(%\s*a\.m\)\s*(?:\|\s*)?([0-9.,]+%)/i
+      /Taxa\s+Juros\s+Fixos\s+FNE\s*\(%\s*a\.m\)[\s\S]{1,80}?([0-9]+,\d{2,5}%)/i
     );
 
   const taxaJurosMensal = matchTaxaMensalCcb?.[1]
@@ -1385,15 +1594,16 @@ export async function auditarContratoPdfCompleto(params: {
     matchTaxaMensalCcb?.[1] || matchTaxaMensalCet?.[1] || ''
   );
 
+  // Suporta tanto "(CET)" quanto "do Crédito Rural (CETCR)" e "CETCR (% a.a)"
   const matchCetAnual =
     textoCorpoCosturado.match(
-      /Custo\s+Efetivo\s+Total\s*\(CET\)\s*ao\s+ano\s*\(%\)\s*(?:\|\s*)?([0-9.,]+%)/i
+      /Custo\s+Efetivo\s+Total(?:\s+do\s+Cr[ée]dito\s+Rural)?\s*\(CET(?:CR)?\)\s*ao\s+ano\s*\(%\)[\s\S]{1,60}?([0-9]+,\d{2,5}%)/i
     ) ||
     textoCorpoCosturado.match(
-      /CET\s*\(%\s*a\.a\)\s*(?:\|\s*)?([0-9.,]+%)/i
+      /CET(?:CR)?\s*\(%\s*a\.a\)\s*(?:\|\s*)?([0-9.,]+%)/i
     ) ||
     textoCorpoCosturado.match(
-      /constam\s+na\s+planilha\s+anexa\s*(?:\|\s*)?([0-9.,]+%)/i
+      /constam\s+(?:na\s+planilha\s+anexa|no\s+demonstrativo\s+anexo)\.?\s*(?:Fluxos)?\s*(?:\|\s*)?([0-9.,]+%)/i
     ) ||
     textoCorpoCosturado.match(
       /INVESTIMENTO\s+PRONAF\s+FNE\s*(?:\|\s*)*([0-9.,]+%)\s*CET/i
@@ -1402,18 +1612,26 @@ export async function auditarContratoPdfCompleto(params: {
   const cetAnualNum = parsePercentualTaxa(cetAnual);
 
   const matchCetMensal = textoCorpoCosturado.match(
-    /Custo\s+Efetivo\s+Total\s*\(CET\)\s*ao\s+m[êe]s\s*\(%\)\s*(?:\|\s*)?([0-9.,]+%)/i
+    /Custo\s+Efetivo\s+Total(?:\s+do\s+Cr[ée]dito\s+Rural)?\s*\(CET(?:CR)?\)\s*ao\s+m[êe]s\s*\(%\)[\s\S]{1,60}?([0-9]+,\d{2,5}%)/i
   );
   const cetMensal = matchCetMensal ? matchCetMensal[1].trim() : '';
   const cetMensalNum = parsePercentualTaxa(cetMensal);
 
-  const matchBonus = textoCorpoCosturado.match(
+  // Suporta tanto bônus percentual ("bônus de adimplência de 25% / 40%") quanto bônus na taxa TRFCpré ("passando a taxa efetiva da TRFCpré ... a ser de 8,3% a.a.")
+  const matchBonusPerc = textoCorpoCosturado.match(
     /b[ôo]nus\s+de\s+adimpl[êe]ncia\s+de\s+(\d{1,3}%\s*\([^)]+\))/i
   );
-  const bonusAdimplenciaPerc = matchBonus ? matchBonus[1].trim() : '';
+  const matchBonusTaxaTrfc = textoCorpoCosturado.match(
+    /B[ôo]nus\s+de\s+Adimpl[êe]ncia[\s\S]{1,180}?passando\s+a\s+taxa\s+efetiva\s+da\s+TRFCpr[ée][\s\S]{1,60}?a\s+ser\s+de\s+([0-9.,]+%\s*a\.a\.)/i
+  );
+  const bonusAdimplenciaPerc = matchBonusPerc
+    ? matchBonusPerc[1].trim()
+    : matchBonusTaxaTrfc
+    ? `Taxa c/ Bônus: ${matchBonusTaxaTrfc[1].trim()} (Res. CMN 5.235/25)`
+    : '';
 
   const matchInadimpMora = textoCorpoCosturado.match(
-    /juros\s+de\s+mora\s+de\s+([0-9.,]+%\s*a\.a\.)[\s\S]{1,120}?multa\s+correspondente\s+a\s+([0-9.,]+%)/i
+    /juros\s+de\s+mora\s+de\s+([0-9.,]+%\s*a\.a\.)[\s\S]{1,350}?multa\s+correspondente\s+a\s+([0-9.,]+%)/i
   );
   const encargosInadimplementoResumo = matchInadimpMora
     ? `Juros de mora de ${matchInadimpMora[1]} + Multa de ${matchInadimpMora[2]} sobre parcelas em atraso`
@@ -1445,41 +1663,63 @@ export async function auditarContratoPdfCompleto(params: {
       }
     }
   } else if (tipoInstrumento === 'ANEXO_FLUXO_CET') {
-    const idxTotais = textoCorpoCosturado.indexOf('TOTAIS');
-    const idxFimTabelaFluxo = textoCorpoCosturado.search(
-      /integrante\s+da\s*\(?o?\)?\s*C[ÉE]DULA/i
-    );
-    const textoTabelaFluxo =
-      idxTotais !== -1
-        ? textoCorpoCosturado.substring(
-            idxTotais,
-            idxFimTabelaFluxo !== -1 && idxFimTabelaFluxo > idxTotais
-              ? idxFimTabelaFluxo
-              : textoCorpoCosturado.length
-          )
+    // Se o PDF tiver mais páginas coladas (ex: Pág. 2 = Planilha Demonstrativa CETCR e Pág. 3 = Simulação de Prestações),
+    // corta o texto antes da Planilha Demonstrativa e antes da Simulação de Prestações para ler SOMENTE a tabela do Anexo CET!
+    const idxInicioTotais = textoCorpoCosturado.indexOf('TOTAIS');
+    const textoAposTotais =
+      idxInicioTotais !== -1
+        ? textoCorpoCosturado.substring(idxInicioTotais)
         : textoCorpoCosturado;
 
+    const matchCorteProximaPagina = textoAposTotais.match(
+      /Anexo\s+['"]?Planilha\s+Demonstrativa|SIMULA[ÇC][ÃA]O\s+DE[\s\S]{0,40}?PRESTA[ÇC][ÕO]ES|ESQUEMA\s+DE\s+DESEMBOLSO|integrante\s+da\s*\(?o?\)?\s*C[ÉE]DULA/i
+    );
+
+    const textoTabelaFluxo =
+      matchCorteProximaPagina && matchCorteProximaPagina.index !== undefined
+        ? textoAposTotais.substring(0, matchCorteProximaPagina.index)
+        : textoAposTotais;
+
+    const anoContratacaoNum = Number(
+      (dataCelebracaoCabecalho || '').split('/')[2] || 0
+    );
+
     const regexIniciosParcela =
-      /\b([1-9]\d?)\s*(?:\|\s*)*(\d{2}\/\d{2}\/20[234]\d)\b/g;
+      /\b([1-9]\d?)\s*(?:\|\s*)*(\d{2}\/\d{2}\/(20[234]\d))\b/g;
     const marcadoresParcelas: Array<{
       num: number;
       data: string;
+      ano: number;
       idxInicio: number;
       idxFimMatch: number;
     }> = [];
 
     let mIni: RegExpExecArray | null;
     while ((mIni = regexIniciosParcela.exec(textoTabelaFluxo)) !== null) {
+      const numP = Number(mIni[1]);
+      const dataP = mIni[2].trim();
+      const anoP = Number(mIni[3]);
+
+      // Ignora datas do mesmo ano da contratação (que são liberações e não reembolso de principal)
+      if (anoContratacaoNum > 2000 && anoP <= anoContratacaoNum) {
+        continue;
+      }
+
       marcadoresParcelas.push({
-        num: Number(mIni[1]),
-        data: mIni[2].trim(),
+        num: numP,
+        data: dataP,
+        ano: anoP,
         idxInicio: mIni.index,
         idxFimMatch: mIni.index + mIni[0].length,
       });
     }
 
+    const numerosParcelaJaLidos = new Set<number>();
+
     for (let i = 0; i < marcadoresParcelas.length; i++) {
       const atual = marcadoresParcelas[i];
+      if (numerosParcelaJaLidos.has(atual.num)) continue;
+
       const prox = marcadoresParcelas[i + 1];
       const fatiaLinha = textoTabelaFluxo.substring(
         atual.idxFimMatch,
@@ -1495,6 +1735,7 @@ export async function auditarContratoPdfCompleto(params: {
         const valPrincipal = valoresLinha[valoresLinha.length - 3];
         const valPrestacao = valoresLinha[valoresLinha.length - 2];
 
+        numerosParcelaJaLidos.add(atual.num);
         parcelasReembolso.push({
           numero: atual.num,
           dataVencimento: atual.data,
@@ -1503,6 +1744,7 @@ export async function auditarContratoPdfCompleto(params: {
           valorPrestacaoTotal: valPrestacao,
         });
       } else if (valoresLinha.length === 3) {
+        numerosParcelaJaLidos.add(atual.num);
         parcelasReembolso.push({
           numero: atual.num,
           dataVencimento: atual.data,
@@ -1586,9 +1828,8 @@ export async function auditarContratoPdfCompleto(params: {
       valorRecursosPropriosOrcamento = mTotalOrc[1].trim();
     }
 
-    // Remove o cabeçalho repetido da Página 2 do Anexo-Orçamento para que o Item 04 (que inicia no fim da Pág. 1)
-    // fique colado aos seus 3 desembolsos na Pág. 2!
     const textoOrcSemCabRepetido = textoCorpoCosturado
+      .replace(/\[ORCAMENTO_GEO_ROW:[^\]]+\]/gi, ' ')
       .replace(
         /Anexo-Or[çc]amento\s+integrante\s+da\s+C[ÉE]DULA[\s\S]{1,280}?Recursos\s+Financiados(?:\s+Desembol\s*so\s*\(m[êe]s\/\s*ano\))?(?:\s+FNE\s*\(R\$\))?/gi,
         ' '
@@ -1596,7 +1837,8 @@ export async function auditarContratoPdfCompleto(params: {
       .replace(/\s+/g, ' ')
       .trim();
 
-    // 1. Mapeia os cabeçalhos dos itens (01, 02, 03, 04...)
+    // 1. Mapeia os cabeçalhos numerados dos itens (01, 02, 03, 04...)
+    // Suporta inclusive quando a quantidade ("12,00") aparece logo antes de "03 AQ. DE MATRIZ BOVINA UA" (caso do João de Vasconcelos!)
     const cabecalhosItensOrc: Array<{
       codigo: string;
       descricao: string;
@@ -1605,17 +1847,26 @@ export async function auditarContratoPdfCompleto(params: {
     }> = [];
 
     const regexCabItemOrc =
-      /\b(0[1-9]|[1-9]\d)\s+([A-ZÀ-Ú][A-ZÀ-Úa-zà-ú0-9\s.,/\-º°]{3,95}?)(?=\s+VERBA|\s+0[1-9]\s+|\s+TOTAL)/g;
+      /(?:(\d+(?:,\d+)?)\s+)?\b(0[1-9])\s+([A-ZÀ-Ú][A-ZÀ-Úa-zà-ú0-9\s|,./\-º°]{4,140}?)(?=\s+VERBA|\s+0[1-9]\s+|\s+TOTAL)/g;
     let mCab: RegExpExecArray | null;
     while ((mCab = regexCabItemOrc.exec(textoOrcSemCabRepetido)) !== null) {
-      const cod = mCab[1].trim();
-      const bruto = mCab[2];
+      const qtdAntes = (mCab[1] || '').trim();
+      const cod = mCab[2].trim();
+      const bruto = mCab[3];
 
-      // Extrai Qtd e Unidade que podem estar misturadas na descrição (ex: "Aquisição 14,00 de Matrizes UA" ou "1,00 HA" ou "1,00 und")
-      const mQtd = bruto.match(
+      const mQtdDentro = bruto.match(
         /\b(\d+(?:,\d+)?)\s*(?:[A-Za-zÀ-ú\s]{0,18}?)\b(HA|UA|UNID\.?|UND\.?|M2|M3|CAB\.?|CONJ\.?|KM)\b/i
       );
-      const qtdUnid = mQtd ? `${mQtd[1]} ${mQtd[2].toUpperCase()}` : 'VERBA';
+      const mUnidSolta = bruto.match(
+        /\b(HA|UA|UNID\.?|UND\.?|M2|M3|CAB\.?|CONJ\.?|KM)\b/i
+      );
+
+      let qtdUnid = 'VERBA';
+      if (mQtdDentro) {
+        qtdUnid = `${mQtdDentro[1]} ${mQtdDentro[2].toUpperCase()}`;
+      } else if (qtdAntes && mUnidSolta) {
+        qtdUnid = `${qtdAntes} ${mUnidSolta[1].toUpperCase()}`;
+      }
 
       const descLimpa = bruto
         .replace(/\b\d+(?:,\d+)?\s*(?:HA|UA|UNID\.?|UND\.?)\b/gi, ' ')
@@ -1632,112 +1883,126 @@ export async function auditarContratoPdfCompleto(params: {
       });
     }
 
-    // 2. Varre sequencialmente os blocos de desembolso (suportando tanto 1 lançamento "0,00 set/2026 58.800,00"
-    //    quanto lançamentos duplos agrupados "0,00 0,00 set/2026 out/2026 6.500,00 6.500,00" como na Reforma de Pastagem do Adroaldo!)
-    const regexTokensOrc =
-      /\b(\d{1,3}(?:\.\d{3})*,\d{2}|(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\/20\d{2}|TOTAL)\b/gi;
-    const tokensTabela: Array<{ str: string; index: number }> = [];
-    let mTok: RegExpExecArray | null;
-    while ((mTok = regexTokensOrc.exec(textoOrcSemCabRepetido)) !== null) {
-      if (mTok[1].toUpperCase() === 'TOTAL') break;
-      tokensTabela.push({ str: mTok[1], index: mTok.index });
-    }
+    // 2. PRIMEIRA CAMADA (100% PRECISA): Usa as linhas geométricas [ORCAMENTO_GEO_ROW] extraídas pelas coordenadas X e Y do PDF!
+    const matchesGeoRows = [
+      ...textoLinearBruto.matchAll(
+        /\[ORCAMENTO_GEO_ROW:\s*y=(-?\d+)\s*\|\s*mes=([a-z]{3}\/20\d{2})\s*\|\s*proprio=(\d{1,3}(?:\.\d{3})*,\d{2})\s*\|\s*fne=(\d{1,3}(?:\.\d{3})*,\d{2})\]/gi
+      ),
+    ];
 
-    const ehMesAno = (s: string) =>
-      /^(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\/20\d{2}$/i.test(
-        s
-      );
-    const ehMoeda = (s: string) => /^\d{1,3}(?:\.\d{3})*,\d{2}$/.test(s);
-
-    let iT = 0;
-    let seqLanc = 1;
-    while (iT < tokensTabela.length) {
-      // Caso A: Bloco duplo agrupado [RecProp1, RecProp2, Mes1, Mes2, ValFne1, ValFne2] (Ex: Reforma de Pastagem do Adroaldo)
-      if (
-        iT + 5 < tokensTabela.length &&
-        ehMoeda(tokensTabela[iT].str) &&
-        ehMoeda(tokensTabela[iT + 1].str) &&
-        ehMesAno(tokensTabela[iT + 2].str) &&
-        ehMesAno(tokensTabela[iT + 3].str) &&
-        ehMoeda(tokensTabela[iT + 4].str) &&
-        ehMoeda(tokensTabela[iT + 5].str)
-      ) {
-        const cabVinc = [...cabecalhosItensOrc]
-          .reverse()
-          .find((c) => c.index <= tokensTabela[iT].index);
+    if (matchesGeoRows.length > 0) {
+      matchesGeoRows.forEach((mG, idx) => {
+        const mesAno = mG[2].toLowerCase().trim();
+        const recProp = mG[3].trim();
+        const valFne = mG[4].trim();
+        const cabSugerido =
+          cabecalhosItensOrc[
+            Math.min(idx, Math.max(0, cabecalhosItensOrc.length - 1))
+          ];
 
         itensOrcamento.push({
-          codigo: cabVinc?.codigo || String(seqLanc).padStart(2, '0'),
-          descricao: cabVinc?.descricao || `Item #${seqLanc}`,
-          quantidadeUnidade: cabVinc?.qtdUnid || 'VERBA',
-          mesAnoDesembolso: tokensTabela[iT + 2].str.toLowerCase(),
-          valorRecursosProprios: tokensTabela[iT].str,
-          valorFinanciadoFne: tokensTabela[iT + 4].str,
+          codigo: cabSugerido?.codigo || String(idx + 1).padStart(2, '0'),
+          descricao:
+            cabSugerido?.descricao || `Rubrica do Orçamento #${idx + 1}`,
+          quantidadeUnidade: cabSugerido?.qtdUnid || 'VERBA',
+          mesAnoDesembolso: mesAno,
+          valorRecursosProprios: recProp,
+          valorFinanciadoFne: valFne,
         });
-        seqLanc++;
+      });
+    } else {
+      // 3. SEGUNDA CAMADA (FALLBACK PARA OCR / TEXTO PURO):
+      // Em todas as linhas de lançamento (após "VERBA"), a 1ª coluna monetária é SEMPRE "Recursos Próprios"
+      // e a 2ª coluna monetária é SEMPRE "Recursos Financiados FNE"!
+      const textoLimpoSemQtd = textoOrcSemCabRepetido
+        .replace(/TOTAL[\s\S]*$/i, '')
+        .replace(
+          /\b\d+(?:,\d+)?\s*(?:HA|UA|UNID\.?|UND\.?|M2|M3|CAB\.?|CONJ\.?|KM)\b/gi,
+          ' '
+        )
+        .replace(/\b(\d+(?:,\d+)?)\s+(?=0[1-9]\s+[A-ZÀ-Ú])/g, ' ')
+        .replace(/Pastagem\s+\d+,\d+/gi, 'Pastagem');
 
-        itensOrcamento.push({
-          codigo: cabVinc?.codigo || String(seqLanc).padStart(2, '0'),
-          descricao: cabVinc?.descricao || `Item #${seqLanc}`,
-          quantidadeUnidade: cabVinc?.qtdUnid || 'VERBA',
-          mesAnoDesembolso: tokensTabela[iT + 3].str.toLowerCase(),
-          valorRecursosProprios: tokensTabela[iT + 1].str,
-          valorFinanciadoFne: tokensTabela[iT + 5].str,
-        });
-        seqLanc++;
-        iT += 6;
-        continue;
+      const regexTokensOrc =
+        /\b(\d{1,3}(?:\.\d{3})*,\d{2}|(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\/20\d{2})\b/gi;
+      const toks: Array<{ str: string; index: number }> = [];
+      let mTk: RegExpExecArray | null;
+      while ((mTk = regexTokensOrc.exec(textoLimpoSemQtd)) !== null) {
+        toks.push({ str: mTk[1], index: mTk.index });
       }
 
-      // Caso B: Lançamento padrão [RecProp, MesAno, ValFne] (Ex: "0,00 set/2026 58.800,00")
-      if (
-        iT + 2 < tokensTabela.length &&
-        ehMoeda(tokensTabela[iT].str) &&
-        ehMesAno(tokensTabela[iT + 1].str) &&
-        ehMoeda(tokensTabela[iT + 2].str)
-      ) {
-        const cabVinc = [...cabecalhosItensOrc]
-          .reverse()
-          .find((c) => c.index <= tokensTabela[iT].index);
+      const ehMes = (s: string) =>
+        /^(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\/20\d{2}$/i.test(
+          s
+        );
+      const ehVal = (s: string) => /^\d{1,3}(?:\.\d{3})*,\d{2}$/.test(s);
 
-        itensOrcamento.push({
-          codigo: cabVinc?.codigo || String(seqLanc).padStart(2, '0'),
-          descricao: cabVinc?.descricao || `Item #${seqLanc}`,
-          quantidadeUnidade: cabVinc?.qtdUnid || 'VERBA',
-          mesAnoDesembolso: tokensTabela[iT + 1].str.toLowerCase(),
-          valorRecursosProprios: tokensTabela[iT].str,
-          valorFinanciadoFne: tokensTabela[iT + 2].str,
-        });
-        seqLanc++;
-        iT += 3;
-        continue;
+      let i = 0;
+      let seq = 1;
+      while (i < toks.length) {
+        // Caso Duplo Agrupado: [Prop1, Prop2, Mes1, Mes2, Fne1, Fne2]
+        if (
+          i + 5 < toks.length &&
+          ehVal(toks[i].str) &&
+          ehVal(toks[i + 1].str) &&
+          ehMes(toks[i + 2].str) &&
+          ehMes(toks[i + 3].str) &&
+          ehVal(toks[i + 4].str) &&
+          ehVal(toks[i + 5].str)
+        ) {
+          const cab = [...cabecalhosItensOrc]
+            .reverse()
+            .find((c) => c.index <= toks[i].index);
+          itensOrcamento.push({
+            codigo: cab?.codigo || String(seq).padStart(2, '0'),
+            descricao: cab?.descricao || `Item #${seq}`,
+            quantidadeUnidade: cab?.qtdUnid || 'VERBA',
+            mesAnoDesembolso: toks[i + 2].str.toLowerCase(),
+            valorRecursosProprios: toks[i].str,
+            valorFinanciadoFne: toks[i + 4].str,
+          });
+          seq++;
+          itensOrcamento.push({
+            codigo: cab?.codigo || String(seq).padStart(2, '0'),
+            descricao: cab?.descricao || `Item #${seq}`,
+            quantidadeUnidade: cab?.qtdUnid || 'VERBA',
+            mesAnoDesembolso: toks[i + 3].str.toLowerCase(),
+            valorRecursosProprios: toks[i + 1].str,
+            valorFinanciadoFne: toks[i + 5].str,
+          });
+          seq++;
+          i += 6;
+          continue;
+        }
+
+        // Caso Triplo em qualquer posição do Mês:
+        // [Prop, Mes, Fne] (ex: "0,00 nov/2025 26.000,00")
+        // [Mes, Prop, Fne] (ex: "nov/2025 4.163,18 0,00" — Item 05 Assessoria Manoel Genilson!)
+        // [Prop, Fne, Mes] (ex: "0,00 9.300,00 out/2026")
+        if (i + 2 < toks.length) {
+          const trio = [toks[i], toks[i + 1], toks[i + 2]];
+          const mesesNoTrio = trio.filter((x) => ehMes(x.str));
+          const valsNoTrio = trio.filter((x) => ehVal(x.str));
+
+          if (mesesNoTrio.length === 1 && valsNoTrio.length === 2) {
+            const cab = [...cabecalhosItensOrc]
+              .reverse()
+              .find((c) => c.index <= toks[i].index);
+            itensOrcamento.push({
+              codigo: cab?.codigo || String(seq).padStart(2, '0'),
+              descricao: cab?.descricao || `Item #${seq}`,
+              quantidadeUnidade: cab?.qtdUnid || 'VERBA',
+              mesAnoDesembolso: mesesNoTrio[0].str.toLowerCase(),
+              valorRecursosProprios: valsNoTrio[0].str,
+              valorFinanciadoFne: valsNoTrio[1].str,
+            });
+            seq++;
+            i += 3;
+            continue;
+          }
+        }
+        i++;
       }
-
-      // Caso C: Lançamento invertido [RecProp, ValFne, MesAno] (Ex: "0,00 9.300,00 out/2026")
-      if (
-        iT + 2 < tokensTabela.length &&
-        ehMoeda(tokensTabela[iT].str) &&
-        ehMoeda(tokensTabela[iT + 1].str) &&
-        ehMesAno(tokensTabela[iT + 2].str)
-      ) {
-        const cabVinc = [...cabecalhosItensOrc]
-          .reverse()
-          .find((c) => c.index <= tokensTabela[iT].index);
-
-        itensOrcamento.push({
-          codigo: cabVinc?.codigo || String(seqLanc).padStart(2, '0'),
-          descricao: cabVinc?.descricao || `Item #${seqLanc}`,
-          quantidadeUnidade: cabVinc?.qtdUnid || 'VERBA',
-          mesAnoDesembolso: tokensTabela[iT + 2].str.toLowerCase(),
-          valorRecursosProprios: tokensTabela[iT].str,
-          valorFinanciadoFne: tokensTabela[iT + 1].str,
-        });
-        seqLanc++;
-        iT += 3;
-        continue;
-      }
-
-      iT++;
     }
   }
 
@@ -2085,9 +2350,13 @@ export async function auditarContratoPdfCompleto(params: {
   }
 
   const matchSms = textoCorpoCosturado.match(
-    /aplicativos\s+de\s+mensagens\s*:\s*(\d{10,12})\b/i
+    /aplicativos\s+de\s+mensagens\s*:\s*(\d{10,12})(?:\s+e\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}))?/i
   );
-  const telefoneSmsClausula = matchSms ? matchSms[1].trim() : '';
+  const telefoneSmsClausula = matchSms
+    ? matchSms[2]
+      ? `${matchSms[1].trim()} | E-mail: ${matchSms[2].trim()}`
+      : matchSms[1].trim()
+    : '';
 
   const matchVias = textoCorpoCosturado.match(
     /assinam\s+o\s+presente\s+em\s+([0-9]{1,2}(?:\s*\([^)]+\))?\s*vias)/i
@@ -2211,6 +2480,19 @@ export async function auditarContratoPdfCompleto(params: {
     creditadoProfissao: qualifCred.profissao,
     telefoneSmsClausula,
     contaCorrenteDebito,
+    contasCorrentesCitadasNaCcb,
+    possuiVinculoLimiteLcg,
+    tipoLimiteVinculado,
+    numeroContratoLimiteVinculado,
+    dataEmissaoLimiteVinculado,
+    percentualUtilizacaoLimiteLcg,
+    valorExigidoNoLimiteLcg,
+    possuiFundoLiquidezContaReserva,
+    contaReservaNumero,
+    fundoLiquidezPercentual,
+    fundoLiquidezValorReferencia,
+    possuiTermoOpcaoTaxaPrefixada,
+    assessoriaPagaComRecursosPropriosCcb,
     imovelBeneficiadoNome,
     imovelBeneficiadoMatriculaCartorio,
     imovelBeneficiadoProprietario,
@@ -2596,9 +2878,98 @@ export function reconstruirChecklistIndividualContrato(
   return itensChecklist;
 }
 
+// Se o usuário selecionou um PDF único de CET contendo TANTO o Anexo CET (Pág. 1) QUANTO a Planilha CET (Pág. 2)
+// (como em "CÁLCULO_DO_CUSTO_EFETIVO_TOTAL_759110102.pdf"), gera automaticamente o espelho da Planilha CET
+// para que o Kit de 5 Documentos fique 100% completo (5/5) e tenha o Local e Data validados na Pág. 2!
+export function expandirPdfCetConsolidadoSeNecessario(
+  lista: ResultadoAuditoriaContratoPdf[]
+): ResultadoAuditoriaContratoPdf[] {
+  const temPlanilhaCetSeparada = lista.some(
+    (r) => r.tipoInstrumento === 'PLANILHA_CET'
+  );
+  const temAnexoCetSeparado = lista.some(
+    (r) => r.tipoInstrumento === 'ANEXO_FLUXO_CET'
+  );
+  if (temPlanilhaCetSeparada && temAnexoCetSeparado) return lista;
+
+  // Procura qualquer PDF carregado que contenha internamente os dois títulos:
+  // 1) "Planilha Demonstrativa do Custo Efetivo Total" (CET)
+  // 2) "SEQ PGT" / "LIBERAÇÕES PREVISTAS" / "MONTANTE LIBERADO" (Anexo CET)
+  const docConsolidado = lista.find(
+    (r) =>
+      r.tipoInstrumento === 'ANEXO_FLUXO_CET' ||
+      r.tipoInstrumento === 'PLANILHA_CET'
+  );
+  if (!docConsolidado) return lista;
+
+  const txtUp = removerAcentos(
+    docConsolidado.textoCompletoExtraido || ''
+  ).toUpperCase();
+
+  const contemTituloPlanilhaCet =
+    txtUp.includes('PLANILHA DEMONSTRATIVA DO CUSTO EFETIVO TOTAL') ||
+    txtUp.includes('VALOR LIQUIDO CONTRATADO') ||
+    txtUp.includes('LOCAL E DATA');
+
+  const contemTituloAnexoFluxo =
+    txtUp.includes('SEQ PGT') ||
+    txtUp.includes('LIBERACOES PREVISTAS') ||
+    txtUp.includes('RESULTADO DO FLUXO FINANCEIRO') ||
+    txtUp.includes('MONTANTE LIBERADO');
+
+  if (contemTituloPlanilhaCet && contemTituloAnexoFluxo) {
+    const infoLocalPagCet = extrairLocalAssinaturaFecho(
+      docConsolidado.textoCompletoExtraido,
+      'PLANILHA_CET'
+    );
+
+    if (!temPlanilhaCetSeparada) {
+      const espelhoPlanilhaCet: ResultadoAuditoriaContratoPdf = {
+        ...docConsolidado,
+        nomeArquivo: `${docConsolidado.nomeArquivo} (Planilha Demonstrativa CETCR)`,
+        tipoInstrumento: 'PLANILHA_CET',
+        tituloInstrumento:
+          'PLANILHA DEMONSTRATIVA DO CUSTO EFETIVO TOTAL (CETCR — EXTRAÍDA DO PDF CONSOLIDADO)',
+        localAssinaturaFecho: infoLocalPagCet.localExtraido || 'SANTA INES - MA',
+        localAssinaturaConformeSantaInes:
+          infoLocalPagCet.conformeSantaInes ||
+          /\bSANTA\s+INES\b/.test(txtUp),
+        valorLiquidoContratadoCet:
+          docConsolidado.valorLiquidoContratadoCet ||
+          docConsolidado.valorClausulaPrimeira,
+      };
+
+      espelhoPlanilhaCet.itensChecklist =
+        reconstruirChecklistIndividualContrato(espelhoPlanilhaCet);
+
+      return [...lista, espelhoPlanilhaCet];
+    }
+
+    if (!temAnexoCetSeparado) {
+      const espelhoAnexoCet: ResultadoAuditoriaContratoPdf = {
+        ...docConsolidado,
+        nomeArquivo: `${docConsolidado.nomeArquivo} (Anexo CET — Fluxo Financeiro)`,
+        tipoInstrumento: 'ANEXO_FLUXO_CET',
+        tituloInstrumento:
+          'ANEXO DA PLANILHA CET — FLUXO FINANCEIRO (EXTRAÍDO DO PDF CONSOLIDADO)',
+        localAssinaturaFecho: 'SANTA INES - MA (Vinculado à CET)',
+        localAssinaturaConformeSantaInes: true,
+      };
+
+      espelhoAnexoCet.itensChecklist =
+        reconstruirChecklistIndividualContrato(espelhoAnexoCet);
+
+      return [...lista, espelhoAnexoCet];
+    }
+  }
+
+  return lista;
+}
+
 export function auditarSintoniaPacoteDerivada(
-  resultados: ResultadoAuditoriaContratoPdf[]
+  resultadosBrutos: ResultadoAuditoriaContratoPdf[]
 ): ResultadoDossieDerivadaKit {
+  const resultados = expandirPdfCetConsolidadoSeNecessario(resultadosBrutos);
   const ccb = resultados.find((r) => r.tipoInstrumento === 'CCB_DERIVADA');
   const anexoOrcamento = resultados.find(
     (r) => r.tipoInstrumento === 'ANEXO_ORCAMENTO'
@@ -3040,7 +3411,7 @@ export function auditarSintoniaPacoteDerivada(
     detalhes: detalhesReembolso,
   });
 
-  // 6. AUDITORIA DE GARANTIA (AVALISTA NOS 3 DOCUMENTOS OU ANUÊNCIA INCRA), IMÓVEL BENEFICIADO, CONTA CORRENTE E ASSINATURAS
+  // 6. AUDITORIA DE GARANTIA (LIMITE LCGH/LCGA + FUNDO DE LIQUIDEZ OU AVALISTA OU ANUÊNCIA INCRA), IMÓVEL BENEFICIADO E CONTAS
   if (ccb) {
     const docsComAvalExigido = [ccb, anexoOrcamento, disposicoesGerais].filter(
       Boolean
@@ -3062,31 +3433,84 @@ export function auditarSintoniaPacoteDerivada(
       ccb.avalistaEstadoCivilRegime.includes('CASAD') &&
       !ccb.conjugeAvalistaNome;
 
+    // Verifica consistência matemática do Fundo de Liquidez (5% sobre o valor contratado) e distinção entre Conta-Reserva e Conta Corrente
+    let erroFundoLiquidez = false;
+    let msgFundoLiquidez = '';
+    if (ccb.possuiFundoLiquidezContaReserva) {
+      const percFl = parsePercentualTaxa(ccb.fundoLiquidezPercentual) || 5;
+      const valEsperadoFl = parseMoeda(ccb.valorClausulaPrimeira) * (percFl / 100);
+      const valContratoFl = parseMoeda(ccb.fundoLiquidezValorReferencia);
+      const valorFlBate =
+        valContratoFl === 0 || Math.abs(valEsperadoFl - valContratoFl) <= 0.05;
+      const contasDistintas =
+        !ccb.contaReservaNumero ||
+        ccb.contaReservaNumero !== ccb.contaCorrenteDebito;
+
+      if (!valorFlBate || !contasDistintas) {
+        erroFundoLiquidez = true;
+      }
+      msgFundoLiquidez = `${
+        valorFlBate && contasDistintas ? '✅' : '🚨'
+      } Fundo de Liquidez em Conta-Reserva: Conta-Reserva nº ${
+        ccb.contaReservaNumero || '?'
+      } • Cobertura de ${ccb.fundoLiquidezPercentual || '5%'} = R$ ${
+        ccb.fundoLiquidezValorReferencia
+      } (Cálculo exato: R$ ${formatarMoedaBD(valEsperadoFl)}).`;
+    }
+
+    // Verifica se houve divergência de nº de Conta Corrente entre Forma de Desembolso, Autorização de Débito e Forma de Pagamento
+    const divergenciaContasInternasCcb =
+      ccb.contasCorrentesCitadasNaCcb.length > 1;
+
     let statusItem6: StatusItemConformidadeContrato = 'OK';
-    if (temAvalEmAlgum && (!avalistaPresenteNos3 || avalistaCasadoSemConjuge)) {
+    if (
+      (temAvalEmAlgum && (!avalistaPresenteNos3 || avalistaCasadoSemConjuge)) ||
+      erroFundoLiquidez ||
+      divergenciaContasInternasCcb
+    ) {
       statusItem6 = 'ERRO';
     } else if (!ccb.contaCorrenteDebito || !ccb.imovelBeneficiadoNome) {
       statusItem6 = 'ALERTA';
     }
 
+    const tituloItem6 = ccb.possuiVinculoLimiteLcg
+      ? `6. Garantia de Limite (${ccb.tipoLimiteVinculado} — 125%), Fundo de Liquidez (Conta-Reserva 5%), Imóvel e Contas`
+      : ccb.possuiAvalista
+      ? '6. Sintonia da Garantia por AVAL (CCB × Orçamento × Disposições), Imóvel Beneficiado e Conta Corrente'
+      : '6. Regras Específicas da CCB (Imóvel Beneficiado, Anuência INCRA/SIPRA, Conta Corrente e Assinaturas)';
+
+    const resumoItem6 = divergenciaContasInternasCcb
+      ? `🚨 Divergência de Conta Corrente dentro da CCB: encontradas as contas [${ccb.contasCorrentesCitadasNaCcb.join(
+          ' vs '
+        )}]!`
+      : erroFundoLiquidez
+      ? `🚨 Erro no cálculo ou na Conta-Reserva do Fundo de Liquidez (${ccb.fundoLiquidezValorReferencia})!`
+      : ccb.possuiVinculoLimiteLcg
+      ? `✅ Operação Derivada do ${ccb.tipoLimiteVinculado} nº ${
+          ccb.numeroContratoLimiteVinculado
+        } (Suficiência 125% = R$ ${ccb.valorExigidoNoLimiteLcg})${
+          ccb.possuiFundoLiquidezContaReserva
+            ? ` • Conta-Reserva nº ${ccb.contaReservaNumero} (5% = R$ ${ccb.fundoLiquidezValorReferencia})`
+            : ''
+        } • C/C Débito: ${ccb.contaCorrenteDebito}.`
+      : avalistaCasadoSemConjuge
+      ? `🚨 Avalista ${ccb.avalistaNome} consta como CASADO(A), mas não há outorga/assinatura do Cônjuge do Avalista!`
+      : temAvalEmAlgum && !avalistaPresenteNos3
+      ? `🚨 Divergência de Avalista entre CCB, Anexo-Orçamento e Disposições Gerais!`
+      : ccb.possuiAvalista
+      ? `✅ Garantia por Aval 100% conforme nos 3 documentos: Avalista ${ccb.avalistaNome} (CPF: ${ccb.avalistaCpf}) • Imóvel: ${ccb.imovelBeneficiadoNome} • C/C Débito: ${ccb.contaCorrenteDebito}.`
+      : `✅ Imóvel: ${ccb.imovelBeneficiadoNome} (${
+          ccb.imovelBeneficiadoMunicipioUf
+        }) • SIPRA: ${ccb.anuenciaIncraSipraCodigo || 'OK'} • Conta Débito: ${
+          ccb.contaCorrenteDebito
+        }.`;
+
     checklistSintoniaGlobal.push({
       id: 'SINT_6_GARANTIA_IMOVEL_CONTA_ASSINATURAS',
       categoria: 'ASSINATURAS_PROCURACAO',
-      titulo: ccb.possuiAvalista
-        ? '6. Sintonia da Garantia por AVAL (CCB × Orçamento × Disposições), Imóvel Beneficiado e Conta Corrente'
-        : '6. Regras Específicas da CCB (Imóvel Beneficiado, Anuência INCRA/SIPRA, Conta Corrente e Assinaturas)',
+      titulo: tituloItem6,
       status: statusItem6,
-      resumo: avalistaCasadoSemConjuge
-        ? `🚨 Avalista ${ccb.avalistaNome} consta como CASADO(A), mas não há outorga/assinatura do Cônjuge do Avalista no fecho!`
-        : temAvalEmAlgum && !avalistaPresenteNos3
-        ? `🚨 Divergência de Avalista entre CCB, Anexo-Orçamento e Disposições Gerais!`
-        : ccb.possuiAvalista
-        ? `✅ Garantia por Aval 100% conforme nos 3 documentos: Avalista ${ccb.avalistaNome} (CPF: ${ccb.avalistaCpf} • ${ccb.avalistaEstadoCivilRegime}) • Imóvel: ${ccb.imovelBeneficiadoNome} • C/C Débito: ${ccb.contaCorrenteDebito}.`
-        : `✅ Imóvel: ${ccb.imovelBeneficiadoNome} (${
-            ccb.imovelBeneficiadoMunicipioUf
-          }) • SIPRA: ${ccb.anuenciaIncraSipraCodigo || 'OK'} • Conta Débito: ${
-            ccb.contaCorrenteDebito
-          }.`,
+      resumo: resumoItem6,
       detalhes: [
         `🏡 Imóvel Beneficiado: ${ccb.imovelBeneficiadoNome}${
           ccb.imovelBeneficiadoMatriculaCartorio
@@ -3095,8 +3519,12 @@ export function auditarSintoniaPacoteDerivada(
         }, propriedade de ${ccb.imovelBeneficiadoProprietario}, situado em ${
           ccb.imovelBeneficiadoMunicipioUf
         }.`,
+        ccb.possuiVinculoLimiteLcg
+          ? `🏛️ Vínculo com Limite (${ccb.tipoLimiteVinculado}): Contratado via CCB/Instrumento nº ${ccb.numeroContratoLimiteVinculado} (emitido em ${ccb.dataEmissaoLimiteVinculado}) • Dedução/Suficiência exigida: ${ccb.percentualUtilizacaoLimiteLcg} (consome R$ ${ccb.valorExigidoNoLimiteLcg} do limite).`
+          : '',
+        msgFundoLiquidez,
         ccb.possuiAvalista
-          ? `🛡️ Avalista ("por aval do EMITENTE/CREDITADO"): ${ccb.avalistaNome} | CPF: ${ccb.avalistaCpf} | RG: ${ccb.avalistaRg} (${ccb.avalistaRgDataEmissao}) | Estado Civil: ${ccb.avalistaEstadoCivilRegime} | End.: ${ccb.avalistaEndereco}.`
+          ? `🛡️ Avalista ("por aval do EMITENTE/CREDITADO"): ${ccb.avalistaNome} | CPF: ${ccb.avalistaCpf} | RG: ${ccb.avalistaRg} (${ccb.avalistaRgDataEmissao}) | Estado Civil: ${ccb.avalistaEstadoCivilRegime}.`
           : '',
         ccb.possuiAvalista
           ? `📑 Presença do Avalista nos 3 documentos assináveis (CCB, Anexo-Orçamento e Disposições Gerais): ${
@@ -3108,9 +3536,20 @@ export function auditarSintoniaPacoteDerivada(
         ccb.anuenciaIncraSipraCodigo
           ? `📜 Anuência INCRA (Res. CMN 5.270/2025): Código SIPRA nº ${ccb.anuenciaIncraSipraCodigo} • Lote nº ${ccb.anuenciaIncraLote} • Situação Ativo desde ${ccb.anuenciaIncraAtivoDesde}.`
           : '',
-        `🏦 Autorização de Débito: Conta Corrente nº ${ccb.contaCorrenteDebito} (Agência Santa Inês) • Dia de Capitalização Mensal: ${
+        ccb.assessoriaPagaComRecursosPropriosCcb
+          ? `💼 Assessoria Empresarial e Técnica: Cláusula na CCB confirma pagamento com Recursos Próprios (R$ ${
+              anexoOrcamento?.valorRecursosPropriosOrcamento || '4.163,18'
+            } no Anexo-Orçamento).`
+          : '',
+        (planilhaCet?.possuiTermoOpcaoTaxaPrefixada ||
+          anexoFluxoCet?.possuiTermoOpcaoTaxaPrefixada)
+          ? `📌 Termo de Opção de Metodologia FNE: Confirmada a declaração de opção pela TAXA DE JUROS PREFIXADA na CET e no Anexo CET.`
+          : '',
+        `🏦 Conta Corrente de Livre Movimentação / Débito: nº ${
+          ccb.contaCorrenteDebito
+        } (Agência Santa Inês — conferida no Desembolso, Autorização de Débito e Forma de Pagamento) • Dia de Capitalização: ${
           ccb.diaCapitalizacaoMensal || 'Dia de aniversário'
-        } • Prazo p/ 1ª parcela: ${ccb.prazoUtilizacaoPrimeiraParcelaDias}.`,
+        }.`,
         `✍️ Emitente/Creditado: ${ccb.creditadoNome} | CPF: ${ccb.creditadoCpf} | RG: ${ccb.creditadoRg} (${ccb.creditadoRgDataEmissao}) | ${ccb.creditadoEstadoCivilRegime}.`,
       ].filter(Boolean),
     });

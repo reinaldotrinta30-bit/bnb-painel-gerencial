@@ -350,6 +350,19 @@ export default function TelaConformidadeContratos({
         creditadoProfissao: '',
         telefoneSmsClausula: '',
         contaCorrenteDebito: '',
+        contasCorrentesCitadasNaCcb: [],
+        possuiVinculoLimiteLcg: false,
+        tipoLimiteVinculado: '',
+        numeroContratoLimiteVinculado: '',
+        dataEmissaoLimiteVinculado: '',
+        percentualUtilizacaoLimiteLcg: '',
+        valorExigidoNoLimiteLcg: '',
+        possuiFundoLiquidezContaReserva: false,
+        contaReservaNumero: '',
+        fundoLiquidezPercentual: '',
+        fundoLiquidezValorReferencia: '',
+        possuiTermoOpcaoTaxaPrefixada: false,
+        assessoriaPagaComRecursosPropriosCcb: false,
         imovelBeneficiadoNome: '',
         imovelBeneficiadoMatriculaCartorio: '',
         imovelBeneficiadoProprietario: '',
@@ -1309,9 +1322,34 @@ export default function TelaConformidadeContratos({
                   ? [
                       {
                         id: 'cc_deb',
-                        label: '🏦 C/C Débito (CCB)',
+                        label: '🏦 C/C Livre Mov. / Débito',
                         valor: `${resultadoAtivo.contaCorrenteDebito} (Ag. Santa Inês)`,
                         copy: resultadoAtivo.contaCorrenteDebito,
+                      },
+                    ]
+                  : []),
+                ...(resultadoAtivo.possuiVinculoLimiteLcg
+                  ? [
+                      {
+                        id: 'lcg_vinc',
+                        label: `🏛️ Limite ${resultadoAtivo.tipoLimiteVinculado} Madre`,
+                        valor: `Nº ${resultadoAtivo.numeroContratoLimiteVinculado} (${resultadoAtivo.dataEmissaoLimiteVinculado})`,
+                        copy: resultadoAtivo.numeroContratoLimiteVinculado,
+                      },
+                      {
+                        id: 'lcg_uso',
+                        label: '📐 Uso / Suficiência LCG',
+                        valor: `${resultadoAtivo.percentualUtilizacaoLimiteLcg} (Exige R$ ${resultadoAtivo.valorExigidoNoLimiteLcg} do limite)`,
+                      },
+                    ]
+                  : []),
+                ...(resultadoAtivo.possuiFundoLiquidezContaReserva
+                  ? [
+                      {
+                        id: 'conta_res',
+                        label: '🔒 Conta-Reserva (F. Liq.)',
+                        valor: `Nº ${resultadoAtivo.contaReservaNumero} • ${resultadoAtivo.fundoLiquidezPercentual} = R$ ${resultadoAtivo.fundoLiquidezValorReferencia}`,
+                        copy: resultadoAtivo.contaReservaNumero,
                       },
                     ]
                   : []),
