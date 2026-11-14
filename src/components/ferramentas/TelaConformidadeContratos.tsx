@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { RegistroContratacao } from '@/types/painel';
+import { removerAcentos } from '@/lib/auditorInteligentePdfPasta';
 import {
   auditarContratoPdfCompleto,
   auditarSintoniaPacoteDerivada,
@@ -13,12 +14,23 @@ import {
   ModoScriptCopilotContrato,
   ResultadoAuditoriaContratoPdf,
   ResultadoDossieDerivadaKit,
+  ItemChecklistConformidadeContrato,
 } from '@/lib/auditorConformidadeContratos';
 
 interface TelaConformidadeContratosProps {
   aberto: boolean;
   onFechar: () => void;
   contratacoes: RegistroContratacao[];
+}
+
+interface OcorrenciaBuscaPdf {
+  indiceArquivo: number;
+  nomeArquivo: string;
+  pagina: number;
+  totalPaginas: number;
+  trechoAntes: string;
+  termoEncontrado: string;
+  trechoDepois: string;
 }
 
 export default function TelaConformidadeContratos({
@@ -35,14 +47,38 @@ export default function TelaConformidadeContratos({
   );
   const [dossieKitDerivada, setDossieKitDerivada] =
     useState<ResultadoDossieDerivadaKit | null>(null);
-  // -1 = Visão Global Consolidada de Sintonia do Kit (5 Docs) | >= 0 = Documento individual
+  // -1 = Visão Global Consolidada de Sintonia do Kit | >= 0 = Documento individual
   const [indiceAtivo, setIndiceAtivo] = useState<number>(0);
   const [indicePdfVisualizando, setIndicePdfVisualizando] = useState<number>(0);
   const [auditando, setAuditando] = useState(false);
   const [progressoMsg, setProgressoMsg] = useState('');
   const [mostrarPdfLadoALado, setMostrarPdfLadoALado] = useState(true);
+  const [modalPdfExpandidoAberto, setModalPdfExpandidoAberto] = useState(false);
   const [urlPdfAtivo, setUrlPdfAtivo] = useState<string | null>(null);
   const [chaveCopiada, setChaveCopiada] = useState('');
+
+  // =========================================================================
+  // ESTADOS DO BUSCADOR INTELIGENTE DENTRO DO PDF (COM SALTO DE PÁGINA)
+  // =========================================================================
+  // Mapa: indiceArquivo -> Array de textos por página (índice 0 = Pág 1, etc.)
+  const [paginasTextoPorArquivo, setPaginasTextoPorArquivo] = useState<
+    Record<number, string[]>
+  >({});
+  const [termoBuscaPdf, setTermoBuscaPdf] = useState('');
+  const [escopoBuscaPdf, setEscopoBuscaPdf] = useState<
+    'TODOS_KIT' | 'ATUAL_APENAS'
+  >('TODOS_KIT');
+  const [indiceOcorrenciaAtiva, setIndiceOcorrenciaAtiva] = useState<number>(0);
+  const [paginaPdfAlvo, setPaginaPdfAlvo] = useState<number>(1);
+  const [modoDestaqueVisualDoc, setModoDestaqueVisualDoc] =
+    useState<boolean>(true);
+  const [zoomPdfDestaque, setZoomPdfDestaque] = useState<number>(1.25);
+  const [retangulosGrifoPag, setRetangulosGrifoPag] = useState<
+    Array<{ left: number; top: number; width: number; height: number }>
+  >([]);
+  const canvasPdfBuscaRef = useRef<HTMLCanvasElement | null>(null);
+  const containerScrollPdfBuscaRef = useRef<HTMLDivElement | null>(null);
+  const marcadorGrifoPrincipalRef = useRef<HTMLDivElement | null>(null);
 
   // Controle de Cancelamento Instantâneo do OCR
   const controleCancelamentoOcrRef =
@@ -58,6 +94,7 @@ export default function TelaConformidadeContratos({
   const [copiadoScriptOk, setCopiadoScriptOk] = useState(false);
 
   const inputArquivosRef = useRef<HTMLInputElement>(null);
+  const inputBuscaPdfRef = useRef<HTMLInputElement>(null);
 
   const resultadoAtivo: ResultadoAuditoriaContratoPdf | null = useMemo(() => {
     if (
@@ -83,7 +120,451 @@ export default function TelaConformidadeContratos({
     return () => URL.revokeObjectURL(url);
   }, [arquivoAtivo]);
 
-  // Atualiza automaticamente o texto do Script do Copilot quando o usuário muda o tipo de documento marcado no modal
+  // Indexa em segundo plano o texto página por página de cada PDF carregado para permitir busca exata com salto para #page=X
+  useEffect(() => {
+    let cancelado = false;
+    if (arquivosContratos.length === 0) {
+      setPaginasTextoPorArquivo({});
+      return;
+    }
+
+    const indexarPaginasDosPdfs = async () => {
+      const win = typeof window !== 'undefined' ? (window as any) : null;
+      const pdfjsLib = win?.pdfjsLib;
+      const novoMapa: Record<number, string[]> = {};
+
+      for (let i = 0; i < arquivosContratos.length; i++) {
+        if (cancelado) return;
+        const file = arquivosContratos[i];
+        try {
+          if (pdfjsLib) {
+            const buffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: buffer.slice(0) })
+              .promise;
+            const numPags = pdf.numPages || 1;
+            const listaPags: string[] = [];
+
+            for (let p = 1; p <= numPags; p++) {
+              const page = await pdf.getPage(p);
+              const content = await page.getTextContent();
+              const itens = (content.items || []) as Array<any>;
+              const txtPag = itens
+                .map((it) => (it.str || '').trim())
+                .filter(Boolean)
+                .join(' ');
+              listaPags.push(txtPag);
+            }
+            novoMapa[i] = listaPags;
+          } else if (resultados[i]?.textoCompletoExtraido) {
+            novoMapa[i] = [resultados[i].textoCompletoExtraido];
+          }
+        } catch {
+          if (resultados[i]?.textoCompletoExtraido) {
+            novoMapa[i] = [resultados[i].textoCompletoExtraido];
+          }
+        }
+      }
+
+      if (!cancelado) {
+        setPaginasTextoPorArquivo(novoMapa);
+      }
+    };
+
+    indexarPaginasDosPdfs();
+    return () => {
+      cancelado = true;
+    };
+  }, [arquivosContratos, resultados]);
+
+  // Calcula todas as ocorrências do termo buscado (com suporte a busca sem acento e salto de página/arquivo)
+  const ocorrenciasBuscaPdf: OcorrenciaBuscaPdf[] = useMemo(() => {
+    const queryLimpa = termoBuscaPdf.trim();
+    if (queryLimpa.length < 2) return [];
+
+    const queryNorm = removerAcentos(queryLimpa).toUpperCase();
+    const listaOcorrencias: OcorrenciaBuscaPdf[] = [];
+
+    const indicesParaVarrer =
+      escopoBuscaPdf === 'ATUAL_APENAS' || arquivosContratos.length <= 1
+        ? [indicePdfVisualizando]
+        : arquivosContratos.map((_, idx) => idx);
+
+    for (const idxArq of indicesParaVarrer) {
+      const arq = arquivosContratos[idxArq];
+      if (!arq) continue;
+      const paginas = paginasTextoPorArquivo[idxArq] || [
+        resultados[idxArq]?.textoCompletoExtraido || '',
+      ];
+      const totalPags = paginas.length || 1;
+
+      paginas.forEach((txtPag, idxPag) => {
+        if (!txtPag) return;
+        const txtPagNorm = removerAcentos(txtPag).toUpperCase();
+        let posInicial = 0;
+        let seguranca = 0;
+
+        while (posInicial < txtPagNorm.length && seguranca < 40) {
+          const idxMatch = txtPagNorm.indexOf(queryNorm, posInicial);
+          if (idxMatch === -1) break;
+
+          const inicioContexto = Math.max(0, idxMatch - 55);
+          const fimMatch = idxMatch + queryNorm.length;
+          const fimContexto = Math.min(txtPag.length, fimMatch + 65);
+
+          listaOcorrencias.push({
+            indiceArquivo: idxArq,
+            nomeArquivo: arq.name,
+            pagina: idxPag + 1,
+            totalPaginas: totalPags,
+            trechoAntes:
+              (inicioContexto > 0 ? '...' : '') +
+              txtPag.substring(inicioContexto, idxMatch),
+            termoEncontrado: txtPag.substring(idxMatch, fimMatch),
+            trechoDepois:
+              txtPag.substring(fimMatch, fimContexto) +
+              (fimContexto < txtPag.length ? '...' : ''),
+          });
+
+          posInicial = fimMatch;
+          seguranca++;
+        }
+      });
+    }
+
+    return listaOcorrencias;
+  }, [
+    termoBuscaPdf,
+    escopoBuscaPdf,
+    indicePdfVisualizando,
+    arquivosContratos,
+    paginasTextoPorArquivo,
+    resultados,
+  ]);
+
+  const ocorrenciaAtualSelecionada =
+    ocorrenciasBuscaPdf[indiceOcorrenciaAtiva] || null;
+
+  // Sempre que a ocorrência ativa mudar, direciona automaticamente o leitor de PDF para o arquivo e a página exata!
+  useEffect(() => {
+    if (!ocorrenciaAtualSelecionada) return;
+    if (ocorrenciaAtualSelecionada.indiceArquivo !== indicePdfVisualizando) {
+      setIndicePdfVisualizando(ocorrenciaAtualSelecionada.indiceArquivo);
+    }
+    setPaginaPdfAlvo(ocorrenciaAtualSelecionada.pagina);
+    setModoDestaqueVisualDoc(true);
+  }, [ocorrenciaAtualSelecionada, indicePdfVisualizando]);
+
+  // Renderiza a página do PDF no Canvas e desenha o destaque (tipo Ctrl+F) exatamente em cima da palavra no documento!
+  useEffect(() => {
+    let cancelado = false;
+    const queryLimpa = termoBuscaPdf.trim();
+
+    if (
+      !arquivoAtivo ||
+      queryLimpa.length < 2 ||
+      !modoDestaqueVisualDoc ||
+      (!mostrarPdfLadoALado && !modalPdfExpandidoAberto)
+    ) {
+      setRetangulosGrifoPag([]);
+      return;
+    }
+
+    const renderizarPaginaComGrifo = async () => {
+      try {
+        const win = typeof window !== 'undefined' ? (window as any) : null;
+        const pdfjsLib = win?.pdfjsLib;
+        const canvas = canvasPdfBuscaRef.current;
+        if (!pdfjsLib || !canvas) return;
+
+        const buffer = await arquivoAtivo.arrayBuffer();
+        if (cancelado) return;
+
+        const pdf = await pdfjsLib.getDocument({ data: buffer.slice(0) })
+          .promise;
+        const numPag = Math.min(
+          Math.max(1, paginaPdfAlvo),
+          pdf.numPages || 1
+        );
+        const page = await pdf.getPage(numPag);
+        if (cancelado) return;
+
+        const viewport = page.getViewport({ scale: zoomPdfDestaque });
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        if (cancelado) return;
+
+        // Localiza as coordenadas exatas (X, Y, Largura, Altura) do termo buscado dentro da página
+        const content = await page.getTextContent();
+        if (cancelado) return;
+
+        const queryNorm = removerAcentos(queryLimpa).toUpperCase();
+        const palavrasQuery = queryNorm
+          .split(/\s+/)
+          .filter((p) => p.length >= 2);
+        const caixas: Array<{
+          left: number;
+          top: number;
+          width: number;
+          height: number;
+        }> = [];
+
+        for (const it of (content.items || []) as Array<any>) {
+          const strOrig = String(it.str || '');
+          if (!strOrig.trim()) continue;
+          const strNorm = removerAcentos(strOrig).toUpperCase();
+
+          // Verifica match da frase completa dentro do token ou de palavras da busca
+          let idxMatch = strNorm.indexOf(queryNorm);
+          let tamMatch = queryNorm.length;
+
+          if (idxMatch === -1 && palavrasQuery.length > 1) {
+            for (const pal of palavrasQuery) {
+              const iPal = strNorm.indexOf(pal);
+              if (iPal !== -1) {
+                idxMatch = iPal;
+                tamMatch = pal.length;
+                break;
+              }
+            }
+          }
+
+          if (idxMatch !== -1) {
+            const tr = Array.isArray(it.transform)
+              ? it.transform
+              : [1, 0, 0, 1, 0, 0];
+            const fontH = Math.hypot(tr[2], tr[3]) || 10;
+            const [vx, vy] = viewport.convertToViewportPoint(tr[4], tr[5]);
+            const largTotalToken =
+              (Number(it.width) || strOrig.length * (fontH * 0.52)) *
+              zoomPdfDestaque;
+
+            const inicioProp = idxMatch / Math.max(1, strOrig.length);
+            const tamProp = tamMatch / Math.max(1, strOrig.length);
+
+            const left = vx + largTotalToken * inicioProp - 2;
+            const width = Math.max(18, largTotalToken * tamProp + 4);
+            const height = Math.max(14, fontH * zoomPdfDestaque * 1.25);
+            const top = vy - fontH * zoomPdfDestaque * 0.92;
+
+            caixas.push({ left, top, width, height });
+          }
+        }
+
+        setRetangulosGrifoPag(caixas);
+
+        // Faz o scroll automático suave para centralizar exatamente o trecho grifado na tela!
+        setTimeout(() => {
+          marcadorGrifoPrincipalRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+            inline: 'center',
+          });
+        }, 90);
+      } catch (e) {
+        console.error('Erro ao grifar texto no PDF:', e);
+      }
+    };
+
+    renderizarPaginaComGrifo();
+    return () => {
+      cancelado = true;
+    };
+  }, [
+    arquivoAtivo,
+    paginaPdfAlvo,
+    termoBuscaPdf,
+    modoDestaqueVisualDoc,
+    zoomPdfDestaque,
+    indiceOcorrenciaAtiva,
+    mostrarPdfLadoALado,
+    modalPdfExpandidoAberto,
+  ]);
+
+  const navegarParaOcorrencia = (novoIdx: number) => {
+    if (ocorrenciasBuscaPdf.length === 0) return;
+    const total = ocorrenciasBuscaPdf.length;
+    const idxCircular = ((novoIdx % total) + total) % total;
+    setIndiceOcorrenciaAtiva(idxCircular);
+    const alvo = ocorrenciasBuscaPdf[idxCircular];
+    if (alvo) {
+      if (alvo.indiceArquivo !== indicePdfVisualizando) {
+        setIndicePdfVisualizando(alvo.indiceArquivo);
+      }
+      setPaginaPdfAlvo(alvo.pagina);
+    }
+  };
+
+  // Dispara uma busca inteligente no PDF (abrindo a coluna lateral do PDF se estiver oculta)
+  const acionarBuscaDiretaNoPdf = (termo: string) => {
+    if (!termo || !termo.trim()) return;
+    if (!mostrarPdfLadoALado && !modalPdfExpandidoAberto) {
+      setMostrarPdfLadoALado(true);
+    }
+    setEscopoBuscaPdf('TODOS_KIT');
+    setTermoBuscaPdf(termo.trim());
+    setIndiceOcorrenciaAtiva(0);
+    setTimeout(() => {
+      inputBuscaPdfRef.current?.focus();
+    }, 80);
+  };
+
+  // Gera chips inteligentes de busca com 1 clique baseados nos alertas e dados extraídos
+  const atalhosBuscaInteligentePdf = useMemo(() => {
+    if (!resultadoAtivo && resultados.length === 0) return [];
+    const r = resultadoAtivo || resultados[0];
+    const chips: Array<{
+      label: string;
+      termo: string;
+      cor: 'erro' | 'alerta' | 'info';
+    }> = [];
+    const vistos = new Set<string>();
+
+    const addChip = (
+      label: string,
+      termo: string,
+      cor: 'erro' | 'alerta' | 'info'
+    ) => {
+      const limpo = (termo || '').trim();
+      if (!limpo || limpo.length < 2) return;
+      const ch = limpo.toUpperCase();
+      if (vistos.has(ch)) return;
+      vistos.add(ch);
+      chips.push({ label, termo: limpo, cor });
+    };
+
+    // 1. Se houver rodapé interno detectado em qualquer documento
+    if (
+      r.possuiRodapeDocumentoInterno ||
+      resultados.some((x) => x.possuiRodapeDocumentoInterno)
+    ) {
+      addChip('🚨 Rodapé: "Interno"', 'Interno', 'erro');
+    }
+
+    // 2. Contas Correntes e Conta-Reserva (incluindo contas divergentes em todos os PDFs carregados)
+    resultados.forEach((doc) => {
+      if (doc.contaCorrenteDebito) {
+        const diverge =
+          r.contaCorrenteDebito &&
+          doc.contaCorrenteDebito !== r.contaCorrenteDebito;
+        addChip(
+          `${diverge ? '🚨' : '🏦'} C/C: ${doc.contaCorrenteDebito}`,
+          doc.contaCorrenteDebito,
+          diverge ? 'erro' : 'info'
+        );
+      }
+      (doc.contasCorrentesCitadasNaCcb || []).forEach((cc) => {
+        const diverge = r.contaCorrenteDebito && cc !== r.contaCorrenteDebito;
+        addChip(
+          `${diverge ? '🚨' : '🏦'} C/C: ${cc}`,
+          cc,
+          diverge ? 'erro' : 'info'
+        );
+      });
+      if (doc.contaReservaNumero) {
+        addChip(
+          `🔒 Conta-Reserva: ${doc.contaReservaNumero}`,
+          doc.contaReservaNumero,
+          'info'
+        );
+      }
+    });
+
+    // 3. Valor Contratado, Taxa de Juros, Nº do Contrato e Local
+    if (r.valorClausulaPrimeira) {
+      addChip(
+        `💰 Valor: ${r.valorClausulaPrimeira}`,
+        r.valorClausulaPrimeira,
+        'info'
+      );
+    }
+    if (r.taxaJurosAnual) {
+      const numTx = r.taxaJurosAnual.replace(/\s*a\.a\.?/i, '').trim();
+      addChip(`📈 Taxa: ${numTx}`, numTx, 'info');
+    }
+    if (r.numeroContratoCedula) {
+      addChip(`🔢 Nº: ${r.numeroContratoCedula}`, r.numeroContratoCedula, 'info');
+    }
+    addChip('📍 Local: SANTA IN', 'SANTA IN', 'info');
+
+    // 4. CPF do Titular, Avalista, Procurador, Limite Vinculado e Imóvel
+    if (r.creditadoCpf) {
+      addChip(`🪪 CPF: ${r.creditadoCpf}`, r.creditadoCpf, 'info');
+    }
+    if (r.avalistaNome) {
+      addChip(`🛡️ Avalista: ${r.avalistaNome.split(' ')[0]}`, r.avalistaNome, 'info');
+    }
+    if (r.procuradorNome) {
+      addChip(
+        `⚖️ Procurador: ${r.procuradorNome.split(' ')[0]}`,
+        r.procuradorNome,
+        'alerta'
+      );
+    }
+    if (r.numeroContratoLimiteVinculado) {
+      addChip(
+        `🏛️ LCG: ${r.numeroContratoLimiteVinculado}`,
+        r.numeroContratoLimiteVinculado,
+        'info'
+      );
+    }
+    const nomeIm =
+      r.imovelBeneficiadoNome || r.imoveisGarantia[0]?.denominacao || '';
+    if (nomeIm && !nomeIm.includes('Conforme Instrumento')) {
+      addChip(`🏡 ${nomeIm.slice(0, 22)}`, nomeIm, 'info');
+    }
+
+    return chips;
+  }, [resultadoAtivo, resultados]);
+
+  // Extrai termos pesquisáveis de um item do Checklist para o botão "🔎 Localizar no PDF"
+  const extrairTermosDeBuscaDoItemChecklist = (
+    item: ItemChecklistConformidadeContrato
+  ): string[] => {
+    const textoCombinado = `${item.resumo} ${(item.detalhes || []).join(' ')}`;
+    const candidatos: string[] = [];
+
+    if (/CLASSIFICADO\s+COMO\s*:?\s*INTERNO/i.test(textoCombinado)) {
+      candidatos.push('Interno');
+    }
+
+    // Contas correntes citadas no alerta (ex: "nº 253787", "nº 60411-4")
+    const matchesContas = [
+      ...textoCombinado.matchAll(/n[°ºo]\s*([0-9]{4,9}(?:-[0-9X])?)/gi),
+    ];
+    matchesContas.forEach((m) => candidatos.push(m[1]));
+
+    // Valores monetários citados no alerta (ex: "R$ 97.748,64")
+    const matchesValores = [
+      ...textoCombinado.matchAll(/R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g),
+    ];
+    matchesValores.forEach((m) => {
+      if (m[1] !== '0,00') candidatos.push(m[1]);
+    });
+
+    // Datas dd/mm/20xx citadas no alerta
+    const matchesDatas = [
+      ...textoCombinado.matchAll(/\b(\d{2}\/\d{2}\/20\d{2})\b/g),
+    ];
+    matchesDatas.forEach((m) => candidatos.push(m[1]));
+
+    // Número de contrato 103.20xx...
+    const matchNumContr = textoCombinado.match(
+      /\b(\d{3}\.20\d{2}\.\d{1,5}\.\d{3,8})\b/
+    );
+    if (matchNumContr) candidatos.push(matchNumContr[1]);
+
+    if (item.id.includes('LOCAL') || textoCombinado.includes('SANTA INES')) {
+      candidatos.push('SANTA IN');
+    }
+
+    return Array.from(new Set(candidatos)).slice(0, 4);
+  };
+
   useEffect(() => {
     if (!modalCopilotAberto) return;
     const docRef =
@@ -102,7 +583,6 @@ export default function TelaConformidadeContratos({
     resultados,
   ]);
 
-  // Cancela imediatamente o OCR em andamento (terminando o Web Worker do Tesseract em 0ms!)
   const cancelarLeituraOcrImediatamente = async (
     modo: 'USAR_TEXTO_PARCIAL' | 'ABORTAR_TUDO'
   ) => {
@@ -122,7 +602,6 @@ export default function TelaConformidadeContratos({
     }
   };
 
-  // Limpa toda a consulta atual (arquivos PDF, Raio-X, Checklist, Leitor Lateral e Copilot) sem precisar dar F5
   const limparConsultaConformidade = async () => {
     if (controleCancelamentoOcrRef.current) {
       await cancelarLeituraOcrImediatamente('ABORTAR_TUDO');
@@ -130,6 +609,10 @@ export default function TelaConformidadeContratos({
     setArquivosContratos([]);
     setResultados([]);
     setDossieKitDerivada(null);
+    setPaginasTextoPorArquivo({});
+    setTermoBuscaPdf('');
+    setIndiceOcorrenciaAtiva(0);
+    setPaginaPdfAlvo(1);
     setIndiceAtivo(0);
     setIndicePdfVisualizando(0);
     setAuditando(false);
@@ -151,6 +634,9 @@ export default function TelaConformidadeContratos({
     controleCancelamentoOcrRef.current = ctrl;
 
     setArquivosContratos(files);
+    setTermoBuscaPdf('');
+    setIndiceOcorrenciaAtiva(0);
+    setPaginaPdfAlvo(1);
     setAuditando(true);
     const novosResultados: ResultadoAuditoriaContratoPdf[] = [];
 
@@ -185,7 +671,9 @@ export default function TelaConformidadeContratos({
         setModoEscopo('DERIVADAS');
         setIndiceAtivo(-1);
         const idxCcb = novosResultados.findIndex(
-          (r) => r.tipoInstrumento === 'CCB_DERIVADA'
+          (r) =>
+            r.tipoInstrumento === 'CCB_DERIVADA' ||
+            r.tipoInstrumento === 'ADITIVO_CCB_RENOVACAO'
         );
         setIndicePdfVisualizando(idxCcb !== -1 ? idxCcb : 0);
       } else {
@@ -225,6 +713,10 @@ export default function TelaConformidadeContratos({
               up.includes('CEDULA') ||
               up.includes('CÉDULA') ||
               up.includes('CCB') ||
+              up.includes('ADITIVO') ||
+              up.includes('PROTOCOLO') ||
+              up.includes('PEDIDO') ||
+              up.includes('TERMO') ||
               up.includes('ANEXO') ||
               up.includes('ORCAMENTO') ||
               up.includes('ORÇAMENTO') ||
@@ -242,7 +734,7 @@ export default function TelaConformidadeContratos({
       await varrer(dirHandle, 0);
       if (encontrados.length === 0) {
         alert(
-          '⚠️ Nenhum arquivo de Contrato/CCB/Anexo/CET foi encontrado nessa pasta. Selecione os PDFs diretamente!'
+          '⚠️ Nenhum arquivo de Contrato/CCB/Aditivo/Anexo/CET foi encontrado nessa pasta. Selecione os PDFs diretamente!'
         );
         inputArquivosRef.current?.click();
         return;
@@ -303,11 +795,12 @@ export default function TelaConformidadeContratos({
 
   const importarDadosDaRespostaDoCopilot = () => {
     if (!respostaColadaCopilot.trim()) {
-      alert('⚠️ Cole a resposta gerada pelo Copilot no campo abaixo antes de importar!');
+      alert(
+        '⚠️ Cole a resposta gerada pelo Copilot no campo abaixo antes de importar!'
+      );
       return;
     }
 
-    // Se ainda não havia nenhum PDF carregado na tela, cria um registro base a partir da resposta do Copilot!
     if (resultados.length === 0) {
       const baseVazia: ResultadoAuditoriaContratoPdf = {
         nomeArquivo: 'Contrato Auditado via Copilot',
@@ -403,14 +896,14 @@ export default function TelaConformidadeContratos({
         valorRecursosPropriosOrcamento: '0,00',
         valorJurosTotaisCet: '',
         valorTotalAPagarCet: '',
-        taxaJurosAnual: '0,5% a.a.',
-        taxaJurosAnualNum: 0.5,
-        taxaJurosMensal: '0,0416% a.m.',
-        taxaJurosMensalNum: 0.0416,
-        cetAnual: '0,50%',
-        cetAnualNum: 0.5,
-        cetMensal: '0,0416%',
-        cetMensalNum: 0.0416,
+        taxaJurosAnual: '',
+        taxaJurosAnualNum: 0,
+        taxaJurosMensal: '',
+        taxaJurosMensalNum: 0,
+        cetAnual: '',
+        cetAnualNum: 0,
+        cetMensal: '',
+        cetMensalNum: 0,
         bonusAdimplenciaPerc: '',
         encargosInadimplementoResumo: '',
         diaCapitalizacaoMensal: '',
@@ -447,7 +940,6 @@ export default function TelaConformidadeContratos({
       return;
     }
 
-    // Se for o Kit Completo de 5 Docs, propaga os dados comuns (Nº CCB, Cliente, CPF, Local, Valor, Taxas) e específicos (Orçamento, CET, Reembolso)
     const novaLista = resultados.map((item, idx) => {
       if (
         modoScriptCopilot === 'KIT_COMPLETO_5_DOCS' ||
@@ -553,6 +1045,658 @@ export default function TelaConformidadeContratos({
     );
   };
 
+  // Componente reutilizável da Barra de Busca Inteligente do PDF + Leitor com salto de página (#page=X)
+  const renderPainelVisualizadorPdfComBusca = (emModalExpandido = false) => {
+    if (!urlPdfAtivo || !arquivoAtivo) return null;
+    const srcPdfComPagina = `${urlPdfAtivo}#page=${paginaPdfAlvo}&zoom=page-width`;
+
+    return (
+      <section
+        style={{
+          background: '#0f172a',
+          borderRadius: emModalExpandido ? '0' : '10px',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          border: emModalExpandido ? 'none' : '1px solid #334155',
+          height: '100%',
+        }}
+      >
+        {/* BARRA DE TÍTULO DO ARQUIVO + SELETOR DE PÁGINA E EXPANSÃO */}
+        <div
+          style={{
+            padding: '8px 12px',
+            background: '#1e293b',
+            color: '#ffffff',
+            fontSize: '11.5px',
+            fontWeight: 800,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '8px',
+            flexWrap: 'wrap',
+            borderBottom: '1px solid #334155',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>
+              📄 {arquivoAtivo.name}{' '}
+              <span style={{ color: '#38bdf8' }}>(Pág. {paginaPdfAlvo})</span>
+            </span>
+
+            {arquivosContratos.length > 1 && (
+              <select
+                value={indicePdfVisualizando}
+                onChange={(e) => {
+                  setIndicePdfVisualizando(Number(e.target.value));
+                  setPaginaPdfAlvo(1);
+                }}
+                style={{
+                  height: '24px',
+                  fontSize: '10.5px',
+                  fontWeight: 800,
+                  background: '#0f172a',
+                  color: '#f8fafc',
+                  border: '1px solid #475569',
+                  borderRadius: '4px',
+                  padding: '0 6px',
+                  width: 'auto',
+                }}
+              >
+                {arquivosContratos.map((arq, idx) => (
+                  <option key={idx} value={idx}>
+                    Trocar PDF: {arq.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={() => setModalPdfExpandidoAberto((p) => !p)}
+              style={{
+                width: 'auto',
+                padding: '3px 9px',
+                background: '#312e81',
+                color: '#ffffff',
+                border: '1px solid #6366f1',
+                borderRadius: '5px',
+                fontSize: '10.5px',
+                fontWeight: 800,
+                cursor: 'pointer',
+              }}
+            >
+              {emModalExpandido
+                ? '🗕 Fechar Tela Cheia'
+                : '⛶ Expandir PDF c/ Busca'}
+            </button>
+
+            <a
+              href={srcPdfComPagina}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: '#38bdf8',
+                textDecoration: 'none',
+                fontSize: '11px',
+                fontWeight: 800,
+              }}
+            >
+              ↗️ Nova Guia
+            </a>
+          </div>
+        </div>
+
+        {/* BARRA DE BUSCA INTELIGENTE DENTRO DO PDF */}
+        <div
+          style={{
+            padding: '8px 10px',
+            background: '#1e1b4b',
+            borderBottom: '1px solid #312e81',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div
+              style={{
+                position: 'relative',
+                flex: 1,
+                minWidth: '180px',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              <input
+                ref={emModalExpandido ? undefined : inputBuscaPdfRef}
+                type="text"
+                value={termoBuscaPdf}
+                onChange={(e) => {
+                  setTermoBuscaPdf(e.target.value);
+                  setIndiceOcorrenciaAtiva(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    navegarParaOcorrencia(
+                      e.shiftKey
+                        ? indiceOcorrenciaAtiva - 1
+                        : indiceOcorrenciaAtiva + 1
+                    );
+                  }
+                }}
+                placeholder="🔍 Buscar no PDF (ex: Interno, nº conta, valor, cláusula, CPF)..."
+                style={{
+                  width: '100%',
+                  height: '30px',
+                  fontSize: '11.5px',
+                  fontWeight: 700,
+                  padding: '0 28px 0 10px',
+                  borderRadius: '6px',
+                  border: '1px solid #6366f1',
+                  background: '#ffffff',
+                  color: '#0f172a',
+                }}
+              />
+              {termoBuscaPdf && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTermoBuscaPdf('');
+                    setIndiceOcorrenciaAtiva(0);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    right: '4px',
+                    width: 'auto',
+                    padding: '2px 6px',
+                    background: 'transparent',
+                    color: '#64748b',
+                    border: 'none',
+                    fontSize: '11px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                  }}
+                  title="Limpar busca no PDF"
+                >
+                  ✖
+                </button>
+              )}
+            </div>
+
+            {arquivosContratos.length > 1 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEscopoBuscaPdf((prev) =>
+                    prev === 'TODOS_KIT' ? 'ATUAL_APENAS' : 'TODOS_KIT'
+                  );
+                  setIndiceOcorrenciaAtiva(0);
+                }}
+                style={{
+                  width: 'auto',
+                  height: '30px',
+                  padding: '0 9px',
+                  fontSize: '10.5px',
+                  fontWeight: 800,
+                  borderRadius: '6px',
+                  border: '1px solid #4f46e5',
+                  background:
+                    escopoBuscaPdf === 'TODOS_KIT' ? '#4338ca' : '#1e293b',
+                  color: '#ffffff',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+                title="Alternar entre buscar em todos os PDFs carregados do Kit ou apenas no PDF aberto"
+              >
+                {escopoBuscaPdf === 'TODOS_KIT'
+                  ? `📚 Em Todo o Kit (${arquivosContratos.length})`
+                  : '📄 Só Neste PDF'}
+              </button>
+            )}
+
+            {termoBuscaPdf.trim().length >= 2 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    fontWeight: 900,
+                    padding: '4px 8px',
+                    borderRadius: '5px',
+                    background:
+                      ocorrenciasBuscaPdf.length > 0 ? '#16a34a' : '#dc2626',
+                    color: '#ffffff',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {ocorrenciasBuscaPdf.length > 0
+                    ? `${indiceOcorrenciaAtiva + 1} de ${
+                        ocorrenciasBuscaPdf.length
+                      }`
+                    : '0 achados'}
+                </span>
+
+                {ocorrenciasBuscaPdf.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navegarParaOcorrencia(indiceOcorrenciaAtiva - 1)
+                      }
+                      style={{
+                        width: 'auto',
+                        height: '28px',
+                        padding: '0 8px',
+                        background: '#334155',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '5px',
+                        fontSize: '11px',
+                        fontWeight: 900,
+                        cursor: 'pointer',
+                      }}
+                      title="Ocorrência anterior"
+                    >
+                      ◀
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navegarParaOcorrencia(indiceOcorrenciaAtiva + 1)
+                      }
+                      style={{
+                        width: 'auto',
+                        height: '28px',
+                        padding: '0 8px',
+                        background: '#334155',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '5px',
+                        fontSize: '11px',
+                        fontWeight: 900,
+                        cursor: 'pointer',
+                      }}
+                      title="Próxima ocorrência"
+                    >
+                      ▶
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* CHIPS INTELIGENTES DE ATALHO PARA ALERTAS E CAMPOS CHAVE */}
+          {atalhosBuscaInteligentePdf.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                overflowX: 'auto',
+                paddingBottom: '2px',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '9.5px',
+                  fontWeight: 800,
+                  color: '#a5b4fc',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                ⚡ Localizar Rápido:
+              </span>
+              {atalhosBuscaInteligentePdf.map((chip, idxC) => {
+                const ativo =
+                  termoBuscaPdf.trim().toUpperCase() ===
+                  chip.termo.toUpperCase();
+                const bgChip =
+                  chip.cor === 'erro'
+                    ? ativo
+                      ? '#dc2626'
+                      : '#7f1d1d'
+                    : chip.cor === 'alerta'
+                    ? ativo
+                      ? '#d97706'
+                      : '#78350f'
+                    : ativo
+                    ? '#2563eb'
+                    : '#1e293b';
+
+                return (
+                  <button
+                    key={idxC}
+                    type="button"
+                    onClick={() => acionarBuscaDiretaNoPdf(chip.termo)}
+                    style={{
+                      width: 'auto',
+                      padding: '2px 8px',
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      borderRadius: '12px',
+                      border: ativo
+                        ? '1.5px solid #fde047'
+                        : '1px solid rgba(255,255,255,0.2)',
+                      background: bgChip,
+                      color: '#ffffff',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {chip.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* CARTÃO DE CONTEXTO GRIFADO DA OCORRÊNCIA ATUAL (MOSTRA A PÁGINA EXATA E O TRECHO) */}
+          {ocorrenciaAtualSelecionada && (
+            <div
+              style={{
+                background: '#0f172a',
+                border: '1px solid #f59e0b',
+                borderRadius: '6px',
+                padding: '6px 10px',
+                color: '#f8fafc',
+                fontSize: '11px',
+                lineHeight: 1.4,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '3px',
+                  fontSize: '10px',
+                  color: '#fcd34d',
+                  fontWeight: 800,
+                }}
+              >
+                <span>
+                  📍 Encontrado em: <b>{ocorrenciaAtualSelecionada.nomeArquivo}</b>{' '}
+                  — <u>Página {ocorrenciaAtualSelecionada.pagina} de{' '}
+                  {ocorrenciaAtualSelecionada.totalPaginas}</u>
+                </span>
+                <span>(PDF posicionado na Pág. {ocorrenciaAtualSelecionada.pagina})</span>
+              </div>
+              <div style={{ color: '#cbd5e1', wordBreak: 'break-word' }}>
+                {ocorrenciaAtualSelecionada.trechoAntes}
+                <mark
+                  style={{
+                    background: '#fde047',
+                    color: '#0f172a',
+                    fontWeight: 900,
+                    padding: '0 3px',
+                    borderRadius: '3px',
+                  }}
+                >
+                  {ocorrenciaAtualSelecionada.termoEncontrado}
+                </mark>
+                {ocorrenciaAtualSelecionada.trechoDepois}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* VISUALIZADOR COM DESTAQUE DIRETO NO DOCUMENTO (ESTILO CTRL+F) OU IFRAME NATIVO */}
+        {termoBuscaPdf.trim().length >= 2 && modoDestaqueVisualDoc ? (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              background: '#334155',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Sub-barra de controle do Destaque Direto (Zoom e Paginação) */}
+            <div
+              style={{
+                padding: '5px 12px',
+                background: '#0f172a',
+                borderBottom: '1px solid #334155',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '11px',
+                color: '#e2e8f0',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ color: '#fde047', fontWeight: 900 }}>
+                  🎯 Grifo Direto no Documento ({retangulosGrifoPag.length}{' '}
+                  marcação(ões) na Pág. {paginaPdfAlvo})
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPaginaPdfAlvo((p) => Math.max(1, p - 1))
+                  }
+                  style={{
+                    width: 'auto',
+                    padding: '2px 7px',
+                    background: '#1e293b',
+                    color: '#fff',
+                    border: '1px solid #475569',
+                    borderRadius: '4px',
+                    fontSize: '10px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ◀ Pág. Ant.
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaginaPdfAlvo((p) => p + 1)}
+                  style={{
+                    width: 'auto',
+                    padding: '2px 7px',
+                    background: '#1e293b',
+                    color: '#fff',
+                    border: '1px solid #475569',
+                    borderRadius: '4px',
+                    fontSize: '10px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Próx. Pág. ▶
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setZoomPdfDestaque((z) => Math.max(0.75, +(z - 0.2).toFixed(2)))
+                  }
+                  style={{
+                    width: 'auto',
+                    padding: '2px 7px',
+                    background: '#1e293b',
+                    color: '#fff',
+                    border: '1px solid #475569',
+                    borderRadius: '4px',
+                    fontSize: '10.5px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ➖
+                </button>
+                <span style={{ fontSize: '10.5px', fontWeight: 800 }}>
+                  {Math.round(zoomPdfDestaque * 100)}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setZoomPdfDestaque((z) => Math.min(2.4, +(z + 0.2).toFixed(2)))
+                  }
+                  style={{
+                    width: 'auto',
+                    padding: '2px 7px',
+                    background: '#1e293b',
+                    color: '#fff',
+                    border: '1px solid #475569',
+                    borderRadius: '4px',
+                    fontSize: '10.5px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ➕
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModoDestaqueVisualDoc(false)}
+                  style={{
+                    width: 'auto',
+                    padding: '2px 8px',
+                    background: '#475569',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    fontSize: '10px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                  }}
+                  title="Voltar para o leitor de PDF nativo do navegador"
+                >
+                  📄 Ver PDF Nativo
+                </button>
+              </div>
+            </div>
+
+            {/* Área de rolagem da folha do PDF com as caixas destacadas em cima do texto */}
+            <div
+              ref={
+                emModalExpandido === modalPdfExpandidoAberto
+                  ? containerScrollPdfBuscaRef
+                  : undefined
+              }
+              style={{
+                flex: 1,
+                overflow: 'auto',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'flex-start',
+                padding: '16px',
+              }}
+            >
+              <div
+                style={{
+                  position: 'relative',
+                  display: 'inline-block',
+                  boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
+                  background: '#ffffff',
+                }}
+              >
+                <canvas
+                  ref={
+                    emModalExpandido === modalPdfExpandidoAberto
+                      ? canvasPdfBuscaRef
+                      : undefined
+                  }
+                  style={{ display: 'block' }}
+                />
+
+                {/* Caixas de destaque (estilo Ctrl+F) posicionadas cirurgicamente sobre o texto do PDF */}
+                {retangulosGrifoPag.map((box, idxBox) => (
+                  <div
+                    key={idxBox}
+                    ref={idxBox === 0 ? marcadorGrifoPrincipalRef : undefined}
+                    style={{
+                      position: 'absolute',
+                      left: `${box.left}px`,
+                      top: `${box.top}px`,
+                      width: `${box.width}px`,
+                      height: `${box.height}px`,
+                      background: 'rgba(250, 204, 21, 0.48)',
+                      border: '2px solid #0284c7',
+                      borderRadius: '3px',
+                      boxShadow: '0 0 0 3px rgba(56, 189, 248, 0.35)',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            {termoBuscaPdf.trim().length >= 2 && !modoDestaqueVisualDoc && (
+              <div
+                style={{
+                  padding: '4px 12px',
+                  background: '#0f172a',
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setModoDestaqueVisualDoc(true)}
+                  style={{
+                    width: 'auto',
+                    padding: '3px 10px',
+                    background: '#f59e0b',
+                    color: '#0f172a',
+                    border: 'none',
+                    borderRadius: '4px',
+                    fontSize: '10.5px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                  }}
+                >
+                  🎯 Ativar Grifo Direto no Documento
+                </button>
+              </div>
+            )}
+            <iframe
+              key={`${urlPdfAtivo}_p${paginaPdfAlvo}`}
+              src={`${srcPdfComPagina}&search=${encodeURIComponent(
+                termoBuscaPdf.trim()
+              )}`}
+              title={arquivoAtivo.name}
+              style={{
+                flex: 1,
+                width: '100%',
+                border: 'none',
+                background: '#334155',
+              }}
+            />
+          </div>
+        )}
+      </section>
+    );
+  };
+
   if (!aberto || typeof document === 'undefined') return null;
 
   return createPortal(
@@ -614,8 +1758,9 @@ export default function TelaConformidadeContratos({
               📝 VERIFICADOR DE CONFORMIDADE DE CONTRATOS E CÉDULAS (PRÉ-CONTRATAÇÃO)
             </h2>
             <span style={{ fontSize: '11.5px', color: '#e0e7ff' }}>
-              Suporta <b>Contratos de Limite (LCGA/LCGH)</b> e{' '}
-              <b>Kit Completo de Operações Derivadas (CCB + Orçamento + Disposições + CET + Anexo CET)</b>.
+              Suporta <b>Contratos de Limite (LCGA/LCGH)</b>,{' '}
+              <b>Operações Derivadas (Kit 5 Docs)</b> e{' '}
+              <b>Renovações de Custeio — Planta Nordeste</b>.
             </span>
           </div>
         </div>
@@ -671,7 +1816,7 @@ export default function TelaConformidadeContratos({
                 color: '#ffffff',
               }}
             >
-              🚜 2. Operações Derivadas (Kit 5 Docs)
+              🚜 2. Derivadas / Renovação Custeio
             </button>
           </div>
 
@@ -723,12 +1868,11 @@ export default function TelaConformidadeContratos({
               fontWeight: 800,
               cursor: 'pointer',
             }}
-            title="Busca automaticamente todos os PDFs de CCB, Orçamento, Disposições, CET, Anexo CET ou LCGA/LCGH na pasta"
+            title="Busca automaticamente todos os PDFs de CCB, Aditivo, Protocolo, Pedido, Orçamento, Disposições, CET ou LCGA/LCGH na pasta"
           >
             📂 Buscar na Pasta
           </button>
 
-          {/* BOTÃO SÊNIOR DE SCRIPT DO COPILOT SEMPRE DISPONÍVEL NO TOPO */}
           <button
             type="button"
             onClick={abrirModalCopilotInteligente}
@@ -744,7 +1888,6 @@ export default function TelaConformidadeContratos({
               cursor: 'pointer',
               boxShadow: '0 4px 10px rgba(2, 132, 199, 0.3)',
             }}
-            title="Gera o Script cirúrgico para o Copilot analisar o documento marcado e importar a resposta de volta"
           >
             🤖 Script Copilot
           </button>
@@ -767,7 +1910,6 @@ export default function TelaConformidadeContratos({
                 cursor: 'pointer',
                 boxShadow: '0 4px 12px rgba(220, 38, 38, 0.45)',
               }}
-              title="Interrompe o OCR imediatamente sem travar a tela"
             >
               🛑 Cancelar OCR
             </button>
@@ -868,7 +2010,7 @@ export default function TelaConformidadeContratos({
                 whiteSpace: 'nowrap',
               }}
             >
-              🌟 Visão Global de Sintonia do Kit ({resultados.length}/5 Docs)
+              🌟 Visão Global de Sintonia do Kit ({resultados.length} Arq.)
             </button>
           )}
 
@@ -892,6 +2034,7 @@ export default function TelaConformidadeContratos({
                 type="button"
                 onClick={() => {
                   setIndicePdfVisualizando(idx);
+                  setPaginaPdfAlvo(1);
                   if (!dossieKitDerivada?.ehKitDerivada) {
                     setIndiceAtivo(idx);
                   }
@@ -913,7 +2056,7 @@ export default function TelaConformidadeContratos({
                   color: selecionado ? '#ffffff' : '#1e293b',
                 }}
               >
-                🔎 {r.tipoInstrumento.replace('_', ' ')} ({r.nomeArquivo})
+                🔎 {r.tipoInstrumento.replace(/_/g, ' ')} ({r.nomeArquivo})
               </button>
             );
           })}
@@ -945,7 +2088,6 @@ export default function TelaConformidadeContratos({
             {progressoMsg || 'Auditando cláusulas e sintonia dos documentos...'}
           </h3>
 
-          {/* BOTÕES DE CANCELAMENTO IMEDIATO DO OCR NA TELA DE CARREGAMENTO */}
           <div
             style={{
               display: 'flex',
@@ -1011,8 +2153,8 @@ export default function TelaConformidadeContratos({
         >
           <div style={{ fontSize: '48px', marginBottom: '12px' }}>📝</div>
           <h3 style={{ margin: 0, color: '#1e293b', fontSize: '18px' }}>
-            Pronto para Auditar Contratos de Limite (LCGA/LCGH) ou Kit de
-            Operações Derivadas (5 Docs)
+            Pronto para Auditar Contratos de Limite (LCGA/LCGH), Derivadas ou
+            Renovação de Custeio
           </h3>
           <p
             style={{
@@ -1023,12 +2165,9 @@ export default function TelaConformidadeContratos({
             }}
           >
             Selecione <b>1 PDF de Limite (LCGA/LCGH)</b>, selecione os{' '}
-            <b>
-              5 PDFs da Operação Derivada (CCB, Anexo-Orçamento, Disposições
-              Gerais, CET e Anexo CET)
-            </b>{' '}
-            ou clique em <b>&ldquo;🤖 Script Copilot&rdquo;</b> para gerar o
-            prompt de auditoria para qualquer documento!
+            <b>PDFs da Operação Derivada / Renovação de Custeio</b> ou clique em{' '}
+            <b>&ldquo;🤖 Script Copilot&rdquo;</b> para gerar o prompt de
+            auditoria!
           </p>
         </div>
       ) : (
@@ -1037,7 +2176,7 @@ export default function TelaConformidadeContratos({
             flex: 1,
             display: 'grid',
             gridTemplateColumns: mostrarPdfLadoALado
-              ? '390px 1fr 1.05fr'
+              ? '380px 1fr 1.12fr'
               : '410px 1fr',
             gap: '14px',
             padding: '14px 20px',
@@ -1087,7 +2226,7 @@ export default function TelaConformidadeContratos({
                   }}
                 >
                   {dossieKitDerivada?.ehKitDerivada
-                    ? 'Sintonia Global do Kit (5 Docs)'
+                    ? 'Sintonia Global do Kit'
                     : 'Veredito da Conformidade'}
                 </span>
                 <span
@@ -1200,7 +2339,7 @@ export default function TelaConformidadeContratos({
                   id: 'tipo',
                   label: '🏛️ Instrumento',
                   valor: dossieKitDerivada?.ehKitDerivada
-                    ? 'KIT CCB + ORÇAMENTO + DISPOSIÇÕES + CET'
+                    ? 'KIT DE OPERAÇÃO DERIVADA / RENOVAÇÃO'
                     : resultadoAtivo.tipoInstrumento,
                 },
                 {
@@ -1224,6 +2363,7 @@ export default function TelaConformidadeContratos({
                   id: 'num',
                   label: '🔢 Nº CCB / Contrato',
                   valor: resultadoAtivo.numeroContratoCedula,
+                  busca: resultadoAtivo.numeroContratoCedula,
                 },
                 {
                   id: 'local_ass',
@@ -1236,6 +2376,7 @@ export default function TelaConformidadeContratos({
                         resultadoAtivo.localAssinaturaFecho ||
                         'DIVERGENTE DE SANTA INES - MA'
                       }`,
+                  busca: 'SANTA IN',
                 },
                 {
                   id: 'rodape_int',
@@ -1243,6 +2384,9 @@ export default function TelaConformidadeContratos({
                   valor: resultadoAtivo.possuiRodapeDocumentoInterno
                     ? `🚨 DETECTADO (${resultadoAtivo.trechoRodapeInternoDetectado}) — REMOVER!`
                     : '✅ Limpo (Sem rodapé interno)',
+                  busca: resultadoAtivo.possuiRodapeDocumentoInterno
+                    ? 'Interno'
+                    : '',
                 },
                 {
                   id: 'val',
@@ -1251,6 +2395,7 @@ export default function TelaConformidadeContratos({
                     ? `R$ ${resultadoAtivo.valorClausulaPrimeira}`
                     : '',
                   copy: resultadoAtivo.valorClausulaPrimeira,
+                  busca: resultadoAtivo.valorClausulaPrimeira,
                 },
                 ...(resultadoAtivo.valorJurosTotaisCet
                   ? [
@@ -1258,6 +2403,7 @@ export default function TelaConformidadeContratos({
                         id: 'juros_tot',
                         label: '📈 Juros Totais / A Pagar',
                         valor: `Juros R$ ${resultadoAtivo.valorJurosTotaisCet} (Total: R$ ${resultadoAtivo.valorTotalAPagarCet})`,
+                        busca: resultadoAtivo.valorJurosTotaisCet,
                       },
                     ]
                   : []),
@@ -1266,14 +2412,17 @@ export default function TelaConformidadeContratos({
                   label: '📊 Juros / CET / Bônus',
                   valor: `${resultadoAtivo.taxaJurosAnual} (${resultadoAtivo.taxaJurosMensal}) • CET: ${resultadoAtivo.cetAnual}${
                     resultadoAtivo.bonusAdimplenciaPerc
-                      ? ` • Bônus: ${resultadoAtivo.bonusAdimplenciaPerc}`
+                      ? ` • ${resultadoAtivo.bonusAdimplenciaPerc}`
                       : ''
                   }`,
                 },
                 {
                   id: 'dt_contr',
-                  label: '📅 Data Contratação',
+                  label: '📅 Data Contratação/Renov.',
                   valor:
+                    resultadoAtivo.dataCelebracaoCabecalho ||
+                    resultadoAtivo.dataCelebracaoFechoAssinatura,
+                  busca:
                     resultadoAtivo.dataCelebracaoCabecalho ||
                     resultadoAtivo.dataCelebracaoFechoAssinatura,
                 },
@@ -1282,8 +2431,13 @@ export default function TelaConformidadeContratos({
                       {
                         id: 'dt_1parc',
                         label: '🗓️ 1ª Parcela Principal',
-                        valor: `${resultadoAtivo.dataPrimeiraParcelaPrincipal} (Carência: ${resultadoAtivo.carenciaAnosCalculada})`,
+                        valor: `${resultadoAtivo.dataPrimeiraParcelaPrincipal}${
+                          resultadoAtivo.carenciaAnosCalculada
+                            ? ` (Carência: ${resultadoAtivo.carenciaAnosCalculada})`
+                            : ''
+                        }`,
                         copy: resultadoAtivo.dataPrimeiraParcelaPrincipal,
+                        busca: resultadoAtivo.dataPrimeiraParcelaPrincipal,
                       },
                     ]
                   : []),
@@ -1292,21 +2446,25 @@ export default function TelaConformidadeContratos({
                   label: '⏳ Vencimento Final',
                   valor: `${resultadoAtivo.dataVencimento} (${resultadoAtivo.prazoAnosCalculado} / ${resultadoAtivo.prazoMesesCalculado}m)`,
                   copy: resultadoAtivo.dataVencimento,
+                  busca: resultadoAtivo.dataVencimento,
                 },
                 {
                   id: 'cred',
                   label: '👤 Emitente / Creditado',
                   valor: resultadoAtivo.creditadoNome,
+                  busca: resultadoAtivo.creditadoNome,
                 },
                 {
                   id: 'cpf_cred',
                   label: '🪪 CPF Emitente',
                   valor: resultadoAtivo.creditadoCpf,
+                  busca: resultadoAtivo.creditadoCpf,
                 },
                 {
                   id: 'rg_cred',
                   label: '🪪 RG / Emissão',
                   valor: `${resultadoAtivo.creditadoRg} (${resultadoAtivo.creditadoRgDataEmissao})`,
+                  busca: resultadoAtivo.creditadoRg,
                 },
                 {
                   id: 'est_civ',
@@ -1325,6 +2483,7 @@ export default function TelaConformidadeContratos({
                         label: '🏦 C/C Livre Mov. / Débito',
                         valor: `${resultadoAtivo.contaCorrenteDebito} (Ag. Santa Inês)`,
                         copy: resultadoAtivo.contaCorrenteDebito,
+                        busca: resultadoAtivo.contaCorrenteDebito,
                       },
                     ]
                   : []),
@@ -1335,11 +2494,13 @@ export default function TelaConformidadeContratos({
                         label: `🏛️ Limite ${resultadoAtivo.tipoLimiteVinculado} Madre`,
                         valor: `Nº ${resultadoAtivo.numeroContratoLimiteVinculado} (${resultadoAtivo.dataEmissaoLimiteVinculado})`,
                         copy: resultadoAtivo.numeroContratoLimiteVinculado,
+                        busca: resultadoAtivo.numeroContratoLimiteVinculado,
                       },
                       {
                         id: 'lcg_uso',
                         label: '📐 Uso / Suficiência LCG',
                         valor: `${resultadoAtivo.percentualUtilizacaoLimiteLcg} (Exige R$ ${resultadoAtivo.valorExigidoNoLimiteLcg} do limite)`,
+                        busca: '125%',
                       },
                     ]
                   : []),
@@ -1350,6 +2511,7 @@ export default function TelaConformidadeContratos({
                         label: '🔒 Conta-Reserva (F. Liq.)',
                         valor: `Nº ${resultadoAtivo.contaReservaNumero} • ${resultadoAtivo.fundoLiquidezPercentual} = R$ ${resultadoAtivo.fundoLiquidezValorReferencia}`,
                         copy: resultadoAtivo.contaReservaNumero,
+                        busca: resultadoAtivo.contaReservaNumero,
                       },
                     ]
                   : []),
@@ -1370,6 +2532,7 @@ export default function TelaConformidadeContratos({
                         } (${resultadoAtivo.imovelBeneficiadoProprietario}) — ${
                           resultadoAtivo.imovelBeneficiadoMunicipioUf
                         }`,
+                        busca: resultadoAtivo.imovelBeneficiadoNome,
                       },
                     ]
                   : []),
@@ -1379,12 +2542,14 @@ export default function TelaConformidadeContratos({
                         id: 'aval_nome',
                         label: '🛡️ Avalista (Garantia)',
                         valor: resultadoAtivo.avalistaNome,
+                        busca: resultadoAtivo.avalistaNome,
                       },
                       {
                         id: 'aval_cpf',
                         label: '🪪 CPF / RG Avalista',
                         valor: `${resultadoAtivo.avalistaCpf} • RG: ${resultadoAtivo.avalistaRg} (${resultadoAtivo.avalistaRgDataEmissao})`,
                         copy: resultadoAtivo.avalistaCpf,
+                        busca: resultadoAtivo.avalistaCpf,
                       },
                       {
                         id: 'aval_est_civ',
@@ -1400,6 +2565,7 @@ export default function TelaConformidadeContratos({
                         label: '📜 Código SIPRA / INCRA',
                         valor: `${resultadoAtivo.anuenciaIncraSipraCodigo} (Lote ${resultadoAtivo.anuenciaIncraLote} • Ativo desde ${resultadoAtivo.anuenciaIncraAtivoDesde})`,
                         copy: resultadoAtivo.anuenciaIncraSipraCodigo,
+                        busca: resultadoAtivo.anuenciaIncraSipraCodigo,
                       },
                     ]
                   : []),
@@ -1407,13 +2573,15 @@ export default function TelaConformidadeContratos({
                   ? [
                       {
                         id: 'conj',
-                        label: '👥 Cônjuge / Outorgante',
+                        label: '👥 Cônjuge / Companheiro(a)',
                         valor: resultadoAtivo.conjugeNome,
+                        busca: resultadoAtivo.conjugeNome,
                       },
                       {
                         id: 'cpf_conj',
                         label: '🪪 CPF Cônjuge',
                         valor: resultadoAtivo.conjugeCpf,
+                        busca: resultadoAtivo.conjugeCpf,
                       },
                     ]
                   : []),
@@ -1423,12 +2591,14 @@ export default function TelaConformidadeContratos({
                         id: 'imovel',
                         label: '🏡 Imóvel da Garantia',
                         valor: `${resultadoAtivo.imoveisGarantia[0].denominacao} (${resultadoAtivo.imoveisGarantia[0].areaHa})`,
+                        busca: resultadoAtivo.imoveisGarantia[0].denominacao,
                       },
                       {
                         id: 'mat',
                         label: '📜 Matrícula / Registro',
                         valor: `Nº ${resultadoAtivo.imoveisGarantia[0].registroMatricula} (${resultadoAtivo.imoveisGarantia[0].livro})`,
                         copy: resultadoAtivo.imoveisGarantia[0].registroMatricula,
+                        busca: resultadoAtivo.imoveisGarantia[0].registroMatricula,
                       },
                       {
                         id: 'onus',
@@ -1462,26 +2632,56 @@ export default function TelaConformidadeContratos({
                     </span>
                   </div>
                   {row.valor && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        copiarTexto(row.id, (row as any).copy || row.valor)
-                      }
+                    <div
                       style={{
-                        width: 'auto',
-                        padding: '1px 5px',
-                        fontSize: '10px',
-                        background:
-                          chaveCopiada === row.id ? '#dcfce7' : '#ffffff',
-                        color: chaveCopiada === row.id ? '#15803d' : '#64748b',
-                        border: '1px solid #cbd5e1',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
+                        display: 'flex',
+                        gap: '3px',
                         flexShrink: 0,
                       }}
                     >
-                      {chaveCopiada === row.id ? '✔' : '📋'}
-                    </button>
+                      {(row as any).busca && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            acionarBuscaDiretaNoPdf((row as any).busca)
+                          }
+                          style={{
+                            width: 'auto',
+                            padding: '1px 5px',
+                            fontSize: '10px',
+                            background: '#eff6ff',
+                            color: '#1d4ed8',
+                            border: '1px solid #bfdbfe',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                          }}
+                          title="Localizar este dado diretamente na página do PDF"
+                        >
+                          🔎
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          copiarTexto(row.id, (row as any).copy || row.valor)
+                        }
+                        style={{
+                          width: 'auto',
+                          padding: '1px 5px',
+                          fontSize: '10px',
+                          background:
+                            chaveCopiada === row.id ? '#dcfce7' : '#ffffff',
+                          color:
+                            chaveCopiada === row.id ? '#15803d' : '#64748b',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                        }}
+                        title="Copiar valor"
+                      >
+                        {chaveCopiada === row.id ? '✔' : '📋'}
+                      </button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -1578,7 +2778,7 @@ export default function TelaConformidadeContratos({
             </div>
           </aside>
 
-          {/* COLUNA 2: CHECKLIST DETALHADO DE AUDITORIA E SINTONIA */}
+          {/* COLUNA 2: CHECKLIST DETALHADO DE AUDITORIA E SINTONIA (COM BOTÃO DE LOCALIZAR NO PDF!) */}
           <main
             style={{
               background: '#ffffff',
@@ -1626,6 +2826,9 @@ export default function TelaConformidadeContratos({
                     ? '#fffbeb'
                     : '#f0fdf4';
 
+                const termosDoCardParaBusca =
+                  extrairTermosDeBuscaDoItemChecklist(item);
+
                 return (
                   <div
                     key={item.id}
@@ -1639,14 +2842,58 @@ export default function TelaConformidadeContratos({
                   >
                     <div
                       style={{
-                        fontSize: '12px',
-                        fontWeight: 900,
-                        color: '#0f172a',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '8px',
+                        flexWrap: 'wrap',
                         marginBottom: '4px',
                       }}
                     >
-                      {item.titulo}
+                      <div
+                        style={{
+                          fontSize: '12px',
+                          fontWeight: 900,
+                          color: '#0f172a',
+                        }}
+                      >
+                        {item.titulo}
+                      </div>
+
+                      {/* BOTÕES DE LOCALIZAÇÃO DIRETA NO PDF PARA ESTE ALERTA/ITEM */}
+                      {termosDoCardParaBusca.length > 0 && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            gap: '4px',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          {termosDoCardParaBusca.map((tBusca, idxB) => (
+                            <button
+                              key={idxB}
+                              type="button"
+                              onClick={() => acionarBuscaDiretaNoPdf(tBusca)}
+                              style={{
+                                width: 'auto',
+                                padding: '2px 8px',
+                                fontSize: '10px',
+                                fontWeight: 800,
+                                borderRadius: '6px',
+                                border: '1px solid #93c5fd',
+                                background: '#eff6ff',
+                                color: '#1e40af',
+                                cursor: 'pointer',
+                              }}
+                              title={`Procurar "${tBusca}" dentro dos PDFs carregados e ir direto para a página`}
+                            >
+                              🔎 Localizar &ldquo;{tBusca}&rdquo; no PDF
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
+
                     <div
                       style={{
                         fontSize: '11.5px',
@@ -1680,56 +2927,44 @@ export default function TelaConformidadeContratos({
             </div>
           </main>
 
-          {/* COLUNA 3: VISUALIZADOR DO PDF LADO A LADO */}
-          {mostrarPdfLadoALado && urlPdfAtivo && arquivoAtivo && (
-            <section
-              style={{
-                background: '#0f172a',
-                borderRadius: '10px',
-                overflow: 'hidden',
-                display: 'flex',
-                flexDirection: 'column',
-                border: '1px solid #334155',
-              }}
-            >
-              <div
-                style={{
-                  padding: '8px 14px',
-                  background: '#1e293b',
-                  color: '#ffffff',
-                  fontSize: '11.5px',
-                  fontWeight: 800,
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                }}
-              >
-                <span>📄 Visualizando: {arquivoAtivo.name}</span>
-                <a
-                  href={urlPdfAtivo}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    color: '#38bdf8',
-                    textDecoration: 'none',
-                    fontSize: '11px',
-                  }}
-                >
-                  ↗️ Abrir em Nova Guia
-                </a>
-              </div>
-              <iframe
-                src={urlPdfAtivo}
-                title={arquivoAtivo.name}
-                style={{
-                  flex: 1,
-                  width: '100%',
-                  border: 'none',
-                  background: '#334155',
-                }}
-              />
-            </section>
-          )}
+          {/* COLUNA 3: VISUALIZADOR DO PDF LADO A LADO COM BUSCA INTELIGENTE */}
+          {mostrarPdfLadoALado &&
+            urlPdfAtivo &&
+            arquivoAtivo &&
+            renderPainelVisualizadorPdfComBusca(false)}
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* MODAL DE PDF EXPANDIDO EM TELA CHEIA COM BUSCA INTELIGENTE          */}
+      {/* =================================================================== */}
+      {modalPdfExpandidoAberto && urlPdfAtivo && arquivoAtivo && (
+        <div
+          onClick={() => setModalPdfExpandidoAberto(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.85)',
+            zIndex: 999990,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '18px',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '96vw',
+              height: '94vh',
+              borderRadius: '12px',
+              overflow: 'hidden',
+              boxShadow: '0 25px 60px rgba(0,0,0,0.65)',
+              border: '2px solid #4f46e5',
+            }}
+          >
+            {renderPainelVisualizadorPdfComBusca(true)}
+          </div>
         </div>
       )}
 
@@ -1765,7 +3000,6 @@ export default function TelaConformidadeContratos({
               overflow: 'hidden',
             }}
           >
-            {/* Cabeçalho do Modal Copilot */}
             <div
               style={{
                 padding: '14px 20px',
@@ -1817,7 +3051,6 @@ export default function TelaConformidadeContratos({
                 gap: '12px',
               }}
             >
-              {/* 1. SELETOR DE QUAL DOCUMENTO O USUÁRIO QUER ANALISAR NO COPILOT */}
               <div
                 style={{
                   background: '#f8fafc',
@@ -1858,11 +3091,11 @@ export default function TelaConformidadeContratos({
                       {
                         id: 'KIT_COMPLETO_5_DOCS',
                         label:
-                          '🌟 Kit Completo Derivada (5 Docs: CCB + Orçamento + Disp. + CET + Anexo CET)',
+                          '🌟 Kit Completo Derivada / Renovação Custeio',
                       },
                       {
                         id: 'CCB_DERIVADA',
-                        label: '📄 Somente CCB (Cédula de Crédito Bancário)',
+                        label: '📄 Somente CCB / Aditivo',
                       },
                       {
                         id: 'ANEXO_ORCAMENTO',
@@ -1942,7 +3175,6 @@ export default function TelaConformidadeContratos({
                 )}
               </div>
 
-              {/* 2. CAIXA DO SCRIPT GERADO PARA COPIAR */}
               <div>
                 <div
                   style={{
@@ -1998,7 +3230,6 @@ export default function TelaConformidadeContratos({
                 />
               </div>
 
-              {/* 3. CAIXA PARA COLAR A RESPOSTA DO COPILOT E ATUALIZAR A CONFORMIDADE */}
               <div
                 style={{
                   background: '#f0fdf4',
