@@ -154,7 +154,13 @@ export default function TelaConformidadeContratos({
                 .join(' ');
               listaPags.push(txtPag);
             }
-            novoMapa[i] = listaPags;
+            const temTextoNaCamadaPdf = listaPags.some(
+              (t) => t.trim().length >= 15
+            );
+            novoMapa[i] =
+              temTextoNaCamadaPdf || !resultados[i]?.textoCompletoExtraido
+                ? listaPags
+                : [resultados[i].textoCompletoExtraido];
           } else if (resultados[i]?.textoCompletoExtraido) {
             novoMapa[i] = [resultados[i].textoCompletoExtraido];
           }
@@ -176,20 +182,28 @@ export default function TelaConformidadeContratos({
     };
   }, [arquivosContratos, resultados]);
 
-  // Calcula todas as ocorrências do termo buscado (com suporte a busca sem acento e salto de página/arquivo)
-  const ocorrenciasBuscaPdf: OcorrenciaBuscaPdf[] = useMemo(() => {
+  // Gera variações equivalentes de busca (ex: "46.550,00" também casa com "46.550.00" no Anexo CET/Orçamento)
+  const gerarVariantesTermoBusca = (termo: string): string[] => {
+    const base = removerAcentos(termo.trim()).toUpperCase();
+    if (!base) return [];
+    const set = new Set<string>([base]);
+    if (/^\d{1,3}(?:\.\d{3})*,\d{2}$/.test(base)) {
+      set.add(base.replace(/,(\d{2})$/, '.$1'));
+    } else if (/^\d{1,3}(?:\.\d{3})*\.\d{2}$/.test(base)) {
+      set.add(base.replace(/\.(\d{2})$/, ',$1'));
+    }
+    return Array.from(set);
+  };
+
+  // Sempre calcula todas as ocorrências em TODOS os PDFs do Kit para exibir o mapa de cruzamento entre documentos
+  const todasOcorrenciasNoKit: OcorrenciaBuscaPdf[] = useMemo(() => {
     const queryLimpa = termoBuscaPdf.trim();
     if (queryLimpa.length < 2) return [];
 
-    const queryNorm = removerAcentos(queryLimpa).toUpperCase();
+    const variantes = gerarVariantesTermoBusca(queryLimpa);
     const listaOcorrencias: OcorrenciaBuscaPdf[] = [];
 
-    const indicesParaVarrer =
-      escopoBuscaPdf === 'ATUAL_APENAS' || arquivosContratos.length <= 1
-        ? [indicePdfVisualizando]
-        : arquivosContratos.map((_, idx) => idx);
-
-    for (const idxArq of indicesParaVarrer) {
+    for (let idxArq = 0; idxArq < arquivosContratos.length; idxArq++) {
       const arq = arquivosContratos[idxArq];
       if (!arq) continue;
       const paginas = paginasTextoPorArquivo[idxArq] || [
@@ -204,11 +218,24 @@ export default function TelaConformidadeContratos({
         let seguranca = 0;
 
         while (posInicial < txtPagNorm.length && seguranca < 40) {
-          const idxMatch = txtPagNorm.indexOf(queryNorm, posInicial);
-          if (idxMatch === -1) break;
+          let melhorIdx = -1;
+          let melhorTam = 0;
 
-          const inicioContexto = Math.max(0, idxMatch - 55);
-          const fimMatch = idxMatch + queryNorm.length;
+          for (const v of variantes) {
+            const idxEncontrado = txtPagNorm.indexOf(v, posInicial);
+            if (
+              idxEncontrado !== -1 &&
+              (melhorIdx === -1 || idxEncontrado < melhorIdx)
+            ) {
+              melhorIdx = idxEncontrado;
+              melhorTam = v.length;
+            }
+          }
+
+          if (melhorIdx === -1) break;
+
+          const inicioContexto = Math.max(0, melhorIdx - 55);
+          const fimMatch = melhorIdx + melhorTam;
           const fimContexto = Math.min(txtPag.length, fimMatch + 65);
 
           listaOcorrencias.push({
@@ -218,8 +245,8 @@ export default function TelaConformidadeContratos({
             totalPaginas: totalPags,
             trechoAntes:
               (inicioContexto > 0 ? '...' : '') +
-              txtPag.substring(inicioContexto, idxMatch),
-            termoEncontrado: txtPag.substring(idxMatch, fimMatch),
+              txtPag.substring(inicioContexto, melhorIdx),
+            termoEncontrado: txtPag.substring(melhorIdx, fimMatch),
             trechoDepois:
               txtPag.substring(fimMatch, fimContexto) +
               (fimContexto < txtPag.length ? '...' : ''),
@@ -234,25 +261,103 @@ export default function TelaConformidadeContratos({
     return listaOcorrencias;
   }, [
     termoBuscaPdf,
-    escopoBuscaPdf,
-    indicePdfVisualizando,
     arquivosContratos,
     paginasTextoPorArquivo,
     resultados,
   ]);
 
+  // Lista filtrada conforme escopo ativo ("Em Todo o Kit" vs "Só Neste PDF")
+  const ocorrenciasBuscaPdf: OcorrenciaBuscaPdf[] = useMemo(() => {
+    if (escopoBuscaPdf === 'ATUAL_APENAS' && arquivosContratos.length > 1) {
+      return todasOcorrenciasNoKit.filter(
+        (o) => o.indiceArquivo === indicePdfVisualizando
+      );
+    }
+    return todasOcorrenciasNoKit;
+  }, [
+    todasOcorrenciasNoKit,
+    escopoBuscaPdf,
+    arquivosContratos.length,
+    indicePdfVisualizando,
+  ]);
+
+  // Mapa de cruzamento: quantas ocorrências do termo existem em CADA PDF carregado
+  const resumoOcorrenciasPorArquivo = useMemo(() => {
+    if (termoBuscaPdf.trim().length < 2) return [];
+    return arquivosContratos.map((arq, idxArq) => {
+      const qtd = todasOcorrenciasNoKit.filter(
+        (o) => o.indiceArquivo === idxArq
+      ).length;
+      const primeiroIdxGlobal = todasOcorrenciasNoKit.findIndex(
+        (o) => o.indiceArquivo === idxArq
+      );
+      return {
+        indiceArquivo: idxArq,
+        nomeArquivo: arq.name,
+        tipoLabel:
+          resultados[idxArq]?.tipoInstrumento?.replace(/_/g, ' ') || 'PDF',
+        totalOcorrencias: qtd,
+        primeiroIdxGlobal,
+      };
+    });
+  }, [termoBuscaPdf, arquivosContratos, todasOcorrenciasNoKit, resultados]);
+
   const ocorrenciaAtualSelecionada =
     ocorrenciasBuscaPdf[indiceOcorrenciaAtiva] || null;
 
-  // Sempre que a ocorrência ativa mudar, direciona automaticamente o leitor de PDF para o arquivo e a página exata!
-  useEffect(() => {
-    if (!ocorrenciaAtualSelecionada) return;
-    if (ocorrenciaAtualSelecionada.indiceArquivo !== indicePdfVisualizando) {
-      setIndicePdfVisualizando(ocorrenciaAtualSelecionada.indiceArquivo);
+  const temOcorrenciaNoPdfAtual = useMemo(
+    () =>
+      todasOcorrenciasNoKit.some(
+        (o) => o.indiceArquivo === indicePdfVisualizando
+      ),
+    [todasOcorrenciasNoKit, indicePdfVisualizando]
+  );
+
+  // Troca de PDF de forma LIVRE (nunca trava nem força volta para o arquivo anterior!):
+  // Se houver busca ativa e o PDF clicado também contiver o termo, já salta para a 1ª ocorrência dentro dele!
+  const selecionarPdfParaVisualizacaoLivre = (idxArq: number) => {
+    setIndicePdfVisualizando(idxArq);
+    if (termoBuscaPdf.trim().length >= 2) {
+      const listaAlvo =
+        escopoBuscaPdf === 'TODOS_KIT'
+          ? todasOcorrenciasNoKit
+          : todasOcorrenciasNoKit.filter((o) => o.indiceArquivo === idxArq);
+      const idxMatchNoDoc = listaAlvo.findIndex(
+        (o) => o.indiceArquivo === idxArq
+      );
+      if (idxMatchNoDoc !== -1) {
+        setIndiceOcorrenciaAtiva(idxMatchNoDoc);
+        setPaginaPdfAlvo(listaAlvo[idxMatchNoDoc].pagina);
+        setModoDestaqueVisualDoc(true);
+        return;
+      }
     }
-    setPaginaPdfAlvo(ocorrenciaAtualSelecionada.pagina);
-    setModoDestaqueVisualDoc(true);
-  }, [ocorrenciaAtualSelecionada, indicePdfVisualizando]);
+    setPaginaPdfAlvo(1);
+  };
+
+  // Quando o termo de busca muda (ou termina de indexar), posiciona na 1ª ocorrência encontrada sem sequestrar cliques manuais futuros
+  const ultimaChaveBuscaRef = useRef('');
+  useEffect(() => {
+    const queryLimpa = termoBuscaPdf.trim();
+    if (queryLimpa.length < 2) {
+      ultimaChaveBuscaRef.current = '';
+      return;
+    }
+    const chaveAtual = `${queryLimpa.toUpperCase()}|${escopoBuscaPdf}|${
+      ocorrenciasBuscaPdf.length
+    }`;
+    if (
+      ocorrenciasBuscaPdf.length > 0 &&
+      ultimaChaveBuscaRef.current !== chaveAtual
+    ) {
+      ultimaChaveBuscaRef.current = chaveAtual;
+      const primeiro = ocorrenciasBuscaPdf[0];
+      setIndiceOcorrenciaAtiva(0);
+      setIndicePdfVisualizando(primeiro.indiceArquivo);
+      setPaginaPdfAlvo(primeiro.pagina);
+      setModoDestaqueVisualDoc(true);
+    }
+  }, [termoBuscaPdf, escopoBuscaPdf, ocorrenciasBuscaPdf]);
 
   // Renderiza a página do PDF no Canvas e desenha o destaque (tipo Ctrl+F) exatamente em cima da palavra no documento!
   useEffect(() => {
@@ -263,6 +368,7 @@ export default function TelaConformidadeContratos({
       !arquivoAtivo ||
       queryLimpa.length < 2 ||
       !modoDestaqueVisualDoc ||
+      !temOcorrenciaNoPdfAtual ||
       (!mostrarPdfLadoALado && !modalPdfExpandidoAberto)
     ) {
       setRetangulosGrifoPag([]);
@@ -298,12 +404,11 @@ export default function TelaConformidadeContratos({
         await page.render({ canvasContext: ctx, viewport }).promise;
         if (cancelado) return;
 
-        // Localiza as coordenadas exatas (X, Y, Largura, Altura) do termo buscado dentro da página
         const content = await page.getTextContent();
         if (cancelado) return;
 
-        const queryNorm = removerAcentos(queryLimpa).toUpperCase();
-        const palavrasQuery = queryNorm
+        const variantesQuery = gerarVariantesTermoBusca(queryLimpa);
+        const palavrasQuery = (variantesQuery[0] || '')
           .split(/\s+/)
           .filter((p) => p.length >= 2);
         const caixas: Array<{
@@ -318,9 +423,17 @@ export default function TelaConformidadeContratos({
           if (!strOrig.trim()) continue;
           const strNorm = removerAcentos(strOrig).toUpperCase();
 
-          // Verifica match da frase completa dentro do token ou de palavras da busca
-          let idxMatch = strNorm.indexOf(queryNorm);
-          let tamMatch = queryNorm.length;
+          let idxMatch = -1;
+          let tamMatch = 0;
+
+          for (const vq of variantesQuery) {
+            const posV = strNorm.indexOf(vq);
+            if (posV !== -1) {
+              idxMatch = posV;
+              tamMatch = vq.length;
+              break;
+            }
+          }
 
           if (idxMatch === -1 && palavrasQuery.length > 1) {
             for (const pal of palavrasQuery) {
@@ -357,7 +470,6 @@ export default function TelaConformidadeContratos({
 
         setRetangulosGrifoPag(caixas);
 
-        // Faz o scroll automático suave para centralizar exatamente o trecho grifado na tela!
         setTimeout(() => {
           marcadorGrifoPrincipalRef.current?.scrollIntoView({
             behavior: 'smooth',
@@ -379,6 +491,7 @@ export default function TelaConformidadeContratos({
     paginaPdfAlvo,
     termoBuscaPdf,
     modoDestaqueVisualDoc,
+    temOcorrenciaNoPdfAtual,
     zoomPdfDestaque,
     indiceOcorrenciaAtiva,
     mostrarPdfLadoALado,
@@ -392,22 +505,28 @@ export default function TelaConformidadeContratos({
     setIndiceOcorrenciaAtiva(idxCircular);
     const alvo = ocorrenciasBuscaPdf[idxCircular];
     if (alvo) {
-      if (alvo.indiceArquivo !== indicePdfVisualizando) {
-        setIndicePdfVisualizando(alvo.indiceArquivo);
-      }
+      setIndicePdfVisualizando(alvo.indiceArquivo);
       setPaginaPdfAlvo(alvo.pagina);
+      setModoDestaqueVisualDoc(true);
     }
   };
 
-  // Dispara uma busca inteligente no PDF (abrindo a coluna lateral do PDF se estiver oculta)
+  // Dispara uma busca inteligente em TODOS os PDFs do Kit (forçando re-navegação mesmo se clicar no mesmo termo)
   const acionarBuscaDiretaNoPdf = (termo: string) => {
     if (!termo || !termo.trim()) return;
+    const limpo = termo.trim();
     if (!mostrarPdfLadoALado && !modalPdfExpandidoAberto) {
       setMostrarPdfLadoALado(true);
     }
     setEscopoBuscaPdf('TODOS_KIT');
-    setTermoBuscaPdf(termo.trim());
-    setIndiceOcorrenciaAtiva(0);
+    if (limpo.toUpperCase() === termoBuscaPdf.trim().toUpperCase()) {
+      // Se clicou de novo no mesmo termo, avança para a próxima correspondência no próximo documento!
+      navegarParaOcorrencia(indiceOcorrenciaAtiva + 1);
+    } else {
+      ultimaChaveBuscaRef.current = '';
+      setTermoBuscaPdf(limpo);
+      setIndiceOcorrenciaAtiva(0);
+    }
     setTimeout(() => {
       inputBuscaPdfRef.current?.focus();
     }, 80);
@@ -923,6 +1042,9 @@ export default function TelaConformidadeContratos({
         gerentesBanco: [],
         testemunhas: [],
         itensChecklist: [],
+        lacunasEmBrancoCcb: [], 
+        fonteRecursosTextoCcb: '', 
+        paginasRodapeInterno: [],
         textoCompletoExtraido: respostaColadaCopilot,
       };
 
@@ -1087,10 +1209,9 @@ export default function TelaConformidadeContratos({
             {arquivosContratos.length > 1 && (
               <select
                 value={indicePdfVisualizando}
-                onChange={(e) => {
-                  setIndicePdfVisualizando(Number(e.target.value));
-                  setPaginaPdfAlvo(1);
-                }}
+                onChange={(e) =>
+                  selecionarPdfParaVisualizacaoLivre(Number(e.target.value))
+                }
                 style={{
                   height: '24px',
                   fontSize: '10.5px',
@@ -1407,6 +1528,96 @@ export default function TelaConformidadeContratos({
             </div>
           )}
 
+          {/* MAPA DE CRUZAMENTO MULTI-DOCUMENTOS: MOSTRA TODOS OS PDFS COM CORRESPONDÊNCIAS PARA SALTO DIRETO */}
+          {resumoOcorrenciasPorArquivo.length > 1 && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                flexWrap: 'wrap',
+                padding: '4px 6px',
+                background: 'rgba(15, 23, 42, 0.7)',
+                borderRadius: '6px',
+                border: '1px solid #312e81',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '9.5px',
+                  fontWeight: 900,
+                  color: '#38bdf8',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                🔀 Cruzar nos Docs:
+              </span>
+              {resumoOcorrenciasPorArquivo.map((docInfo) => {
+                const ehAtual =
+                  docInfo.indiceArquivo === indicePdfVisualizando;
+                const temAchados = docInfo.totalOcorrencias > 0;
+                return (
+                  <button
+                    key={docInfo.indiceArquivo}
+                    type="button"
+                    onClick={() => {
+                      if (temAchados && docInfo.primeiroIdxGlobal !== -1) {
+                        setEscopoBuscaPdf('TODOS_KIT');
+                        // Se já estiver neste documento, avança para a próxima ocorrência dentro dele
+                        const ocorrenciasDesseDoc = todasOcorrenciasNoKit
+                          .map((o, idxG) => ({ o, idxG }))
+                          .filter(
+                            (x) => x.o.indiceArquivo === docInfo.indiceArquivo
+                          );
+                        const posAtualNoDoc = ocorrenciasDesseDoc.findIndex(
+                          (x) => x.idxG === indiceOcorrenciaAtiva
+                        );
+                        const proxNoDoc =
+                          ehAtual && posAtualNoDoc !== -1
+                            ? ocorrenciasDesseDoc[
+                                (posAtualNoDoc + 1) % ocorrenciasDesseDoc.length
+                              ]
+                            : ocorrenciasDesseDoc[0];
+                        if (proxNoDoc) {
+                          navegarParaOcorrencia(proxNoDoc.idxG);
+                          return;
+                        }
+                      }
+                      selecionarPdfParaVisualizacaoLivre(docInfo.indiceArquivo);
+                    }}
+                    style={{
+                      width: 'auto',
+                      padding: '2px 8px',
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      borderRadius: '5px',
+                      cursor: 'pointer',
+                      border: ehAtual
+                        ? '1.5px solid #fde047'
+                        : temAchados
+                        ? '1px solid #22c55e'
+                        : '1px solid #475569',
+                      background: ehAtual
+                        ? '#2563eb'
+                        : temAchados
+                        ? '#14532d'
+                        : '#1e293b',
+                      color: temAchados || ehAtual ? '#ffffff' : '#94a3b8',
+                    }}
+                    title={
+                      temAchados
+                        ? `Ir para as ${docInfo.totalOcorrencias} correspondência(s) em "${docInfo.nomeArquivo}"`
+                        : `Abrir "${docInfo.nomeArquivo}" livremente (0 correspondências)`
+                    }
+                  >
+                    {temAchados ? '✅' : '○'} {docInfo.nomeArquivo} (
+                    {docInfo.totalOcorrencias})
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* CARTÃO DE CONTEXTO GRIFADO DA OCORRÊNCIA ATUAL (MOSTRA A PÁGINA EXATA E O TRECHO) */}
           {ocorrenciaAtualSelecionada && (
             <div
@@ -1458,7 +1669,9 @@ export default function TelaConformidadeContratos({
         </div>
 
         {/* VISUALIZADOR COM DESTAQUE DIRETO NO DOCUMENTO (ESTILO CTRL+F) OU IFRAME NATIVO */}
-        {termoBuscaPdf.trim().length >= 2 && modoDestaqueVisualDoc ? (
+        {termoBuscaPdf.trim().length >= 2 &&
+        modoDestaqueVisualDoc &&
+        temOcorrenciaNoPdfAtual ? (
           <div
             style={{
               flex: 1,
@@ -2033,8 +2246,7 @@ export default function TelaConformidadeContratos({
                 key={idx}
                 type="button"
                 onClick={() => {
-                  setIndicePdfVisualizando(idx);
-                  setPaginaPdfAlvo(1);
+                  selecionarPdfParaVisualizacaoLivre(idx);
                   if (!dossieKitDerivada?.ehKitDerivada) {
                     setIndiceAtivo(idx);
                   }

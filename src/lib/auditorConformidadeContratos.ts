@@ -164,6 +164,9 @@ export interface ResultadoAuditoriaContratoPdf {
   prazoMesesCalculado: string;
   carenciaAnosCalculada: string;
   prazoUtilizacaoPrimeiraParcelaDias: string;
+  lacunasEmBrancoCcb: string[];
+  fonteRecursosTextoCcb: string;
+  paginasRodapeInterno: number[];
   creditadoNome: string;
   creditadoCpf: string;
   creditadoRg: string;
@@ -316,25 +319,122 @@ async function obterTesseractJs(): Promise<any> {
   });
 }
 
+// Remove linhas retas longas (bordas horizontais e verticais de tabelas) e fundos cinza do canvas antes do OCR,
+// evitando que o Tesseract engula linhas estreitas da tabela do Anexo CET sem tocar em nenhuma letra ou dígito.
+function limparGradeTabelaCanvasParaOcr(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number
+) {
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+  const totalPx = width * height;
+  const isDark = new Uint8Array(totalPx);
+
+  // 1. Mapeia pixels escuros e clareia fundos cinza de cabeçalho para branco puro
+  for (let i = 0; i < totalPx; i++) {
+    const off = i * 4;
+    const lum =
+      data[off] * 0.299 + data[off + 1] * 0.587 + data[off + 2] * 0.114;
+    if (lum < 140) {
+      isDark[i] = 1;
+    } else if (lum > 155) {
+      data[off] = 255;
+      data[off + 1] = 255;
+      data[off + 2] = 255;
+    }
+  }
+
+  const remover = new Uint8Array(totalPx);
+  const minRunLinha = 55; // Maior que qualquer traço de letra/dígito, menor que qualquer borda de célula
+
+  // 2. Detecta bordas horizontais contínuas
+  for (let y = 0; y < height; y++) {
+    const rowOff = y * width;
+    let runStart = -1;
+    for (let x = 0; x <= width; x++) {
+      const dark = x < width && isDark[rowOff + x] === 1;
+      if (dark && runStart === -1) {
+        runStart = x;
+      } else if (!dark && runStart !== -1) {
+        if (x - runStart >= minRunLinha) {
+          for (let rx = runStart; rx < x; rx++) {
+            remover[rowOff + rx] = 1;
+          }
+        }
+        runStart = -1;
+      }
+    }
+  }
+
+  // 3. Detecta bordas verticais contínuas
+  for (let x = 0; x < width; x++) {
+    let runStart = -1;
+    for (let y = 0; y <= height; y++) {
+      const dark = y < height && isDark[y * width + x] === 1;
+      if (dark && runStart === -1) {
+        runStart = y;
+      } else if (!dark && runStart !== -1) {
+        if (y - runStart >= minRunLinha) {
+          for (let ry = runStart; ry < y; ry++) {
+            remover[ry * width + x] = 1;
+          }
+        }
+        runStart = -1;
+      }
+    }
+  }
+
+  // 4. Apaga somente as bordas detectadas
+  for (let i = 0; i < totalPx; i++) {
+    if (remover[i] === 1) {
+      const off = i * 4;
+      data[off] = 255;
+      data[off + 1] = 255;
+      data[off + 2] = 255;
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+}
+
 export async function executarOcrCancelavelContratoPdf(
   file: File,
   onProgresso?: (msg: string) => void,
   controleCancelamento?: ControleCancelamentoOcrContrato,
-  maxPaginas = 25
-): Promise<{ textoOcr: string; foiCancelado: boolean }> {
+  maxPaginas = 25,
+  paginasEspecificas?: number[]
+): Promise<{
+  textoOcr: string;
+  textosPorPagina: Record<number, string>;
+  foiCancelado: boolean;
+}> {
+  const textosPorPagina: Record<number, string> = {};
   try {
     const pdfjsLib = await obterPdfJsLib();
     const Tesseract = await obterTesseractJs();
     if (!pdfjsLib || !Tesseract) {
-      return { textoOcr: '', foiCancelado: false };
+      return { textoOcr: '', textosPorPagina, foiCancelado: false };
     }
 
     const buffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
     const total = Math.min(pdf.numPages || 1, maxPaginas);
+    const listaPaginas =
+      paginasEspecificas && paginasEspecificas.length > 0
+        ? paginasEspecificas.filter((p) => p >= 1 && p <= total)
+        : Array.from({ length: total }, (_, idx) => idx + 1);
+
     const textosPaginas: string[] = [];
 
     const worker = await Tesseract.createWorker('por');
+    try {
+      // PSM 6 (SINGLE_BLOCK): força leitura sequencial de todas as linhas da tabela sem descartar linhas como "gráfico"
+      await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    } catch {
+      // Mantém padrão se a versão do worker não aceitar o parâmetro
+    }
+
     if (controleCancelamento) {
       controleCancelamento.terminarWorkerAtivo = async () => {
         try {
@@ -346,26 +446,36 @@ export async function executarOcrCancelavelContratoPdf(
     }
 
     try {
-      for (let p = 1; p <= total; p++) {
+      for (const p of listaPaginas) {
         if (controleCancelamento?.cancelado) {
           return {
             textoOcr: textosPaginas.join('\n\n'),
+            textosPorPagina,
             foiCancelado: true,
           };
         }
 
         onProgresso?.(
-          `🔍 Lendo OCR da página ${p} de ${total} em "${file.name}"...`
+          `🔍 Lendo OCR de alta precisão da página ${p} de ${total} em "${file.name}"...`
         );
 
         const page = await pdf.getPage(p);
-        const viewport = page.getViewport({ scale: 2.0 });
+        const baseVp = page.getViewport({ scale: 1.0 });
+        const escalaIdeal = Math.min(
+          2.8,
+          2500 / Math.max(baseVp.width || 600, baseVp.height || 600)
+        );
+        const viewport = page.getViewport({
+          scale: Math.max(2.2, escalaIdeal),
+        });
         const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) continue;
 
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         await page.render({ canvasContext: ctx, viewport }).promise;
 
         if (controleCancelamento?.cancelado) {
@@ -373,16 +483,22 @@ export async function executarOcrCancelavelContratoPdf(
           canvas.height = 0;
           return {
             textoOcr: textosPaginas.join('\n\n'),
+            textosPorPagina,
             foiCancelado: true,
           };
         }
+
+        // Remove bordas de tabela antes do Tesseract para impedir que linhas sejam engolidas
+        limparGradeTabelaCanvasParaOcr(ctx, canvas.width, canvas.height);
 
         const {
           data: { text },
         } = await worker.recognize(canvas);
 
         if (text && text.trim()) {
-          textosPaginas.push(`[PÁGINA ${p} DE ${total}]\n${text.trim()}`);
+          const bloco = `[PÁGINA ${p} DE ${total}]\n${text.trim()}`;
+          textosPaginas.push(bloco);
+          textosPorPagina[p] = bloco;
         }
 
         canvas.width = 0;
@@ -398,11 +514,13 @@ export async function executarOcrCancelavelContratoPdf(
 
     return {
       textoOcr: textosPaginas.join('\n\n'),
+      textosPorPagina,
       foiCancelado: Boolean(controleCancelamento?.cancelado),
     };
   } catch {
     return {
       textoOcr: '',
+      textosPorPagina,
       foiCancelado: Boolean(controleCancelamento?.cancelado),
     };
   }
@@ -446,10 +564,16 @@ function converterDataBRParaDate(dataBr: string): Date | null {
 }
 
 function normalizarMoedaContrato(valorStr: string): string {
-  const s = (valorStr || '').trim().replace(/^-\s*/, '');
-  const mPontoFinal = s.match(/^(\d{1,3}(?:\.\d{3})*)\.(\d{2})$/);
-  if (mPontoFinal) {
-    return `${mPontoFinal[1]},${mPontoFinal[2]}`;
+  const s = (valorStr || '').trim().replace(/^[−–—-]\s*/, '');
+  const m = s.match(/^(\d[\d.,]*)[.,](\d{2})$/);
+  if (m) {
+    const parteInteiraDigitos = m[1].replace(/[.,]/g, '');
+    const centavos = m[2];
+    const inteiroFormatado = parteInteiraDigitos.replace(
+      /\B(?=(\d{3})+(?!\d))/g,
+      '.'
+    );
+    return `${inteiroFormatado},${centavos}`;
   }
   return s;
 }
@@ -538,17 +662,28 @@ export async function extrairTextoContratoPdf(
         const rawItems = (content.items || []) as Array<any>;
 
         const tokens: Array<{ str: string; x: number; y: number }> = [];
+        const largPagVisivel = viewport.width || 595;
+        const altPagVisivel = viewport.height || 842;
+
         for (const it of rawItems) {
           const s = (it.str || '').trim();
           if (!s) continue;
           const tr = Array.isArray(it.transform)
             ? it.transform
             : [1, 0, 0, 1, 0, 0];
-          tokens.push({
-            str: s,
-            x: Number(tr[4]) || 0,
-            y: Number(tr[5]) || 0,
-          });
+          const px = Number(tr[4]) || 0;
+          const py = Number(tr[5]) || 0;
+          const [vxVis, vyVis] = viewport.convertToViewportPoint(px, py);
+          // Ignora lixo/etiquetas de sigilo fora da área visível recortada (CropBox) da página (seguro para paisagem/rotação)
+          if (
+            vxVis < -15 ||
+            vxVis > largPagVisivel + 15 ||
+            vyVis < -15 ||
+            vyVis > altPagVisivel + 15
+          ) {
+            continue;
+          }
+          tokens.push({ str: s, x: px, y: py });
         }
 
         const txtPagNormal = montarTextoOrdenadoDeTokens(tokens);
@@ -662,8 +797,248 @@ export async function extrairTextoContratoPdf(
           }
         }
 
+        // EXTRAÇÃO GEOMÉTRICA 2D EXCLUSIVA PARA TABELA DO ANEXO CET (FLUXO FINANCEIRO):
+        // 1) Reconstroi células partidas pelo pdf.js (ex: "23/10/" + "2032" ou "7.142" + ",86" ou "-" + "7.286,69")
+        // 2) Separa o bloco esquerdo (DATA + LIBERAÇÕES) do bloco direito (JUROS + PRINCIPAL + PRESTAÇÕES + FLUXO)
+        // 3) Emparelha 1-para-1 na ordem visual (imune a desalinhamento vertical entre esquerda e direita)
+        let blocoGeoCetPag = '';
+        if (
+          textoContemAnexoFluxoCet(normPagUp) &&
+          !normPagUp.includes('ESQUEMA DE DESEMBOLSO') &&
+          !normPagUp.includes('SIMULACAO DE PRESTACOES')
+        ) {
+          // Converte para coordenadas visuais preservando largura estimada para colar fragmentos da mesma célula
+          const tokensVisBrutos = tokens
+            .map((t) => {
+              const [vx, vy] = viewport.convertToViewportPoint(t.x, t.y);
+              const s = t.str.trim();
+              return { str: s, vx, vy, largEst: Math.max(4, s.length * 4.6) };
+            })
+            .sort((a, b) => a.vy - b.vy || a.vx - b.vx);
+
+          // Agrupa tokens na mesma linha visual (|dy| <= 3.5) e junta fragmentos colados (gap <= 7pt)
+          const tokensVis: Array<{ str: string; vx: number; vy: number }> = [];
+          for (const tk of tokensVisBrutos) {
+            const ult = tokensVis[tokensVis.length - 1];
+            if (
+              ult &&
+              Math.abs(ult.vy - tk.vy) <= 2.4 &&
+              tk.vx - (ult.vx + ult.str.length * 4.6) <= 7.5 &&
+              tk.vx > ult.vx + 2
+            ) {
+              const colarSemEspaco =
+                /[\/.,-]$/.test(ult.str) || /^[,./-]/.test(tk.str);
+              ult.str = colarSemEspaco
+                ? `${ult.str}${tk.str}`
+                : `${ult.str} ${tk.str}`;
+            } else {
+              tokensVis.push({ str: tk.str, vx: tk.vx, vy: tk.vy });
+            }
+          }
+
+          const tokTotaisCet = tokensVis.find(
+            (t) =>
+              /\bTOTAIS\b/i.test(t.str) &&
+              !/CUSTOS/i.test(t.str) &&
+              !tokensVis.some(
+                (outro) =>
+                  /CUSTOS/i.test(outro.str) &&
+                  Math.abs(outro.vy - t.vy) <= 6 &&
+                  outro.vx < t.vx
+              )
+          );
+
+          if (tokTotaisCet) {
+            const abaixoTotais = tokensVis.filter(
+              (t) => t.vy > tokTotaisCet.vy + 2
+            );
+            const regexDataInline = /(\d{2}\/\d{2}\/20[234]\d)/;
+            const regexMoedasInline =
+              /[−–—-]?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/g;
+
+            // 1. Coleta TODAS as datas da coluna DATA (lado esquerdo), mesmo se o nº SEQ veio colado ("1 23/10/2030")
+            const datasBrutas: Array<{ data: string; vx: number; vy: number }> =
+              [];
+            for (const t of abaixoTotais) {
+              if (t.vx >= largPagVisivel * 0.42) continue;
+              for (const mDt of t.str.matchAll(/(\d{2}\/\d{2}\/20[234]\d)/g)) {
+                datasBrutas.push({ data: mDt[1], vx: t.vx, vy: t.vy });
+              }
+            }
+            datasBrutas.sort((a, b) => a.vy - b.vy);
+
+            if (datasBrutas.length > 0) {
+              const vxMedData =
+                [...datasBrutas].sort((a, b) => a.vx - b.vx)[
+                  Math.floor(datasBrutas.length / 2)
+                ].vx;
+              const datasColuna = datasBrutas.filter(
+                (d) => Math.abs(d.vx - vxMedData) <= 45
+              );
+
+              // 2. Coleta SOMENTE valores positivos (> 0) da coluna LIBERAÇÕES PREVISTAS
+              // Usa a posição X do cabeçalho "CUSTOS" (quando existir) para não invadir a coluna de Custos/Tarifas (0,00)!
+              const tokCabCustos = tokensVis.find(
+                (t) =>
+                  t.vy < tokTotaisCet.vy &&
+                  t.vy > tokTotaisCet.vy - 90 &&
+                  t.vx > vxMedData + 40 &&
+                  /\bCUSTOS\b/i.test(t.str)
+              );
+              const limiteMaxXLib = tokCabCustos
+                ? tokCabCustos.vx - 4
+                : largPagVisivel * 0.35;
+
+              const valsLibCol: Array<{
+                valor: string;
+                vx: number;
+                vy: number;
+              }> = [];
+              for (const t of abaixoTotais) {
+                if (t.vx <= vxMedData + 10 || t.vx >= limiteMaxXLib) continue;
+                const achados = t.str.match(regexMoedasInline) || [];
+                for (const raw of achados) {
+                  if (!/^[−–—-]/.test(raw)) {
+                    const valNorm = normalizarMoedaContrato(raw);
+                    // Nenhuma liberação prevista pode ser R$ 0,00 (evita capturar zeros ocultos/vazios das linhas de reembolso)
+                    if (parseMoeda(valNorm) > 0.009) {
+                      valsLibCol.push({
+                        valor: valNorm,
+                        vx: t.vx,
+                        vy: t.vy,
+                      });
+                    }
+                  }
+                }
+              }
+              valsLibCol.sort((a, b) => a.vy - b.vy);
+
+              const linhasGeoCet: string[] = [];
+              const datasUsadasEmLib = new Set<(typeof datasColuna)[number]>();
+
+              for (const tokLib of valsLibCol) {
+                let melhorData: (typeof datasColuna)[number] | null = null;
+                let menorDistY = 999;
+                for (const d of datasColuna) {
+                  if (datasUsadasEmLib.has(d)) continue;
+                  const dist = Math.abs(d.vy - tokLib.vy);
+                  if (dist <= 10 && dist < menorDistY) {
+                    menorDistY = dist;
+                    melhorData = d;
+                  }
+                }
+                if (melhorData) {
+                  datasUsadasEmLib.add(melhorData);
+                  linhasGeoCet.push(
+                    `[CET_GEO_LIB: data=${melhorData.data} | valor=${tokLib.valor}]`
+                  );
+                }
+              }
+
+              // 3. Agrupa os valores do bloco direito (JUROS | PRINCIPAL | PRESTAÇÕES | FLUXO) por linha visual
+              const moedasDireita: Array<{
+                raw: string;
+                vx: number;
+                vy: number;
+              }> = [];
+              for (const t of abaixoTotais) {
+                if (t.vx < largPagVisivel * 0.39) continue;
+                const achados = t.str.match(regexMoedasInline) || [];
+                achados.forEach((raw, idxM) => {
+                  moedasDireita.push({
+                    raw,
+                    vx: t.vx + idxM * 10,
+                    vy: t.vy,
+                  });
+                });
+              }
+              moedasDireita.sort((a, b) => a.vy - b.vy || a.vx - b.vx);
+
+              const linhasMoedaDir: Array<{
+                vyMedio: number;
+                itens: typeof moedasDireita;
+              }> = [];
+              for (const tok of moedasDireita) {
+                const lExist = linhasMoedaDir.find(
+                  (l) => Math.abs(l.vyMedio - tok.vy) <= 4.5
+                );
+                if (lExist) {
+                  lExist.itens.push(tok);
+                } else {
+                  linhasMoedaDir.push({ vyMedio: tok.vy, itens: [tok] });
+                }
+              }
+
+              linhasMoedaDir.sort((a, b) => a.vyMedio - b.vyMedio);
+              const linhasReembDir = linhasMoedaDir.filter((l) => {
+                l.itens.sort((a, b) => a.vx - b.vx);
+                const temNeg = l.itens.some((it) => /^[−–—-]/.test(it.raw));
+                return l.itens.length >= 3 || (temNeg && l.itens.length >= 2);
+              });
+
+              // 4. Emparelha 1-para-1 as datas restantes (reembolsos) com as linhas do bloco direito
+              const datasReemb = datasColuna.filter(
+                (d) => !datasUsadasEmLib.has(d)
+              );
+              const qtdPares = Math.min(
+                datasReemb.length,
+                linhasReembDir.length
+              );
+
+              for (let k = 0; k < qtdPares; k++) {
+                const valsNorm = linhasReembDir[k].itens.map((it) =>
+                  normalizarMoedaContrato(it.raw)
+                );
+
+                let vJuros = '';
+                let vPrinc = '';
+                let vPrest = '';
+
+                let achouSoma = false;
+                for (let idx = 0; idx <= valsNorm.length - 3; idx++) {
+                  const jN = parseMoeda(valsNorm[idx]);
+                  const pN = parseMoeda(valsNorm[idx + 1]);
+                  const tN = parseMoeda(valsNorm[idx + 2]);
+                  if (tN > 0 && Math.abs(jN + pN - tN) <= 0.15) {
+                    vJuros = valsNorm[idx];
+                    vPrinc = valsNorm[idx + 1];
+                    vPrest = valsNorm[idx + 2];
+                    achouSoma = true;
+                    break;
+                  }
+                }
+
+                if (!achouSoma) {
+                  if (valsNorm.length >= 4) {
+                    vJuros = valsNorm[valsNorm.length - 4];
+                    vPrinc = valsNorm[valsNorm.length - 3];
+                    vPrest = valsNorm[valsNorm.length - 2];
+                  } else if (valsNorm.length === 3) {
+                    vJuros = valsNorm[0];
+                    vPrinc = valsNorm[1];
+                    vPrest = valsNorm[2];
+                  } else {
+                    vPrinc = valsNorm[0];
+                    vPrest = valsNorm[1];
+                  }
+                }
+
+                linhasGeoCet.push(
+                  `[CET_GEO_PARC: num=${k + 1} | data=${
+                    datasReemb[k].data
+                  } | juros=${vJuros} | principal=${vPrinc} | prestacao=${vPrest}]`
+                );
+              }
+
+              if (linhasGeoCet.length > 0) {
+                blocoGeoCetPag = `\n${linhasGeoCet.join('\n')}`;
+              }
+            }
+          }
+        }
+
         paginasTxt.push(
-          `[PÁGINA ${p} DE ${numPaginas}]\n${txtPagNormal}${blocoGeoOrcamentoPag}`
+          `[PÁGINA ${p} DE ${numPaginas}]\n${txtPagNormal}${blocoGeoOrcamentoPag}${blocoGeoCetPag}`
         );
         const parecePaginaDeAssinatura =
           p >= Math.max(1, numPaginas - 4) ||
@@ -692,6 +1067,41 @@ export async function extrairTextoContratoPdf(
           ].join('\n');
 
           paginasAssinaturasColunar.push(blocoPagColunar);
+        }
+      }
+
+      // Se for PDF híbrido (ex: Pág. 1 tem texto nativo e Pág. 2 do Anexo CET é imagem), roda OCR apenas nas páginas-imagem!
+      const paginasImagemFaltantes: number[] = [];
+      paginasTxt.forEach((txtP, idxP) => {
+        const limpoP = txtP
+          .replace(/\[PÁGINA \d+ DE \d+\]/g, '')
+          .replace(/\s+/g, '');
+        if (limpoP.length < 35) {
+          paginasImagemFaltantes.push(idxP + 1);
+        }
+      });
+
+      if (
+        paginasImagemFaltantes.length > 0 &&
+        paginasImagemFaltantes.length < numPaginas &&
+        !controleCancelamento?.cancelado
+      ) {
+        onProgresso?.(
+          `📸 Página(s) em imagem detectada(s) (${paginasImagemFaltantes.join(
+            ', '
+          )}) em "${file.name}". Executando OCR com limpeza de grade...`
+        );
+        const { textosPorPagina } = await executarOcrCancelavelContratoPdf(
+          file,
+          onProgresso,
+          controleCancelamento,
+          numPaginas,
+          paginasImagemFaltantes
+        );
+        for (const pImg of paginasImagemFaltantes) {
+          if (textosPorPagina[pImg]) {
+            paginasTxt[pImg - 1] = textosPorPagina[pImg];
+          }
         }
       }
 
@@ -746,6 +1156,37 @@ export async function extrairTextoContratoPdf(
     usouOcr: false,
     ocrCancelado: false,
   };
+}
+
+// Detecta se o texto contém o quadro de Fluxo Financeiro do Anexo CET (mesmo quando colado na Pág. 2 do CET.pdf
+// ou com cabeçalhos de tabela quebrados em múltiplas linhas pelo pdf.js)
+function textoContemAnexoFluxoCet(textoUp: string): boolean {
+  return (
+    textoUp.includes('SEQ PGT') ||
+    textoUp.includes('LIBERACOES PREVISTAS') ||
+    textoUp.includes('RESULTADO DO FLUXO FINANCEIRO') ||
+    textoUp.includes('MONTANTE LIBERADO') ||
+    textoUp.includes('TOTAL LIBERADO') ||
+    (textoUp.includes('CUSTOS TOTAIS') && textoUp.includes('TOTAL A PAGAR')) ||
+    (textoUp.includes('TIPO DE SIMULACAO') &&
+      textoUp.includes('TOTAL A PAGAR')) ||
+    (textoUp.includes('FLUXO') &&
+      textoUp.includes('FINANCEIRO') &&
+      textoUp.includes('TOTAIS'))
+  );
+}
+
+// Localiza o índice exato da linha "TOTAIS" da tabela de fluxo, ignorando "CUSTOS TOTAIS" do quadro resumo
+function encontrarIndiceLinhaTotaisTabelaFluxo(texto: string): number {
+  const regexTotais = /\bTOTAIS\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = regexTotais.exec(texto)) !== null) {
+    const antes = texto.substring(Math.max(0, m.index - 15), m.index);
+    if (!/CUSTOS\s*$/i.test(antes)) {
+      return m.index;
+    }
+  }
+  return -1;
 }
 
 export function classificarTipoInstrumentoContratual(
@@ -974,36 +1415,67 @@ function extrairEspecieInstrumentoNoDocumento(
   return '';
 }
 
-function detectarRodapeDocumentoInterno(textoBruto: string): {
+function detectarRodapeDocumentoInterno(textoComMarcadoresPaginas: string): {
   possuiRodapeInterno: boolean;
   trechoDetectado: string;
+  paginasEncontradas: number[];
 } {
-  const norm = removerAcentos(textoBruto)
-    .toUpperCase()
-    .replace(/\s+/g, ' ');
-
-  const padroesProibidos = [
+  const padroesEstritosRodape = [
     /ESTE\s+DOCUMENTO\s+ESTA\s+CLASSIFICADO\s+COMO\s*:\s*INTERN[OA]/i,
-    /DOCUMENTO\s+CLASSIFICADO\s+COMO\s*:?\s*INTERN[OA]/i,
-    /CLASSIFICADO\s+COMO\s*:\s*INTERN[OA]/i,
-    /CLASSIFICACAO\s*:\s*INTERN[OA]/i,
-    /INFORMACAO\s+CLASSIFICADA\s+COMO\s+INTERNA/i,
-    /INFORMACAO\s+INTERNA\s*[-–]\s*BNB/i,
-    /USO\s+EXCLUSIVAMENTE\s+INTERNO/i,
-    /#INTERNO\b/i,
+    /DOCUMENTO\s+CLASSIFICADO\s+COMO\s*:\s*INTERN[OA]/i,
+    /CLASSIFICACAO\s+DA\s+INFORMACAO\s*:\s*INTERN[OA]/i,
+    /INFORMACAO\s+CLASSIFICADA\s+COMO\s*:\s*INTERN[OA]/i,
+    /USO\s+EXCLUSIVAMENTE\s+INTERNO\s*[-–]\s*BNB/i,
   ];
 
-  for (const regex of padroesProibidos) {
-    const m = norm.match(regex);
-    if (m) {
-      return {
-        possuiRodapeInterno: true,
-        trechoDetectado: m[0].trim(),
-      };
+  // Quebra por marcador [PÁGINA X DE Y] para apontar a página exata onde o rodapé existe
+  const blocosPaginas = textoComMarcadoresPaginas.split(
+    /\[P[ÁA]GINA\s+(\d+)\s+DE\s+\d+\]/i
+  );
+
+  const paginasEncontradas: number[] = [];
+  let trechoDetectado = '';
+
+  if (blocosPaginas.length > 1) {
+    for (let i = 1; i < blocosPaginas.length; i += 2) {
+      const numPag = Number(blocosPaginas[i]) || 1;
+      const corpoPagNorm = removerAcentos(blocosPaginas[i + 1] || '')
+        .toUpperCase()
+        .replace(/\s+/g, ' ');
+
+      for (const regex of padroesEstritosRodape) {
+        const m = corpoPagNorm.match(regex);
+        if (m) {
+          if (!trechoDetectado) trechoDetectado = m[0].trim();
+          if (!paginasEncontradas.includes(numPag)) {
+            paginasEncontradas.push(numPag);
+          }
+          break;
+        }
+      }
+    }
+  } else {
+    const normGeral = removerAcentos(textoComMarcadoresPaginas)
+      .toUpperCase()
+      .replace(/\s+/g, ' ');
+    for (const regex of padroesEstritosRodape) {
+      const m = normGeral.match(regex);
+      if (m) {
+        trechoDetectado = m[0].trim();
+        paginasEncontradas.push(1);
+        break;
+      }
     }
   }
 
-  return { possuiRodapeInterno: false, trechoDetectado: '' };
+  return {
+    possuiRodapeInterno: paginasEncontradas.length > 0,
+    trechoDetectado:
+      paginasEncontradas.length > 0
+        ? `${trechoDetectado} (Pág. ${paginasEncontradas.join(', ')})`
+        : '',
+    paginasEncontradas,
+  };
 }
 
 function extrairLocalAssinaturaFecho(
@@ -1104,7 +1576,12 @@ function identificarPorteESubprodutoContrato(
     programa = 'PRONAF GRUPO "A" - FNE (PROG. 368)';
   } else if (textoUp.includes('PRONAF A') && textoUp.includes('5.183')) {
     programa = 'PRONAF A - RES. 5.183/24 (PROG. 699)';
-  } else if (textoUp.includes('PRONAF A - FNE') || codSub === '645') {
+  } else if (
+    textoUp.includes('PRONAF A - FNE') ||
+    codSub === '645' ||
+    codSub === '652' ||
+    codSub === '653'
+  ) {
     programa = 'PRONAF A - FNE';
   } else if (textoUp.includes('INVESTIMENTO PRONAF FNE')) {
     programa = 'INVESTIMENTO PRONAF FNE';
@@ -1140,6 +1617,8 @@ function identificarPorteESubprodutoContrato(
 
   if (
     codSub === '645' ||
+    codSub === '652' ||
+    codSub === '653' ||
     textoUp.includes('PRONAF A') ||
     nomeArqUp.includes('PRONAF A')
   ) {
@@ -1242,7 +1721,7 @@ export async function auditarContratoPdfCompleto(params: {
   const tipoInstrumento = classifDoc.tipo;
   const tituloInstrumento = classifDoc.titulo;
 
-  const infoRodapeInterno = detectarRodapeDocumentoInterno(textoLinearBruto);
+  const infoRodapeInterno = detectarRodapeDocumentoInterno(texto);
   const especieInstrumentoVinculado = extrairEspecieInstrumentoNoDocumento(
     textoLinearBruto,
     tipoInstrumento
@@ -1337,19 +1816,26 @@ export async function auditarContratoPdfCompleto(params: {
   const textoCorpoCosturado = textoLinearBruto
     .replace(/\[P[ÁA]GINA\s+\d+\s+DE\s+\d+\]/gi, ' ')
     .replace(/\[P[ÁA]G\s+\d+\]/gi, ' ')
+    .replace(/\[CET_GEO_(?:LIB|PARC):[^\]]+\]/gi, ' ')
     .replace(
-      /Continua[çc][ãa]o\s+do\s+CONTRATO\s+PARTICULAR[\s\S]{1,260}?vencimento\s+em\s+\d{2}\/\d{2}\/20\d{2}\s*\./gi,
+      /Este\s+documento\s+est[áa]\s+classificado\s+como\s*:\s*Intern[oa]/gi,
       ' '
     )
     .replace(
-      /Continua[çc][ãa]o\s+da\s+C[ÉE]DULA\s+DE\s+CR[ÉE]DITO\s+BANC[ÁA]RIO[\s\S]{1,280}?vencimento\s+(?:para|em)\s+(?:\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})\s*\.?/gi,
+      /Continua[çc][ãa]o\s+do\s+CONTRATO\s+PARTICULAR[\s\S]{1,700}?vencimento\s+em\s+\d{2}\/\d{2}\/20\d{2}\s*\.?/gi,
       ' '
     )
     .replace(
-      /Continua[çc][ãa]o\s+do\s+Primeiro\s+aditivo\s+[àa]\s+C[ÉE]DULA\s+DE\s+CR[ÉE]DITO\s+BANC[ÁA]RIO[\s\S]{1,240}?vencimento\s+para\s+(?:\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})\s*\.?/gi,
+      /Continua[çc][ãa]o\s+da\s+C[ÉE]DULA\s+DE\s+CR[ÉE]DITO\s+BANC[ÁA]RIO[\s\S]{1,700}?vencimento\s+(?:para|em)\s+(?:\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})\s*\.?/gi,
+      ' '
+    )
+    .replace(
+      /Continua[çc][ãa]o\s+do\s+Primeiro\s+aditivo\s+[àa]\s+C[ÉE]DULA\s+DE\s+CR[ÉE]DITO\s+BANC[ÁA]RIO[\s\S]{1,700}?vencimento\s+para\s+(?:\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})\s*\.?/gi,
       ' '
     )
     .replace(/P[áa]gina\s+\d+\s+de\s+\d+/gi, ' ')
+    .replace(/[-–—_=]{4,}/g, ' ')
+    .replace(/\bR\s+\$/g, 'R$')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -1460,6 +1946,9 @@ export async function auditarContratoPdfCompleto(params: {
     ) ||
     textoCorpoCosturado.match(
       /([A-ZÀ-Ú]{3,}(?:\s+[A-ZÀ-Ú]{2,}){1,5})\s+Nome\s+do\s+Cliente/i
+    ) ||
+    textoCorpoCosturado.match(
+      /(?:EMITENTE\/CREDITADO|\d{4}\.)\s+([A-ZÀ-Ú]{3,}(?:\s+[A-ZÀ-Ú]{2,}){1,5})\s+CPF:\s*\d{3}\.\d{3}\.\d{3}-\d{2}/i
     );
 
   const creditadoNome =
@@ -1782,6 +2271,66 @@ export async function auditarContratoPdfCompleto(params: {
     ? matchPrazo178[1].trim()
     : '';
 
+  // Extrai o texto exato da cláusula FONTE DE RECURSOS da CCB
+  const matchFonteRec = textoCorpoCosturado.match(
+    /FONTE\s+DE\s+RECURSOS\s*:?\s*([\s\S]{10,260}?)(?:RECURSOS\s+PR[ÓO]PRIOS|DESEMBOLSO|$)/i
+  );
+  const fonteRecursosTextoCcb = matchFonteRec
+    ? matchFonteRec[1].replace(/\s+/g, ' ').trim()
+    : '';
+
+  // AUDITORIA RIGOROSA DE CAMPOS DEIXADOS EM BRANCO NA CCB (ex: CCB da Maria Justina!)
+  const lacunasEmBrancoCcb: string[] = [];
+  if (tipoInstrumento === 'CCB_DERIVADA') {
+    // 1. Cláusula UTILIZAÇÃO DO CRÉDITO sem quantidade de dias ("no prazo de até   dias" ou "Decorrido o prazo de até   dias")
+    const faltaDiasCaput =
+      /no\s+prazo\s+de\s+at[ée]\s+dias\b/i.test(textoCorpoCosturado);
+    const faltaDiasItem1 =
+      /Decorrido\s+o\s+prazo\s+de\s+at[ée]\s+dias\b/i.test(textoCorpoCosturado);
+    if (faltaDiasCaput || faltaDiasItem1) {
+      lacunasEmBrancoCcb.push(
+        `🚨 Cláusula UTILIZAÇÃO DO CRÉDITO (Pág. 2): FALTA informar a quantidade de dias no campo "no prazo de até ___ dias" (ex: 178 dias em Investimento ou 88 dias em Custeio)!`
+      );
+    }
+
+    // 2. Cláusula IMÓVEL(EIS) BENEFICIADO(S) sem nome do imóvel ou sem proprietário ("no imóvel: , de propriedade , situado no Município")
+    const faltaImovelOuProprietario =
+      /no\s+im[óo]vel:\s*,?\s*de\s+propriedade\s*,?\s*situado\s+no\s+Munic[íi]pio/i.test(
+        textoCorpoCosturado
+      ) ||
+      /no\s+im[óo]vel:\s*,?\s*de\s+propriedade\b/i.test(textoCorpoCosturado) ||
+      /de\s+propriedade\s*,?\s*situado\s+no\s+Munic[íi]pio/i.test(
+        textoCorpoCosturado
+      );
+    if (faltaImovelOuProprietario) {
+      lacunasEmBrancoCcb.push(
+        `🚨 Cláusula IMÓVEL(EIS) BENEFICIADO(S) (Pág. 1): FALTA informar o nome do imóvel/P.A. e/ou o proprietário (ex: "PA ..., de propriedade INCRA...")!`
+      );
+    }
+
+    // 3. Cláusula ANUÊNCIA (PRONAF A) com Espelho de Beneficiário Assentado / SIPRA em branco
+    const faltaEspelhoSipraAnuencia =
+      /conforme\s+Espelho\s+de\s+Benefici[áa]rio\s+Assentado\s*:\s*nos\s+termos\s+da\s+Resolu[çc][ãa]o/i.test(
+        textoCorpoCosturado
+      );
+    if (faltaEspelhoSipraAnuencia) {
+      lacunasEmBrancoCcb.push(
+        `🚨 Cláusula ANUÊNCIA INCRA (Pág. 6): FALTA preencher os dados do Espelho de Beneficiário Assentado (Código SIPRA, Assentamento, Lote, CPF e data "Ativo desde")!`
+      );
+    }
+
+    // 4. Cláusula PRÉ-DESEMBOLSO, alínea e) aberta sem nenhum documento listado
+    const faltaDocPreDesembolsoE =
+      /seguinte\s*\(s\)\s*documento\s*\(s\)\s*:\s*UTILIZA[ÇC][ÃA]O\s+DO\s+CR[ÉE]DITO/i.test(
+        textoCorpoCosturado
+      );
+    if (faltaDocPreDesembolsoE) {
+      lacunasEmBrancoCcb.push(
+        `⚠️ Cláusula PRÉ-DESEMBOLSO alínea "e)" (Pág. 2): Campo "seguinte(s) documento(s):" está em branco sem listar as certidões exigidas.`
+      );
+    }
+  }
+
   // Taxa de Juros Efetiva (suporta 0,5% a.a., TCRpré 7,5% a.a. e TRFCpré 8,63% a.a.)
   // Suporta taxas na CCB, no Termo de Confirmação ("Taxa de juros ao ano sem bônus (%): 6,78% a.a.") e na Planilha CET
   const matchTaxaAnualCcb =
@@ -1940,29 +2489,40 @@ export async function auditarContratoPdfCompleto(params: {
     });
   } else {
     const matchBlocoFormaPag = textoCorpoCosturado.match(
-      /FORMA\s+DE\s+PAGAMENTO:[\s\S]{10,120}?esquema\s+de\s+pagamento:\s*([\s\S]{20,1400}?)(?:ASSESSORIA\s+EMPRESARIAL|MANUTEN[ÇC][ÃA]O|$)/i
-    );
+        /FORMA\s+DE\s+PAGAMENTO:[\s\S]{10,200}?esquema\s+de\s+pagamento:\s*([\s\S]{20,4000}?)(?:ASSESSORIA\s+EMPRESARIAL|MANUTEN[ÇC][ÃA]O|Se\s+na\s+data\s+do\s+pagamento|$)/i
+      );
+      if (matchBlocoFormaPag) {
+        const fatiaFormaPagLimpa = matchBlocoFormaPag[1]
+          .replace(
+            /Continua[çc][ãa]o\s+da\s+C[ÉE]DULA[\s\S]{1,700}?20\d{2}\s*\.?/gi,
+            ' '
+          )
+          .replace(/P[áa]gina\s+\d+\s+de\s+\d+/gi, ' ')
+          .replace(/[-–—_=]{3,}/g, ' ')
+          .replace(/\s+/g, ' ');
 
-    if (matchBlocoFormaPag) {
-      const regexParcCcb =
-        /(\d{2}\/\d{2}\/20\d{2})\s*,\s*R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g;
-
-      let mP: RegExpExecArray | null;
-      let seq = 1;
-
-      while ((mP = regexParcCcb.exec(matchBlocoFormaPag[1])) !== null) {
-        parcelasReembolso.push({
-          numero: seq++,
-          dataVencimento: mP[1].trim(),
-          valorPrincipal: mP[2].trim(),
-        });
+        const regexParcCcb =
+          /(\d{2}\/\d{2}\/20\d{2})\s*,?\s*R\s*\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g;
+        let mP: RegExpExecArray | null;
+        let seq = 1;
+        while ((mP = regexParcCcb.exec(fatiaFormaPagLimpa)) !== null) {
+          parcelasReembolso.push({
+            numero: seq++,
+            dataVencimento: mP[1].trim(),
+            valorPrincipal: mP[2].trim(),
+          });
+        }
       }
-    }
   }
-} else if (tipoInstrumento === 'ANEXO_FLUXO_CET') {
+} else if (
+    tipoInstrumento === 'ANEXO_FLUXO_CET' ||
+    (tipoInstrumento === 'PLANILHA_CET' &&
+      textoContemAnexoFluxoCet(corpoSemAcentoUp))
+  ) {
     // Se o PDF tiver mais páginas coladas (ex: Pág. 2 = Planilha Demonstrativa CETCR e Pág. 3 = Simulação de Prestações),
     // corta o texto antes da Planilha Demonstrativa e antes da Simulação de Prestações para ler SOMENTE a tabela do Anexo CET!
-    const idxInicioTotais = textoCorpoCosturado.indexOf('TOTAIS');
+    const idxInicioTotais =
+      encontrarIndiceLinhaTotaisTabelaFluxo(textoCorpoCosturado);
     const textoAposTotais =
       idxInicioTotais !== -1
         ? textoCorpoCosturado.substring(idxInicioTotais)
@@ -1981,75 +2541,251 @@ export async function auditarContratoPdfCompleto(params: {
       (dataCelebracaoCabecalho || '').split('/')[2] || 0
     );
 
-    const regexIniciosParcela =
-      /\b([1-9]\d?)\s*(?:\|\s*)*(\d{2}\/\d{2}\/(20[234]\d))\b/g;
-    const marcadoresParcelas: Array<{
-      num: number;
+    // Normaliza espaços e letras trocadas por OCR nas datas (O->0, I/l->1, Z->2, S->5, B->8) e nos valores decimais
+    const corrigirDigitosOcr = (s: string) =>
+      s
+        .replace(/[Oo]/g, '0')
+        .replace(/[Il|]/g, '1')
+        .replace(/[Zz]/g, '2')
+        .replace(/[Ss]/g, '5')
+        .replace(/B/g, '8');
+
+    const textoTabelaFluxoNorm = textoTabelaFluxo
+      .replace(
+        /([0-3OIlZzSs][0-9OIlZzSsB])\s*[\/.\-]\s*([01OIl][0-9OIlZzSsB])\s*[\/.\-]\s*(2[0O][234][0-9OIlZzSsB])/g,
+        (_, d, m, a) =>
+          `${corrigirDigitosOcr(d)}/${corrigirDigitosOcr(
+            m
+          )}/${corrigirDigitosOcr(a)}`
+      )
+      .replace(/(\d)\s*([.,])\s*(\d{2})\b/g, '$1$2$3');
+
+    const extrairValoresBrutos = (trecho: string): string[] => {
+      const achados: string[] = [];
+      const regexMoedaOcr =
+        /(?:^|[^\d])([−–—-]?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|[−–—-]?\d+[.,]\d{2})(?!\d)/g;
+      let mVal: RegExpExecArray | null;
+      while ((mVal = regexMoedaOcr.exec(trecho)) !== null) {
+        achados.push(mVal[1].trim());
+      }
+      return achados;
+    };
+
+    // 1. Coleta todas as datas da tabela (a partir da 1ª data após a linha TOTAIS)
+    const regexDatasTabela = /(\d{2}\/\d{2}\/(20[234]\d))/g;
+    const todasDatasTabela: Array<{
       data: string;
       ano: number;
       idxInicio: number;
-      idxFimMatch: number;
     }> = [];
-
-    let mIni: RegExpExecArray | null;
-    while ((mIni = regexIniciosParcela.exec(textoTabelaFluxo)) !== null) {
-      const numP = Number(mIni[1]);
-      const dataP = mIni[2].trim();
-      const anoP = Number(mIni[3]);
-
-      // Ignora datas do mesmo ano da contratação (que são liberações e não reembolso de principal)
-      if (anoContratacaoNum > 2000 && anoP <= anoContratacaoNum) {
-        continue;
-      }
-
-      marcadoresParcelas.push({
-        num: numP,
-        data: dataP,
-        ano: anoP,
-        idxInicio: mIni.index,
-        idxFimMatch: mIni.index + mIni[0].length,
+    let mDt: RegExpExecArray | null;
+    while ((mDt = regexDatasTabela.exec(textoTabelaFluxoNorm)) !== null) {
+      todasDatasTabela.push({
+        data: mDt[1].trim(),
+        ano: Number(mDt[2]),
+        idxInicio: mDt.index,
       });
     }
 
-    const numerosParcelaJaLidos = new Set<number>();
+    // Exclui das datas de reembolso qualquer data já identificada como liberação positiva (ex: R$ 360,00 em 2027/2028)
+    const datasLibGeoSet = new Set(
+      [
+        ...textoLinearBruto.matchAll(
+          /\[CET_GEO_LIB:\s*data=(\d{2}\/\d{2}\/20\d{2})\s*\|/gi
+        ),
+      ].map((m) => m[1].trim())
+    );
 
-    for (let i = 0; i < marcadoresParcelas.length; i++) {
-      const atual = marcadoresParcelas[i];
-      if (numerosParcelaJaLidos.has(atual.num)) continue;
-
-      const prox = marcadoresParcelas[i + 1];
-      const fatiaLinha = textoTabelaFluxo.substring(
-        atual.idxFimMatch,
-        prox ? prox.idxInicio : textoTabelaFluxo.length
-      );
-
-      const valoresLinha = (
-        fatiaLinha.match(/-?\d{1,3}(?:\.\d{3})*[.,]\d{2}/g) || []
-      ).map(normalizarMoedaContrato);
-
-      if (valoresLinha.length >= 4) {
-        const valJuros = valoresLinha[valoresLinha.length - 4];
-        const valPrincipal = valoresLinha[valoresLinha.length - 3];
-        const valPrestacao = valoresLinha[valoresLinha.length - 2];
-
-        numerosParcelaJaLidos.add(atual.num);
-        parcelasReembolso.push({
-          numero: atual.num,
-          dataVencimento: atual.data,
-          valorJuros: valJuros,
-          valorPrincipal: valPrincipal,
-          valorPrestacaoTotal: valPrestacao,
-        });
-      } else if (valoresLinha.length === 3) {
-        numerosParcelaJaLidos.add(atual.num);
-        parcelasReembolso.push({
-          numero: atual.num,
-          dataVencimento: atual.data,
-          valorJuros: valoresLinha[0],
-          valorPrincipal: valoresLinha[1],
-          valorPrestacaoTotal: valoresLinha[2],
-        });
+    // Datas de reembolso = datas com ano > ano da contratação que não sejam liberações (deduplicadas na ordem)
+    const datasReembolsoUnicas: string[] = [];
+    const seenDtReemb = new Set<string>();
+    for (const d of todasDatasTabela) {
+      if (anoContratacaoNum > 2000 && d.ano <= anoContratacaoNum) continue;
+      if (datasLibGeoSet.has(d.data)) continue;
+      if (!seenDtReemb.has(d.data)) {
+        seenDtReemb.add(d.data);
+        datasReembolsoUnicas.push(d.data);
       }
+    }
+
+    // 2. Coleta TODOS os valores monetários APÓS o cabeçalho TOTAIS (a partir da 1ª data da tabela)
+    const idxInicioCorpoValores =
+      todasDatasTabela.length > 0 ? todasDatasTabela[0].idxInicio : 0;
+    const valoresAposTotaisBrutos = extrairValoresBrutos(
+      textoTabelaFluxoNorm.substring(idxInicioCorpoValores)
+    );
+    const valoresAposTotais = valoresAposTotaisBrutos.map(
+      normalizarMoedaContrato
+    );
+
+    // 3. Varredura global independente de quebra de linha por trincas matemáticas: Juros + Principal ≈ Prestação
+    const trincasEncontradas: Array<{
+      juros: string;
+      principal: string;
+      prestacao: string;
+    }> = [];
+
+    let posV = 0;
+    while (posV <= valoresAposTotais.length - 3) {
+      const ehNeg0 = /^[−–—-]/.test(valoresAposTotaisBrutos[posV]);
+      const ehNeg1 = /^[−–—-]/.test(valoresAposTotaisBrutos[posV + 1]);
+      const ehNeg2 = /^[−–—-]/.test(valoresAposTotaisBrutos[posV + 2]);
+
+      const jN = parseMoeda(valoresAposTotais[posV]);
+      const pN = parseMoeda(valoresAposTotais[posV + 1]);
+      const tN = parseMoeda(valoresAposTotais[posV + 2]);
+      const proxEhEspelhoNegativo =
+        posV + 3 < valoresAposTotais.length &&
+        /^[−–—-]/.test(valoresAposTotaisBrutos[posV + 3]) &&
+        Math.abs(parseMoeda(valoresAposTotais[posV + 3]) - tN) <= 0.15;
+
+      if (
+        !ehNeg0 &&
+        !ehNeg1 &&
+        !ehNeg2 &&
+        pN > 0 &&
+        tN > 0 &&
+        (jN > 0.009 || proxEhEspelhoNegativo) &&
+        Math.abs(jN + pN - tN) <= 0.15
+      ) {
+        trincasEncontradas.push({
+          juros: valoresAposTotais[posV],
+          principal: valoresAposTotais[posV + 1],
+          prestacao: valoresAposTotais[posV + 2],
+        });
+
+        // Se o próximo valor for o espelho negativo da prestação (-7.286,69), pula os 4 valores da linha
+        const proxEhEspelho =
+          posV + 3 < valoresAposTotais.length &&
+          Math.abs(parseMoeda(valoresAposTotais[posV + 3]) - tN) <= 0.15;
+        posV += proxEhEspelho ? 4 : 3;
+      } else {
+        posV++;
+      }
+    }
+
+    // 4. Caso Especial (Colunas Agrupadas em bloco, como no ANEXO CET do José da Conceição):
+    // Se a varredura sequencial encontrou menos trincas que o nº de datas de reembolso, tenta bloco por coluna de passo N
+    const nDatasReemb = datasReembolsoUnicas.length;
+    if (
+      nDatasReemb >= 2 &&
+      trincasEncontradas.length < nDatasReemb &&
+      valoresAposTotais.length >= nDatasReemb * 3
+    ) {
+      for (
+        let start = 0;
+        start <= valoresAposTotais.length - nDatasReemb * 3;
+        start++
+      ) {
+        let acertosBloco = 0;
+        for (let k = 0; k < nDatasReemb; k++) {
+          const jN = parseMoeda(valoresAposTotais[start + k]);
+          const pN = parseMoeda(valoresAposTotais[start + nDatasReemb + k]);
+          const tN = parseMoeda(
+            valoresAposTotais[start + nDatasReemb * 2 + k]
+          );
+          if (pN > 0 && tN > 0 && Math.abs(jN + pN - tN) <= 0.15) {
+            acertosBloco++;
+          }
+        }
+        if (acertosBloco >= Math.max(2, nDatasReemb - 1)) {
+          trincasEncontradas.length = 0;
+          for (let k = 0; k < nDatasReemb; k++) {
+            trincasEncontradas.push({
+              juros: valoresAposTotais[start + k],
+              principal: valoresAposTotais[start + nDatasReemb + k],
+              prestacao: valoresAposTotais[start + nDatasReemb * 2 + k],
+            });
+          }
+          break;
+        }
+      }
+    }
+
+    // 5. Emparelha Datas × Trincas (se OCR perdeu 1 ou 2 datas mas capturou todas as 7 trincas matemáticas, recompõe a data anual!)
+    if (trincasEncontradas.length > 0) {
+      const mData1aPag1 = textoCorpoCosturado.match(
+        /(?:Data|Previs[ãa]o)\s+de\s+Pagamento\s+da\s+1[ªa]\s+Parcela\s+de\s+Principal\s*(?:\|\s*)?(\d{2}\/\d{2}\/20\d{2})/i
+      );
+      const dataBasePrimeira =
+        datasReembolsoUnicas[0] || mData1aPag1?.[1]?.trim() || '';
+      const mBaseParts = dataBasePrimeira.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+
+      const totalParcelasFinal =
+        datasReembolsoUnicas.length >= trincasEncontradas.length
+          ? trincasEncontradas.length
+          : trincasEncontradas.length;
+
+      for (let k = 0; k < totalParcelasFinal; k++) {
+        let dataFinal = datasReembolsoUnicas[k] || '';
+        if (
+          datasReembolsoUnicas.length < trincasEncontradas.length &&
+          mBaseParts
+        ) {
+          const anoEsperado = Number(mBaseParts[3]) + k;
+          const dtDoAno = datasReembolsoUnicas.find((d) =>
+            d.endsWith(`/${anoEsperado}`)
+          );
+          dataFinal = dtDoAno || `${mBaseParts[1]}/${mBaseParts[2]}/${anoEsperado}`;
+        }
+
+        if (dataFinal) {
+          parcelasReembolso.push({
+            numero: k + 1,
+            dataVencimento: dataFinal,
+            valorJuros: trincasEncontradas[k].juros,
+            valorPrincipal: trincasEncontradas[k].principal,
+            valorPrestacaoTotal: trincasEncontradas[k].prestacao,
+          });
+        }
+      }
+    }
+  }
+
+  // CAMADA 1 (100% PRECISA): Só sobrescreve com a extração geométrica se ela tiver capturado >= parcelas que o motor matemático!
+  if (
+    tipoInstrumento === 'ANEXO_FLUXO_CET' ||
+    (tipoInstrumento === 'PLANILHA_CET' &&
+      textoContemAnexoFluxoCet(corpoSemAcentoUp))
+  ) {
+    const matchesGeoParcCet = [
+      ...textoLinearBruto.matchAll(
+        /\[CET_GEO_PARC:\s*num=(\d+)\s*\|\s*data=(\d{2}\/\d{2}\/20\d{2})\s*\|\s*juros=([^|]*)\|\s*principal=([^|]+)\|\s*prestacao=([^\]]*)\]/gi
+      ),
+    ];
+    const valorAlvoPrincipalCet = parseMoeda(valorClausulaPrimeira);
+    const somaPrincipalGeo = matchesGeoParcCet.reduce(
+      (acc, mGp) => acc + parseMoeda(mGp[4].trim()),
+      0
+    );
+    const somaPrincipalLinear = parcelasReembolso.reduce(
+      (acc, p) => acc + parseMoeda(p.valorPrincipal),
+      0
+    );
+    const geoFechaValorContrato =
+      valorAlvoPrincipalCet > 0 &&
+      Math.abs(somaPrincipalGeo - valorAlvoPrincipalCet) <= 0.15;
+    const linearFechaValorContrato =
+      valorAlvoPrincipalCet > 0 &&
+      Math.abs(somaPrincipalLinear - valorAlvoPrincipalCet) <= 0.15;
+
+    const deveUsarGeoParcelas =
+      matchesGeoParcCet.length > 0 &&
+      (geoFechaValorContrato ||
+        (!linearFechaValorContrato &&
+          matchesGeoParcCet.length >= parcelasReembolso.length));
+
+    if (deveUsarGeoParcelas) {
+      parcelasReembolso.length = 0;
+      matchesGeoParcCet.forEach((mGp, idx) => {
+        parcelasReembolso.push({
+          numero: Number(mGp[1]) || idx + 1,
+          dataVencimento: mGp[2].trim(),
+          valorJuros: mGp[3].trim() || undefined,
+          valorPrincipal: mGp[4].trim(),
+          valorPrestacaoTotal: mGp[5].trim() || undefined,
+        });
+      });
     }
   }
 
@@ -2329,7 +3065,15 @@ export async function auditarContratoPdfCompleto(params: {
     );
     if (mLiq) valorLiquidoContratadoCet = mLiq[1].trim();
     else valorLiquidoContratadoCet = valorClausulaPrimeira;
-  } else if (tipoInstrumento === 'ANEXO_FLUXO_CET') {
+  }
+
+  // Roda a extração da tabela de Fluxo Financeiro (Liberações, Juros Totais e Total a Pagar)
+  // tanto se o PDF for um Anexo CET isolado QUANTO se for um CET.pdf com a Pág. 2 contendo o Anexo CET!
+  if (
+    tipoInstrumento === 'ANEXO_FLUXO_CET' ||
+    (tipoInstrumento === 'PLANILHA_CET' &&
+      textoContemAnexoFluxoCet(corpoSemAcentoUp))
+  ) {
     // Extrai a linha TOTAIS da tabela de fluxo: [Valor Liberado, Custos, Juros, Principal, Prestações]
     const mLinhaTotais = textoCorpoCosturado.match(
       /TOTAIS\s*(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2})\s*(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2})\s*(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2})\s*(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2})\s*(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2})/i
@@ -2355,28 +3099,28 @@ export async function auditarContratoPdfCompleto(params: {
         valorTotalAPagarCet = normalizarMoedaContrato(mTotPagar[1]);
     }
 
-    const idxTotaisFluxo = textoCorpoCosturado.indexOf('TOTAIS');
-    const idxParc1Fluxo = textoCorpoCosturado.search(
-      /\b1\s*(?:\|\s*)*\d{2}\/\d{2}\/20[234]\d/
-    );
-    const idxRodapeIntegrante = textoCorpoCosturado.search(
-      /integrante\s+da\s*\(?o?\)?\s*C[ÉE]DULA/i
-    );
+    const idxTotaisFluxo =
+      encontrarIndiceLinhaTotaisTabelaFluxo(textoCorpoCosturado);
 
     if (idxTotaisFluxo !== -1) {
-      const limiteFimLiberacoes =
-        idxParc1Fluxo !== -1
-          ? idxParc1Fluxo
-          : idxRodapeIntegrante !== -1 && idxRodapeIntegrante > idxTotaisFluxo
-          ? idxRodapeIntegrante
-          : idxTotaisFluxo + 450;
-
-      const trechoLiberacoes = textoCorpoCosturado.substring(
-        idxTotaisFluxo,
-        limiteFimLiberacoes
+      const textoAposTotaisLib = textoCorpoCosturado.substring(idxTotaisFluxo);
+      const mParc1Rel = textoAposTotaisLib.match(
+        /\b1\s*(?:\|\s*)*\d{2}\/\d{2}\/20[234]\d/
       );
+      const mRodapeRel = textoAposTotaisLib.match(
+        /integrante\s+da\s*\(?o?\)?\s*C[ÉE]DULA|Anexo\s+['"]?Planilha\s+Demonstrativa|SIMULA[ÇC][ÃA]O\s+DE/i
+      );
+
+      const limiteRelativo =
+        mParc1Rel && mParc1Rel.index !== undefined
+          ? mParc1Rel.index
+          : mRodapeRel && mRodapeRel.index !== undefined
+          ? mRodapeRel.index
+          : 550;
+
+      const trechoLiberacoes = textoAposTotaisLib.substring(0, limiteRelativo);
       const regexLinhaLib =
-        /(\d{2}\/(\d{2})\/(20\d{2}))\s*(?:\|\s*)*(\d{1,3}(?:\.\d{3})*,\d{2})/g;
+        /(\d{2}\/(\d{2})\/(20\d{2}))\s*(?:\|\s*)*(\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2})/g;
       let mL: RegExpExecArray | null;
       const NOMES_MES_CURTO: Record<string, string> = {
         '01': 'jan',
@@ -2392,15 +3136,69 @@ export async function auditarContratoPdfCompleto(params: {
         '11': 'nov',
         '12': 'dez',
       };
+      const datasReembolsoSet = new Set(
+        parcelasReembolso.map((p) => p.dataVencimento)
+      );
+      const chavesLibJaAdicionadas = new Set<string>();
+
       while ((mL = regexLinhaLib.exec(trechoLiberacoes)) !== null) {
         const dtCompleta = mL[1];
+        if (datasReembolsoSet.has(dtCompleta)) break;
+
         const mesNum = mL[2];
         const anoStr = mL[3];
-        const valLib = mL[4];
+        const valLib = normalizarMoedaContrato(mL[4]);
+        if (parseMoeda(valLib) <= 0.009) continue;
+        const chaveLib = `${dtCompleta}|${valLib}`;
+        if (chavesLibJaAdicionadas.has(chaveLib)) continue;
+        chavesLibJaAdicionadas.add(chaveLib);
+
         liberacoesPrevistas.push({
           dataLiberacao: dtCompleta,
           mesAnoRef: `${NOMES_MES_CURTO[mesNum] || mesNum}/${anoStr}`,
           valorLiberacao: valLib,
+        });
+      }
+    }
+  }
+
+  // CAMADA 1 (100% PRECISA): Se houver liberações extraídas geometricamente do Anexo CET, usa-as com prioridade total!
+  if (
+    tipoInstrumento === 'ANEXO_FLUXO_CET' ||
+    (tipoInstrumento === 'PLANILHA_CET' &&
+      textoContemAnexoFluxoCet(corpoSemAcentoUp))
+  ) {
+    const matchesGeoLibCet = [
+      ...textoLinearBruto.matchAll(
+        /\[CET_GEO_LIB:\s*data=(\d{2})\/(\d{2})\/(20\d{2})\s*\|\s*valor=([^\]]+)\]/gi
+      ),
+    ];
+    if (matchesGeoLibCet.length > 0) {
+      const NOMES_MES_GEO: Record<string, string> = {
+        '01': 'jan',
+        '02': 'fev',
+        '03': 'mar',
+        '04': 'abr',
+        '05': 'mai',
+        '06': 'jun',
+        '07': 'jul',
+        '08': 'ago',
+        '09': 'set',
+        '10': 'out',
+        '11': 'nov',
+        '12': 'dez',
+      };
+      const libsGeoPositivas = matchesGeoLibCet.filter(
+        (mGl) => parseMoeda(mGl[4].trim()) > 0.009
+      );
+      if (libsGeoPositivas.length > 0) {
+        liberacoesPrevistas.length = 0;
+        libsGeoPositivas.forEach((mGl) => {
+          liberacoesPrevistas.push({
+            dataLiberacao: `${mGl[1]}/${mGl[2]}/${mGl[3]}`,
+            mesAnoRef: `${NOMES_MES_GEO[mGl[2]] || mGl[2]}/${mGl[3]}`,
+            valorLiberacao: mGl[4].trim(),
+          });
         });
       }
     }
@@ -2792,6 +3590,9 @@ export async function auditarContratoPdfCompleto(params: {
     prazoMesesCalculado,
     carenciaAnosCalculada,
     prazoUtilizacaoPrimeiraParcelaDias,
+    lacunasEmBrancoCcb, 
+    fonteRecursosTextoCcb, 
+    paginasRodapeInterno: infoRodapeInterno.paginasEncontradas,
     creditadoNome,
     creditadoCpf: qualifCred.cpf,
     creditadoRg: qualifCred.rg,
@@ -3067,16 +3868,26 @@ export function reconstruirChecklistIndividualContrato(
     });
   } else {
     const erroLocalDeriv = !r.localAssinaturaConformeSantaInes;
+    const temLacunaCriticaIndiv = (r.lacunasEmBrancoCcb || []).some((l) =>
+      l.startsWith('🚨')
+    );
 
     itensChecklist.push({
       id: 'CHK_DOC_DERIVADA_CAB',
       categoria: 'CABECALHO_DATAS',
       titulo: `1. Identificação, Espécie Vinculada e Local de Assinatura (${r.tituloInstrumento})`,
       status:
-        !r.numeroContratoCedula || !r.creditadoNome || erroLocalDeriv
+        !r.numeroContratoCedula ||
+        !r.creditadoNome ||
+        erroLocalDeriv ||
+        temLacunaCriticaIndiv
           ? 'ERRO'
+          : (r.lacunasEmBrancoCcb || []).length > 0
+          ? 'ALERTA'
           : 'OK',
-      resumo: erroLocalDeriv
+      resumo: temLacunaCriticaIndiv
+        ? `🚨 CAMPOS EM BRANCO NA CCB (${r.lacunasEmBrancoCcb.length} pendência(s)): Faltam preenchimentos obrigatórios (Imóvel/Proprietário, Prazo de Utilização em dias e/ou Anuência SIPRA)!`
+        : erroLocalDeriv
         ? `🚨 ERRO DE PRAÇA NO LOCAL DE ASSINATURA: Consta "${
             r.localAssinaturaFecho || 'Não identificado'
           }", mas deve ser "SANTA INES - MA"!`
@@ -3088,6 +3899,7 @@ export function reconstruirChecklistIndividualContrato(
             r.dataCelebracaoCabecalho
           }.`,
       detalhes: [
+        ...(r.lacunasEmBrancoCcb || []),
         `🏛️ Espécie / Segmentação no Cabeçalho: "${
           r.especieInstrumentoVinculado || 'CÉDULA DE CRÉDITO BANCÁRIO'
         }"`,
@@ -3619,11 +4431,7 @@ export function expandirPdfCetConsolidadoSeNecessario(
     txtUp.includes('VALOR LIQUIDO CONTRATADO') ||
     txtUp.includes('LOCAL E DATA');
 
-  const contemTituloAnexoFluxo =
-    txtUp.includes('SEQ PGT') ||
-    txtUp.includes('LIBERACOES PREVISTAS') ||
-    txtUp.includes('RESULTADO DO FLUXO FINANCEIRO') ||
-    txtUp.includes('MONTANTE LIBERADO');
+  const contemTituloAnexoFluxo = textoContemAnexoFluxoCet(txtUp);
 
   if (contemTituloPlanilhaCet && contemTituloAnexoFluxo) {
     const infoLocalPagCet = extrairLocalAssinaturaFecho(
@@ -4061,7 +4869,11 @@ export function auditarSintoniaPacoteDerivada(
     let erroLiberacoes = false;
     let avisoDefasagemMesOrcamento = false;
 
-    anexoFluxoCet.liberacoesPrevistas.forEach((lib, idx) => {
+    const liberacoesPositivasCet = anexoFluxoCet.liberacoesPrevistas.filter(
+      (lib) => parseMoeda(lib.valorLiberacao) > 0.009
+    );
+
+    liberacoesPositivasCet.forEach((lib, idx) => {
       const chMesCet = lib.mesAnoRef.toLowerCase().trim();
       const valCetNum = parseMoeda(lib.valorLiberacao);
 
@@ -4126,10 +4938,10 @@ export function auditarSintoniaPacoteDerivada(
             anexoFluxoCet.valorClausulaPrimeira
           }), porém o mês no quadro de Orçamento (${entradasOrcamentoOrdenadas
             .map((e) => e[0].toUpperCase())
-            .join(', ')}) é anterior à data de liberação no Anexo CET (${anexoFluxoCet.liberacoesPrevistas
+            .join(', ')}) é anterior à data de liberação no Anexo CET (${liberacoesPositivasCet
             .map((l) => `${l.dataLiberacao} [${l.mesAnoRef.toUpperCase()}]`)
             .join(', ')}).`
-        : `✅ As ${anexoFluxoCet.liberacoesPrevistas.length} parcelas de liberação batem centavo por centavo e no mesmo mês entre o Anexo-Orçamento e o Anexo CET!`,
+        : `✅ As ${liberacoesPositivasCet.length} parcelas de liberação batem centavo por centavo e no mesmo mês entre o Anexo-Orçamento e o Anexo CET!`,
       detalhes: [
         ...anexoOrcamento.itensOrcamento.map(
           (it) =>
@@ -4158,7 +4970,13 @@ export function auditarSintoniaPacoteDerivada(
     if (parcsCcb.length !== parcsAnexoCet.length) {
       erroReembolso = true;
       detalhesReembolso.push(
-        `🚨 Quantidade de parcelas diverge: CCB tem ${parcsCcb.length} parcelas e Anexo CET tem ${parcsAnexoCet.length}!`
+        `🚨 Quantidade de parcelas diverge: CCB tem ${parcsCcb.length} parcelas e Anexo CET tem ${parcsAnexoCet.length}!`,
+        `   • Datas na CCB (${parcsCcb.length}): ${parcsCcb
+          .map((p) => `${p.dataVencimento} (R$ ${p.valorPrincipal})`)
+          .join(' | ')}`,
+        `   • Datas no Anexo CET (${parcsAnexoCet.length}): ${parcsAnexoCet
+          .map((p) => `${p.dataVencimento} (R$ ${p.valorPrincipal})`)
+          .join(' | ')}`
       );
     } else {
       parcsCcb.forEach((pCcb, idx) => {
@@ -4341,15 +5159,65 @@ export function auditarSintoniaPacoteDerivada(
       ccbOriginalSeparada?.imovelBeneficiadoMunicipioUf ||
       '';
 
+    // Validação específica PRONAF A: Programa 699 (máx R$ 50.000,00 + RES. 5.183/24) vs Programa 368 (máx R$ 55.000,00 + PRONAF GRUPO "A" - FNE)
+    const errosFonteProgramaPronafA: string[] = [];
+    const valCcbNum = parseMoeda(ccb.valorClausulaPrimeira);
+    const fonteUp = removerAcentos(ccb.fonteRecursosTextoCcb || '').toUpperCase();
+    const codSubCcb = ccb.codigoSubprodutoContrato || '';
+
+    const ehPronafA699 =
+      codSubCcb === '645' ||
+      codSubCcb === '652' ||
+      codSubCcb === '653' ||
+      fonteUp.includes('5.183');
+    const ehPronafA368 =
+      codSubCcb === '612' ||
+      fonteUp.includes('GRUPO "A"') ||
+      fonteUp.includes('GRUPO A');
+
+    if (ehPronafA699) {
+      if (!fonteUp.includes('5.183')) {
+        errosFonteProgramaPronafA.push(
+          `🚨 PRONAF A (Programa 699 — Cód. ${codSubCcb}): A cláusula FONTE DE RECURSOS deve citar expressamente "PRONAF A - RES. 5.183/24"!`
+        );
+      }
+      if (valCcbNum > 50000.01) {
+        errosFonteProgramaPronafA.push(
+          `🚨 Teto excedido no PRONAF A Programa 699 (RES. 5.183/24): Valor R$ ${ccb.valorClausulaPrimeira} ultrapassa o limite máximo de R$ 50.000,00!`
+        );
+      }
+    } else if (ehPronafA368) {
+      if (fonteUp.includes('5.183')) {
+        errosFonteProgramaPronafA.push(
+          `⚠️ PRONAF A (Programa 368 — Cód. ${codSubCcb}): Cláusula FONTE DE RECURSOS citou a Res. 5.183/24 (padrão do Prog. 699) em vez de "PRONAF GRUPO 'A' - FNE"!`
+        );
+      }
+      if (valCcbNum > 55000.01) {
+        errosFonteProgramaPronafA.push(
+          `🚨 Teto excedido no PRONAF A Programa 368: Valor R$ ${ccb.valorClausulaPrimeira} ultrapassa o limite máximo de R$ 55.000,00!`
+        );
+      }
+    }
+
+    const temLacunaCriticaCcb = (ccb.lacunasEmBrancoCcb || []).some((l) =>
+      l.startsWith('🚨')
+    );
+
     let statusItem6: StatusItemConformidadeContrato = 'OK';
     if (
+      temLacunaCriticaCcb ||
+      errosFonteProgramaPronafA.length > 0 ||
       (temAvalEmAlgum && (!avalistaPresenteNos3 || avalistaCasadoSemConjuge)) ||
       erroFundoLiquidez ||
       divergenciaContasInternasCcb ||
       divergenciaContaPedidoRenovacao
     ) {
       statusItem6 = 'ERRO';
-    } else if (!ccb.contaCorrenteDebito || !imovelNomeConsolidado) {
+    } else if (
+      (ccb.lacunasEmBrancoCcb || []).length > 0 ||
+      !ccb.contaCorrenteDebito ||
+      !imovelNomeConsolidado
+    ) {
       statusItem6 = 'ALERTA';
     }
 
@@ -4358,8 +5226,13 @@ export function auditarSintoniaPacoteDerivada(
       : ccb.possuiAvalista
       ? '6. Sintonia da Garantia por AVAL, Imóvel Beneficiado e Conta Corrente (CCB/Aditivo × Pedido)'
       : '6. Regras Específicas da CCB (Imóvel Beneficiado, Anuência INCRA/SIPRA, Conta Corrente e Assinaturas)';
+      
 
-    const resumoItem6 = divergenciaContaPedidoRenovacao
+    const resumoItem6 = temLacunaCriticaCcb
+      ? `🚨 CAMPOS EM BRANCO NA CCB (${ccb.lacunasEmBrancoCcb.length} pendência(s)): Faltam preenchimentos obrigatórios (Imóvel/Proprietário, Prazo de Utilização em dias e/ou Anuência SIPRA)!`
+      : errosFonteProgramaPronafA.length > 0
+      ? errosFonteProgramaPronafA[0]
+      : divergenciaContaPedidoRenovacao
       ? `🚨 DIVERGÊNCIA DE CONTA CORRENTE NA RENOVAÇÃO: No 1º Aditivo/CCB a conta é nº ${ccb.contaCorrenteDebito}, mas no Pedido de Renovação (pág. 3, item iii) consta nº ${contaNoPedidoRenov}!`
       : divergenciaContasInternasCcb
       ? `🚨 Divergência de Conta Corrente dentro da CCB: encontradas as contas [${ccb.contasCorrentesCitadasNaCcb.join(
@@ -4392,6 +5265,13 @@ export function auditarSintoniaPacoteDerivada(
       status: statusItem6,
       resumo: resumoItem6,
       detalhes: [
+        ...(ccb.lacunasEmBrancoCcb || []),
+        ...errosFonteProgramaPronafA,
+        ehPronafA699 && errosFonteProgramaPronafA.length === 0
+          ? `✅ Enquadramento PRONAF A — Programa 699 OK: Fonte de Recursos cita "PRONAF A - RES. 5.183/24" e valor (R$ ${ccb.valorClausulaPrimeira}) respeita o teto de R$ 50.000,00.`
+          : ehPronafA368 && errosFonteProgramaPronafA.length === 0
+          ? `✅ Enquadramento PRONAF A — Programa 368 OK: Fonte de Recursos cita "PRONAF GRUPO 'A' - FNE" (sem Res. 5.183/24) e valor (R$ ${ccb.valorClausulaPrimeira}) respeita o teto de R$ 55.000,00.`
+          : '',
         `🏡 Imóvel Beneficiado: ${imovelNomeConsolidado}${
           ccb.imovelBeneficiadoMatriculaCartorio
             ? ` (${ccb.imovelBeneficiadoMatriculaCartorio})`
