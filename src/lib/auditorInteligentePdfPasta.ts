@@ -29,6 +29,19 @@ export interface ItemInversaoExtraidoPdf {
   empreendimento?: string;
 }
 
+export type TipoCarImovel = 'GERAL_PA' | 'ESPECIFICO_LOTE' | 'IMOVEL';
+
+export interface CarExtraidoDaPasta {
+  tipoCar: TipoCarImovel;
+  numeroCar: string;
+  latitude: string;
+  longitude: string;
+  nomeImovel: string;
+  municipioUf: string;
+  areaTotalHa: string;
+  nomeArquivo: string;
+}
+
 export interface ImovelExtraidoProjetoPdf {
   nome: string;
   municipioUf: string;
@@ -36,6 +49,10 @@ export interface ImovelExtraidoProjetoPdf {
   realizaInversao: boolean;
   compoeGarantia: boolean;
   valorAvaliado?: string;
+  tipoCar?: TipoCarImovel;
+  numeroCar?: string;
+  latitude?: string;
+  longitude?: string;
 }
 
 export interface DadosExtraidosProjetoParecer {
@@ -56,6 +73,7 @@ export interface DadosExtraidosProjetoParecer {
   numeroCarImovel?: string;
   latitudeCarImovel?: string;
   longitudeCarImovel?: string;
+  carsExtraidosDaPasta?: CarExtraidoDaPasta[];
   imoveisVinculados: ImovelExtraidoProjetoPdf[];
   imovelAvaliadoAcima600kDetectado: boolean;
   atividadePrincipal: string;
@@ -1730,6 +1748,7 @@ export interface DadosExtraidosReciboCar {
   longitude: string;
   nomeImovel: string;
   municipioUf: string;
+  areaTotalHa?: string;
 }
 
 function formatarCodigoCarComPontos(codigoBruto: string): string {
@@ -1771,6 +1790,7 @@ export function extrairDadosDoReciboCar(
     longitude: '',
     nomeImovel: '',
     municipioUf: '',
+    areaTotalHa: '',
   };
   if (!textoBruto || !textoBruto.trim()) return resultado;
 
@@ -1864,6 +1884,14 @@ export function extrairDadosDoReciboCar(
     resultado.municipioUf = `${mMun[1].trim().toUpperCase()} - ${ufSigla}`;
   }
 
+  // 5. Área Total (ha) do Imóvel Rural (ajuda a distinguir CAR Geral do P.A. vs CAR Específico do Lote)
+  const mAreaCar = linear.match(
+    /[ÁA]rea\s+Total\s*(?:\(ha\))?\s*do\s+Im[óo]vel(?:\s+Rural)?\s*:?\s*(\d{1,3}(?:\.\d{3})*,\d{1,4}|\d+[.,]\d{1,4})/i
+  );
+  if (mAreaCar && mAreaCar[1]) {
+    resultado.areaTotalHa = mAreaCar[1].replace(/\.(?=\d{1,4}$)/, ',').trim();
+  }
+
   return resultado;
 }
 
@@ -1896,6 +1924,7 @@ export async function extrairDadosReciboCarDeArquivoPdf(
         longitude: dados.longitude || dadosOcr.longitude,
         nomeImovel: dados.nomeImovel || dadosOcr.nomeImovel,
         municipioUf: dados.municipioUf || dadosOcr.municipioUf,
+        areaTotalHa: dados.areaTotalHa || dadosOcr.areaTotalHa,
       };
     }
   }
@@ -2096,21 +2125,37 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     }
   }
 
-  // Extrai Nº do CAR, Latitude e Longitude do Recibo do CAR (com Plano B automático via OCR na Pág. 1 se for imagem!)
-  const docCarAlvo = pdfCar || pdfConsultaCar;
-  if (docCarAlvo) {
+  // Extrai TODOS os PDFs de CAR da pasta (CAR Geral do P.A. + CAR Específico do Lote ou múltiplos imóveis)
+  // com Plano B automático via OCR na Página 1 quando o PDF for escaneado/imagem!
+  const todosDocsCarPasta = extraidos.filter(
+    (e) =>
+      !e.isViti &&
+      (e.categoria === 'ITEM_13_CAR' || e.categoria === 'ITEM_13_CONSULTA_CAR')
+  );
+
+  // Prioriza Recibo do CAR (ITEM_13_CAR) antes do Demonstrativo (ITEM_13_CONSULTA_CAR)
+  todosDocsCarPasta.sort((a, b) => {
+    const pesoA = a.categoria === 'ITEM_13_CAR' ? 0 : 1;
+    const pesoB = b.categoria === 'ITEM_13_CAR' ? 0 : 1;
+    return pesoA - pesoB;
+  });
+
+  const mapaCarsPorCodigo = new Map<string, CarExtraidoDaPasta>();
+  const listaCarsSemCodigo: CarExtraidoDaPasta[] = [];
+
+  for (const docCarAtual of todosDocsCarPasta) {
     let dadosCarLidos = extrairDadosDoReciboCar(
-      `${docCarAlvo.textoCompleto}\n${docCarAlvo.textoStreamBruto || ''}`
+      `${docCarAtual.textoCompleto}\n${docCarAtual.textoStreamBruto || ''}`
     );
 
     if (
-      docCarAlvo.ehProvavelEscaneadoImagem ||
+      docCarAtual.ehProvavelEscaneadoImagem ||
       !dadosCarLidos.numeroCar ||
       !dadosCarLidos.latitude ||
       !dadosCarLidos.longitude
     ) {
       const arqCarOriginal = pdfsParaLer.find(
-        (p) => p.nomeOriginal === docCarAlvo.nomeOriginal
+        (p) => p.nomeOriginal === docCarAtual.nomeOriginal
       );
       if (arqCarOriginal) {
         const txtOcrCar = await executarOcrEmPdfEscaneado(
@@ -2119,8 +2164,8 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
           1
         );
         if (txtOcrCar && txtOcrCar.trim().length > 20) {
-          docCarAlvo.textoCompleto = txtOcrCar;
-          docCarAlvo.ehProvavelEscaneadoImagem = false;
+          docCarAtual.textoCompleto = txtOcrCar;
+          docCarAtual.ehProvavelEscaneadoImagem = false;
           const dadosCarOcr = extrairDadosDoReciboCar(txtOcrCar);
           dadosCarLidos = {
             numeroCar: dadosCarLidos.numeroCar || dadosCarOcr.numeroCar,
@@ -2128,25 +2173,146 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
             longitude: dadosCarLidos.longitude || dadosCarOcr.longitude,
             nomeImovel: dadosCarLidos.nomeImovel || dadosCarOcr.nomeImovel,
             municipioUf: dadosCarLidos.municipioUf || dadosCarOcr.municipioUf,
+            areaTotalHa: dadosCarLidos.areaTotalHa || dadosCarOcr.areaTotalHa,
           };
         }
       }
     }
 
-    if (dadosCarLidos.numeroCar) {
-      dadosProjetoParaParecer.numeroCarImovel = dadosCarLidos.numeroCar;
+    if (
+      !dadosCarLidos.numeroCar &&
+      !dadosCarLidos.latitude &&
+      !dadosCarLidos.longitude
+    ) {
+      continue;
     }
-    if (dadosCarLidos.latitude) {
-      dadosProjetoParaParecer.latitudeCarImovel = dadosCarLidos.latitude;
+
+    const chaveNorm = dadosCarLidos.numeroCar
+      .replace(/[^A-Z0-9]/g, '')
+      .toUpperCase();
+
+    const registroBase: CarExtraidoDaPasta = {
+      tipoCar: isPronafA ? 'GERAL_PA' : 'IMOVEL',
+      numeroCar: dadosCarLidos.numeroCar,
+      latitude: dadosCarLidos.latitude,
+      longitude: dadosCarLidos.longitude,
+      nomeImovel: dadosCarLidos.nomeImovel,
+      municipioUf: dadosCarLidos.municipioUf,
+      areaTotalHa: dadosCarLidos.areaTotalHa || '',
+      nomeArquivo: docCarAtual.nomeOriginal,
+    };
+
+    if (chaveNorm) {
+      const existente = mapaCarsPorCodigo.get(chaveNorm);
+      if (existente) {
+        mapaCarsPorCodigo.set(chaveNorm, {
+          ...existente,
+          latitude: existente.latitude || registroBase.latitude,
+          longitude: existente.longitude || registroBase.longitude,
+          nomeImovel: existente.nomeImovel || registroBase.nomeImovel,
+          municipioUf: existente.municipioUf || registroBase.municipioUf,
+          areaTotalHa: existente.areaTotalHa || registroBase.areaTotalHa,
+        });
+      } else {
+        mapaCarsPorCodigo.set(chaveNorm, registroBase);
+      }
+    } else {
+      listaCarsSemCodigo.push(registroBase);
     }
-    if (dadosCarLidos.longitude) {
-      dadosProjetoParaParecer.longitudeCarImovel = dadosCarLidos.longitude;
+  }
+
+  const carsExtraidosDaPasta: CarExtraidoDaPasta[] = [
+    ...Array.from(mapaCarsPorCodigo.values()),
+    ...listaCarsSemCodigo,
+  ];
+
+  // Em PRONAF A, distingue inteligentemente CAR GERAL DO P.A. × CAR ESPECÍFICO DO LOTE
+  if (isPronafA && carsExtraidosDaPasta.length > 0) {
+    const classificarCarPronafA = (c: CarExtraidoDaPasta): TipoCarImovel => {
+      const textoCheck = normalizarSemAcento(
+        `${c.nomeImovel} ${c.nomeArquivo}`
+      );
+      if (
+        /\bESPECIFICO\b/.test(textoCheck) ||
+        /\b(LOTE|SITIO|CHACARA|FAZENDA)\b/.test(textoCheck)
+      ) {
+        if (
+          !/^(?:P\s*A|PROJETO\s+DE\s+ASSENTAMENTO|ASSENTAMENTO)\b/.test(
+            normalizarSemAcento(c.nomeImovel)
+          ) &&
+          !/\bGERAL\b/.test(textoCheck)
+        ) {
+          return 'ESPECIFICO_LOTE';
+        }
+      }
+      if (
+        /\b(P\s*A|PROJETO\s+DE\s+ASSENTAMENTO|ASSENTAMENTO|GERAL|INCRA)\b/.test(
+          textoCheck
+        )
+      ) {
+        return 'GERAL_PA';
+      }
+      return 'GERAL_PA';
+    };
+
+    carsExtraidosDaPasta.forEach((c) => {
+      c.tipoCar = classificarCarPronafA(c);
+    });
+
+    // Desempate por área (ha) se houver 2+ CARs e todos caíram no mesmo tipo: maior área = CAR Geral do P.A., menor = Específico
+    if (carsExtraidosDaPasta.length >= 2) {
+      const todosIguais = carsExtraidosDaPasta.every(
+        (c) => c.tipoCar === carsExtraidosDaPasta[0].tipoCar
+      );
+      if (todosIguais) {
+        const ordenadosPorArea = [...carsExtraidosDaPasta].sort(
+          (a, b) => parseMoeda(b.areaTotalHa) - parseMoeda(a.areaTotalHa)
+        );
+        ordenadosPorArea.forEach((c, idx) => {
+          c.tipoCar = idx === 0 ? 'GERAL_PA' : 'ESPECIFICO_LOTE';
+        });
+      }
     }
-    if (!dadosProjetoParaParecer.denominacaoImovelPa && dadosCarLidos.nomeImovel) {
-      dadosProjetoParaParecer.denominacaoImovelPa = dadosCarLidos.nomeImovel;
+
+    // Ordena sempre CAR GERAL DO P.A. primeiro, seguido do(s) CAR(s) ESPECÍFICO(S)
+    carsExtraidosDaPasta.sort((a, b) => {
+      if (a.tipoCar === b.tipoCar) return 0;
+      return a.tipoCar === 'GERAL_PA' ? -1 : 1;
+    });
+  }
+
+  if (carsExtraidosDaPasta.length > 0) {
+    dadosProjetoParaParecer.carsExtraidosDaPasta = carsExtraidosDaPasta;
+    const carPrincipal = carsExtraidosDaPasta[0];
+    dadosProjetoParaParecer.numeroCarImovel = carPrincipal.numeroCar;
+    dadosProjetoParaParecer.latitudeCarImovel = carPrincipal.latitude;
+    dadosProjetoParaParecer.longitudeCarImovel = carPrincipal.longitude;
+
+    if (
+      !dadosProjetoParaParecer.denominacaoImovelPa &&
+      carPrincipal.nomeImovel
+    ) {
+      dadosProjetoParaParecer.denominacaoImovelPa = carPrincipal.nomeImovel;
     }
-    if (!dadosProjetoParaParecer.municipioImovel && dadosCarLidos.municipioUf) {
-      dadosProjetoParaParecer.municipioImovel = dadosCarLidos.municipioUf;
+    if (!dadosProjetoParaParecer.municipioImovel && carPrincipal.municipioUf) {
+      dadosProjetoParaParecer.municipioImovel = carPrincipal.municipioUf;
+    }
+
+    // Vincula os dados do CAR aos imóveis de inversão em operações não-PRONAF A
+    if (!isPronafA && dadosProjetoParaParecer.imoveisVinculados.length > 0) {
+      dadosProjetoParaParecer.imoveisVinculados.forEach((im, idx) => {
+        const matchCar =
+          carsExtraidosDaPasta.find(
+            (c) =>
+              c.nomeImovel &&
+              textoContemTermoFlexivel(im.nome, c.nomeImovel)
+          ) || (carsExtraidosDaPasta.length === 1 && idx === 0 ? carsExtraidosDaPasta[0] : undefined);
+        if (matchCar) {
+          im.numeroCar = matchCar.numeroCar;
+          im.latitude = matchCar.latitude;
+          im.longitude = matchCar.longitude;
+        }
+      });
     }
   }
 
@@ -2155,7 +2321,7 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     pdfSolicitacaoLim ||
     pdfIdTitular ||
     pdfIdConjuge ||
-    docCarAlvo
+    carsExtraidosDaPasta.length > 0
   ) {
     salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
   }

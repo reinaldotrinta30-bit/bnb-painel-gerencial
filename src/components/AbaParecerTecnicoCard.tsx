@@ -25,6 +25,50 @@ interface ImovelBeneficiadoForm {
   matricula: string;
   cidadeUf: string;
   areaHa: string;
+  tipoCar: 'GERAL_PA' | 'ESPECIFICO_LOTE' | 'IMOVEL';
+  numeroCar: string;
+  latitude: string;
+  longitude: string;
+}
+
+// Separa nomes no padrão "SÍTIO EBENEZIA - PA LAGO DA CARNAUBA" ou "LOTE 02 - P.A BAIANO NOVO"
+function separarNomeLoteEPa(textoBruto: string): {
+  nomeLote: string;
+  nomePa: string;
+} {
+  const limpo = (textoBruto || '').replace(/\s+/g, ' ').trim().toUpperCase();
+  if (!limpo) return { nomeLote: '', nomePa: '' };
+
+  // Padrão 1: "SÍTIO EBENEZIA - PA LAGO DA CARNAUBA"
+  const mLoteAntes = limpo.match(
+    /^(.+?)\s*[-–/]\s*((?:P\.?\s*A\.?|PROJETO\s+DE\s+ASSENTAMENTO|ASSENTAMENTO)\b.*)$/i
+  );
+  if (mLoteAntes) {
+    return {
+      nomeLote: mLoteAntes[1].trim(),
+      nomePa: mLoteAntes[2].trim(),
+    };
+  }
+
+  // Padrão 2: "PA LAGO DA CARNAUBA - SÍTIO EBENEZIA"
+  const mPaAntes = limpo.match(
+    /^((?:P\.?\s*A\.?|PROJETO\s+DE\s+ASSENTAMENTO|ASSENTAMENTO)\s+[^-–/]+?)\s*[-–/]\s*(.+)$/i
+  );
+  if (mPaAntes) {
+    return {
+      nomeLote: mPaAntes[2].trim(),
+      nomePa: mPaAntes[1].trim(),
+    };
+  }
+
+  // Apenas P.A.
+  if (
+    /^(?:P\.?\s*A\.?|PROJETO\s+DE\s+ASSENTAMENTO|ASSENTAMENTO)\b/i.test(limpo)
+  ) {
+    return { nomeLote: '', nomePa: limpo };
+  }
+
+  return { nomeLote: limpo, nomePa: '' };
 }
 
 interface IntervenienteForm {
@@ -359,56 +403,21 @@ export default function AbaParecerTecnicoCard({
       matricula: '',
       cidadeUf: 'PIO XII - MA',
       areaHa: '25',
+      tipoCar: 'GERAL_PA',
+      numeroCar: '',
+      latitude: '',
+      longitude: '',
     },
   ]);
 
-  // Dados do Recibo do CAR (Nº do CAR, Latitude e Longitude) para Parecer PRONAF A
-  const [numeroCarImovel, setNumeroCarImovel] = useState('');
-  const [latitudeCarImovel, setLatitudeCarImovel] = useState('');
-  const [longitudeCarImovel, setLongitudeCarImovel] = useState('');
-  const [lendoCarPdf, setLendoCarPdf] = useState(false);
+  // Controle do leitor de PDF do CAR (Auto / OCR) vinculado individualmente a cada imóvel da lista
+  const [indiceLendoCarPdf, setIndiceLendoCarPdf] = useState<number | null>(null);
   const [msgLeituraCar, setMsgLeituraCar] = useState('');
   const inputCarPdfRef = useRef<HTMLInputElement>(null);
+  const indiceAlvoInputCarRef = useRef<number>(0);
 
   // Enquadramento PLANTA NORDESTE (propostas de Custeio)
   const [enquadrarPlantaNordeste, setEnquadrarPlantaNordeste] = useState(false);
-
-  const handleLerPdfCarDireto = async (file: File) => {
-    setLendoCarPdf(true);
-    setMsgLeituraCar('📄 Lendo Recibo do CAR...');
-    try {
-      const dadosCar = await extrairDadosReciboCarDeArquivoPdf(file, (msg) =>
-        setMsgLeituraCar(msg)
-      );
-      if (dadosCar.numeroCar) setNumeroCarImovel(dadosCar.numeroCar);
-      if (dadosCar.latitude) setLatitudeCarImovel(dadosCar.latitude);
-      if (dadosCar.longitude) setLongitudeCarImovel(dadosCar.longitude);
-      if (dadosCar.nomeImovel || dadosCar.municipioUf) {
-        setImoveisBeneficiados((prev) => [
-          {
-            id: prev[0]?.id || 'ben_1',
-            nome: dadosCar.nomeImovel || prev[0]?.nome || '',
-            matricula: prev[0]?.matricula || '',
-            cidadeUf:
-              dadosCar.municipioUf || prev[0]?.cidadeUf || 'PIO XII - MA',
-            areaHa: prev[0]?.areaHa || '25',
-          },
-          ...prev.slice(1),
-        ]);
-      }
-      setEditouTextoManualmente(false);
-      if (!dadosCar.numeroCar && !dadosCar.latitude && !dadosCar.longitude) {
-        alert(
-          '⚠️ Não foi possível extrair o Nº do CAR ou coordenadas deste PDF. Preencha manualmente nos campos.'
-        );
-      }
-    } catch {
-      alert('❌ Erro ao ler o PDF do CAR.');
-    } finally {
-      setLendoCarPdf(false);
-      setMsgLeituraCar('');
-    }
-  };
 
   const [temGarantiaRealInv, setTemGarantiaRealInv] = useState<'NÃO' | 'SIM'>('NÃO');
   const [imoveisGarantia, setImoveisGarantia] = useState<ImovelGarantiaForm[]>([
@@ -437,6 +446,52 @@ export default function AbaParecerTecnicoCard({
   const editouManualmenteRef = useRef(false);
   const ultimoTextoGeradoRef = useRef('');
   const ultimaChaveContextoRef = useRef('');
+
+  const liberarRegeneracaoAutomatica = () => {
+    editouManualmenteRef.current = false;
+    setEditouTextoManualmente(false);
+  };
+
+  const handleLerPdfCarDiretoParaImovel = async (file: File, idxAlvo: number) => {
+    setIndiceLendoCarPdf(idxAlvo);
+    setMsgLeituraCar('📄 Lendo Recibo do CAR...');
+    try {
+      const dadosCar = await extrairDadosReciboCarDeArquivoPdf(file, (msg) =>
+        setMsgLeituraCar(msg)
+      );
+      setImoveisBeneficiados((prev) =>
+        prev.map((item, idx) => {
+          if (idx !== idxAlvo) return item;
+          const nomeAtualPadrao =
+            !item.nome.trim() ||
+            item.nome.trim().toUpperCase() === 'PA LAGO DA CARNAUBA';
+          return {
+            ...item,
+            nome:
+              nomeAtualPadrao && dadosCar.nomeImovel
+                ? dadosCar.nomeImovel
+                : item.nome,
+            cidadeUf: dadosCar.municipioUf || item.cidadeUf,
+            areaHa: dadosCar.areaTotalHa || item.areaHa,
+            numeroCar: dadosCar.numeroCar || item.numeroCar,
+            latitude: dadosCar.latitude || item.latitude,
+            longitude: dadosCar.longitude || item.longitude,
+          };
+        })
+      );
+      liberarRegeneracaoAutomatica();
+      if (!dadosCar.numeroCar && !dadosCar.latitude && !dadosCar.longitude) {
+        alert(
+          '⚠️ Não foi possível extrair o Nº do CAR ou coordenadas deste PDF. Preencha manualmente nos campos.'
+        );
+      }
+    } catch {
+      alert('❌ Erro ao ler o PDF do CAR.');
+    } finally {
+      setIndiceLendoCarPdf(null);
+      setMsgLeituraCar('');
+    }
+  };
 
   const percMaximoRelacionamento = useMemo(() => {
     return porteCliente.toUpperCase().includes('PRONAF') ? 0.05 : 0.1;
@@ -570,17 +625,6 @@ export default function AbaParecerTecnicoCard({
       setNomeProcurador(dadosPdf.procuradorNomeExtraido);
     }
 
-
-    if (dadosPdf.numeroCarImovel) {
-      setNumeroCarImovel(dadosPdf.numeroCarImovel);
-    }
-    if (dadosPdf.latitudeCarImovel) {
-      setLatitudeCarImovel(dadosPdf.latitudeCarImovel);
-    }
-    if (dadosPdf.longitudeCarImovel) {
-      setLongitudeCarImovel(dadosPdf.longitudeCarImovel);
-    }
-
     // Preenche a lista de itens de inversão separados por vírgula (para o formato do Parecer)
     if (dadosPdf.itensInversao && dadosPdf.itensInversao.length > 0) {
       const textoItensSeparadosPorVirgula = dadosPdf.itensInversao
@@ -592,27 +636,101 @@ export default function AbaParecerTecnicoCard({
       }
     }
 
-    // Preenche a Denominação do Imóvel (P.A.), Município e Área (ha) se extraídos do PDF 12
-    if (
+    const ehPronafAAtual = prtAtual.toUpperCase().includes('PRONAF A');
+    const carsPasta = dadosPdf.carsExtraidosDaPasta || [];
+    const munBase = dadosPdf.municipioImovel
+      ? dadosPdf.municipioImovel.replace('-', ' - ').replace(/\s+/g, ' ')
+      : '';
+    const partesDenom = separarNomeLoteEPa(dadosPdf.denominacaoImovelPa || '');
+
+    if (ehPronafAAtual && carsPasta.length > 0) {
+      const carGeral =
+        carsPasta.find((c) => c.tipoCar === 'GERAL_PA') || carsPasta[0];
+      const carsEspecificos = carsPasta.filter((c) => c !== carGeral);
+
+      const listaMontada: ImovelBeneficiadoForm[] = [
+        {
+          id: 'ben_1',
+          nome:
+            dadosPdf.denominacaoImovelPa ||
+            carGeral.nomeImovel ||
+            'PA LAGO DA CARNAUBA',
+          matricula: '',
+          cidadeUf: munBase || carGeral.municipioUf || 'PIO XII - MA',
+          areaHa: dadosPdf.areaImovelHa || carGeral.areaTotalHa || '25',
+          tipoCar: 'GERAL_PA',
+          numeroCar: carGeral.numeroCar || '',
+          latitude: carGeral.latitude || '',
+          longitude: carGeral.longitude || '',
+        },
+        ...carsEspecificos.map((cEsp, idxEsp) => ({
+          id: `ben_esp_${idxEsp + 1}`,
+          nome:
+            cEsp.nomeImovel ||
+            partesDenom.nomeLote ||
+            `LOTE ESPECÍFICO ${idxEsp + 1}`,
+          matricula: '',
+          cidadeUf: cEsp.municipioUf || munBase || 'PIO XII - MA',
+          areaHa: cEsp.areaTotalHa || dadosPdf.areaImovelHa || '',
+          tipoCar: 'ESPECIFICO_LOTE' as const,
+          numeroCar: cEsp.numeroCar || '',
+          latitude: cEsp.latitude || '',
+          longitude: cEsp.longitude || '',
+        })),
+      ];
+      setImoveisBeneficiados(listaMontada);
+    } else if (!ehPronafAAtual && (dadosPdf.imoveisVinculados || []).length > 0) {
+      const imsInv = dadosPdf.imoveisVinculados.filter(
+        (im) => im.realizaInversao
+      );
+      const baseLista =
+        imsInv.length > 0 ? imsInv : dadosPdf.imoveisVinculados;
+      setImoveisBeneficiados(
+        baseLista.map((im, idx) => ({
+          id: `ben_${idx + 1}`,
+          nome: im.nome,
+          matricula: '',
+          cidadeUf:
+            (im.municipioUf || munBase || 'SANTA INÊS - MA')
+              .replace('-', ' - ')
+              .replace(/\s+/g, ' '),
+          areaHa: im.areaHa || '',
+          tipoCar: 'IMOVEL',
+          numeroCar:
+            im.numeroCar || (idx === 0 ? dadosPdf.numeroCarImovel || '' : ''),
+          latitude:
+            im.latitude || (idx === 0 ? dadosPdf.latitudeCarImovel || '' : ''),
+          longitude:
+            im.longitude ||
+            (idx === 0 ? dadosPdf.longitudeCarImovel || '' : ''),
+        }))
+      );
+    } else if (
       dadosPdf.denominacaoImovelPa ||
       dadosPdf.municipioImovel ||
-      dadosPdf.areaImovelHa
+      dadosPdf.areaImovelHa ||
+      dadosPdf.numeroCarImovel
     ) {
       setImoveisBeneficiados((prev) => [
         {
           id: prev[0]?.id || 'ben_1',
-          nome: dadosPdf.denominacaoImovelPa || prev[0]?.nome || 'PA LAGO DA CARNAUBA',
+          nome:
+            dadosPdf.denominacaoImovelPa ||
+            prev[0]?.nome ||
+            'PA LAGO DA CARNAUBA',
           matricula: prev[0]?.matricula || '',
-          cidadeUf:
-            dadosPdf.municipioImovel
-              ? dadosPdf.municipioImovel.replace('-', ' - ').replace(/\s+/g, ' ')
-              : prev[0]?.cidadeUf || 'PIO XII - MA',
+          cidadeUf: munBase || prev[0]?.cidadeUf || 'PIO XII - MA',
           areaHa: dadosPdf.areaImovelHa || prev[0]?.areaHa || '25',
+          tipoCar: ehPronafAAtual ? 'GERAL_PA' : 'IMOVEL',
+          numeroCar: dadosPdf.numeroCarImovel || prev[0]?.numeroCar || '',
+          latitude: dadosPdf.latitudeCarImovel || prev[0]?.latitude || '',
+          longitude: dadosPdf.longitudeCarImovel || prev[0]?.longitude || '',
         },
       ]);
     }
 
     setDadosCarregadosDoPdfProjeto(true);
+    editouManualmenteRef.current = false;
     setEditouTextoManualmente(false);
   };
 
@@ -873,31 +991,119 @@ export default function AbaParecerTecnicoCard({
       : '';
 
     if (modeloAtivo === 'PRONAF_A') {
-      const imoPrincipal = imoveisBeneficiados[0] || {
-        nome: '[NOME DO ASSENTAMENTO/PA]',
-        cidadeUf: '[MUNICÍPIO - UF]',
-      };
-      const nomePA = (imoPrincipal.nome || '[PA]').toUpperCase().trim();
-      const cidadePA = (imoPrincipal.cidadeUf || '[MUNICÍPIO - UF]').toUpperCase().trim();
+      const listaBen =
+        imoveisBeneficiados.length > 0
+          ? imoveisBeneficiados
+          : [
+              {
+                id: 'ben_1',
+                nome: '[NOME DO ASSENTAMENTO/PA]',
+                matricula: '',
+                cidadeUf: '[MUNICÍPIO - UF]',
+                areaHa: '',
+                tipoCar: 'GERAL_PA' as const,
+                numeroCar: '',
+                latitude: '',
+                longitude: '',
+              },
+            ];
+
+      const itensGeralPa = listaBen.filter(
+        (im) => im.tipoCar !== 'ESPECIFICO_LOTE'
+      );
+      const itensEspecificos = listaBen.filter(
+        (im) => im.tipoCar === 'ESPECIFICO_LOTE'
+      );
+
+      const imoPrincipal = itensGeralPa[0] || listaBen[0];
+      const nomePrincipalBruto = (imoPrincipal.nome || '[PA]')
+        .toUpperCase()
+        .trim();
+      const partesPrincipal = separarNomeLoteEPa(nomePrincipalBruto);
+
+      const primeiroEspecificoNome = (itensEspecificos[0]?.nome || '')
+        .toUpperCase()
+        .trim();
+      const partesEsp = separarNomeLoteEPa(primeiroEspecificoNome);
+      const nomeLotePrincipal = partesEsp.nomeLote || partesPrincipal.nomeLote;
+      const nomePaPuro = (
+        partesPrincipal.nomePa ||
+        partesEsp.nomePa ||
+        nomePrincipalBruto
+      ).trim();
+
+      // Item 1 (Informações do Pleito): se existir Lote/Sítio + P.A., exibe "SÍTIO EBENEZIA - PA LAGO DA CARNAUBA"
+      const localizacaoPleitoNome =
+        nomeLotePrincipal &&
+        nomePaPuro &&
+        nomeLotePrincipal !== nomePaPuro &&
+        !nomePrincipalBruto.includes(nomeLotePrincipal)
+          ? `${nomeLotePrincipal} - ${nomePaPuro}`
+          : nomePrincipalBruto;
+
+      const cidadePA = (imoPrincipal.cidadeUf || '[MUNICÍPIO - UF]')
+        .toUpperCase()
+        .trim();
+
+      // Monta o(s) bloco(s) de CAR + Coordenadas Geográficas:
+      // - 1 único CAR (sem específico): "CAR DO IMÓVEL: ..."
+      // - Com CAR Específico (ou múltiplos): "CAR GERAL DO P.A: ..." + "CAR ESPECÍFICO - <LOTE>: ..."
+      const possuiCarEspecifico = itensEspecificos.length > 0;
+      const blocosCarPronafA = listaBen
+        .map((im) => {
+          const ehEsp = im.tipoCar === 'ESPECIFICO_LOTE';
+          const partesIm = separarNomeLoteEPa(im.nome || '');
+          const nomeLoteCard = (
+            partesIm.nomeLote ||
+            partesPrincipal.nomeLote ||
+            im.nome ||
+            '[LOTE]'
+          )
+            .toUpperCase()
+            .trim();
+
+          const rotuloCar = !possuiCarEspecifico
+            ? 'CAR DO IMÓVEL'
+            : ehEsp
+            ? `CAR ESPECÍFICO - ${nomeLoteCard}`
+            : 'CAR GERAL DO P.A';
+
+          const numCarFinal = im.numeroCar.trim() || '[Informar Nº do CAR]';
+          const latFinal = im.latitude.trim() || '[Informar Latitude]';
+          const lonFinal = im.longitude.trim() || '[Informar Longitude]';
+
+          return (
+            `${rotuloCar}: ${numCarFinal}\n\n` +
+            `Localização Geográfica, conforme CAR do imóvel rural de assentamentos da reforma agrária:\n` +
+            `- Latitude: ${latFinal}\n` +
+            `- Longitude: ${lonFinal}`
+          );
+        })
+        .join('\n\n');
+
       const garantiaTxt =
         temFidejussoria === 'SIM' && nomeAvalista
           ? `${tipoFidejussoria} (${nomeAvalista})`
           : 'não possui Avalistas/Fiadores';
 
       const blocoItem22 =
-        possuiRestricaoLeve22 === 'SIM' ? `\n2.2) ${montarTextoRestricoesLeves()}` : '';
+        possuiRestricaoLeve22 === 'SIM'
+          ? `\n2.2) ${montarTextoRestricoesLeves()}`
+          : '';
+
+      const valSegFmt = valSeguroPrestamista || '0,00';
+      const valAplicFmt = valAplicacaoAutomatica || '0,00';
+      const valOpFmt = valorOperacao || '0,00';
 
       const blocoRelacionamentoPronafA = incluirRelacionamentoNegocial
-        ? `\n9) Relacionamento negocial: seguro prestamista no valor de R$ ${
-            valSeguroPrestamista || '0,00'
-          } a ser contratado e aplicação automática de R$ ${valAplicacaoAutomatica || '0,00'}.`
+        ? `\n9) Relacionamento negocial: seguro prestamista no valor de R$ ${valSegFmt} a ser contratado e aplicação automática de R$ ${valAplicFmt}.`
         : '';
 
       return (
         `PROGRAMA: ${programaFormatado}\n\n` +
         `Cliente: ${nome}\n` +
         `CPF: ${cpf}\n` +
-        `Valor Financiado: R$ ${valorOperacao || '0,00'}\n` +
+        `Valor Financiado: R$ ${valOpFmt}\n` +
         `Finalidade: ${tipoOperacao}\n` +
         `Prazo Total: ${prazoMeses} meses\n` +
         `Carência: ${carenciaMeses} meses\n` +
@@ -906,16 +1112,13 @@ export default function AbaParecerTecnicoCard({
         `Atividade Econômica – ${setorAtividade}: ${descAtiv}\n\n` +
         blocoProcuracaoPronafA +
         `1. INFORMAÇÕES DO PLEITO:\n` +
-        `O presente pleito objetiva o financiamento com recursos do FNE/PRONAF A, para aquisição de itens destinados à atividade de ${verboExplora}, no lote do imóvel rural (P.A) cujo assentado, solicitante da proposta, faz parte, constante no projeto, localizado(s) no ${nomePA}, na zona de ${cidadePA}.\n\n` +
-        `CAR DO IMÓVEL: ${numeroCarImovel.trim() || '[Informar Nº do CAR]'}\n\n` +
-        `Localização Geográfica, conforme CAR do imóvel rural de assentamentos da reforma agrária:\n\n` +
-        `- Latitude: ${latitudeCarImovel.trim() || '[Informar Latitude]'}\n` +
-        `- Longitude: ${longitudeCarImovel.trim() || '[Informar Longitude]'}\n\n` +
+        `O presente pleito objetiva o financiamento com recursos do FNE/PRONAF A, para aquisição de itens destinados à atividade de ${verboExplora}, no lote do imóvel rural (P.A) cujo assentado, solicitante da proposta, faz parte, constante no projeto, localizado(s) no ${localizacaoPleitoNome}, na zona de ${cidadePA}.\n\n` +
+        `${blocosCarPronafA}\n\n` +
         `No que se refere à relação entre o proponente e funcionário do Banco, informa-se que não há vínculo de parentesco com funcionário que atue na análise, deliberação ou decisão da presente operação de crédito.\n\n` +
         `2. GARANTIA:\n` +
         `O financiamento não possui garantias, conforme item 7.1 do normativo 1101-08-02.\n\n` +
         `3. HISTÓRICO:\n` +
-        `O cliente é assentado no imóvel do pleito e faz parte do(a) ${nomePA}, situado no Extensão de município de ${cidadePA}, a gleba já dispõe de uma infraestrutura básica capaz de manter as famílias como energia, água, escolas e, etc. ${txtRelacionamentoSimples}. Atualmente ${statusAdimplencia}, ${statusAtrasos} e explora a atividade de ${verboExplora}. Cliente informa que adota as orientações técnicas necessárias à sua atividade produtiva.\n\n` +
+        `O cliente é assentado no imóvel do pleito e faz parte do(a) ${nomePaPuro}, situado no Extensão de município de ${cidadePA}, a gleba já dispõe de uma infraestrutura básica capaz de manter as famílias como energia, água, escolas e, etc. ${txtRelacionamentoSimples}. Atualmente ${statusAdimplencia}, ${statusAtrasos} e explora a atividade de ${verboExplora}. Cliente informa que adota as orientações técnicas necessárias à sua atividade produtiva.\n\n` +
         `4. PROPOSTA\n` +
         `Projeto Individual para a estruturação inicial no âmbito do PRONAF A, destinado ao desenvolvimento da ${verboExplora}, tais como: ${itensConcatenados}. Com a implantação do projeto o associado irá aumentar a sua capacidade produtiva e consequentemente, irá melhorar as condições de vida da família.${paragrafoRecursosProprios41}\n\n` +
         `5. IMOVEL:\n` +
@@ -1246,6 +1449,22 @@ export default function AbaParecerTecnicoCard({
     textoFinal += `Serão objetos do pleito ${
       benValidos.length > 1 ? 'os imóveis rurais denominados:' : 'o imóvel rural denominado:'
     } ${textoBenAgrupado}, pertencente(s) ao proponente.\n\n`;
+    const imoveisComCarPreenchido = benValidos.filter(
+      (b) => b.numeroCar.trim() || b.latitude.trim() || b.longitude.trim()
+    );
+    if (imoveisComCarPreenchido.length > 0) {
+      imoveisComCarPreenchido.forEach((im) => {
+        textoFinal += `CAR (${im.nome.toUpperCase().trim()}): ${
+          im.numeroCar.trim() || '[Informar Nº do CAR]'
+        }`;
+        if (im.latitude.trim() || im.longitude.trim()) {
+          textoFinal += `\n- Latitude: ${
+            im.latitude.trim() || '[Informar Latitude]'
+          }\n- Longitude: ${im.longitude.trim() || '[Informar Longitude]'}`;
+        }
+        textoFinal += `\n\n`;
+      });
+    }
 
     const txtCusteioPecuario =
       tipoOperacao.toUpperCase().includes('CUSTEIO') && setorAtividade === 'Pecuária'
@@ -1378,9 +1597,6 @@ export default function AbaParecerTecnicoCard({
     cpfAvalista,
     rendaAnualAvalista,
     imoveisBeneficiados,
-    numeroCarImovel,
-    latitudeCarImovel,
-    longitudeCarImovel,
     enquadrarPlantaNordeste,
     temGarantiaRealInv,
     imoveisGarantia,
@@ -2322,25 +2538,54 @@ export default function AbaParecerTecnicoCard({
         </div>
       </div>
 
-      {/* SEÇÃO 2: IMÓVEL(IS) / ASSENTAMENTO BENEFICIADO */}
+      {/* SEÇÃO 2: IMÓVEL(IS) / ASSENTAMENTO BENEFICIADO (COM CAR, LATITUDE E LONGITUDE POR IMÓVEL) */}
       {modeloAtivo !== 'LIMITE_LCG' && (
         <div style={ui.sectionCard}>
+          <input
+            ref={inputCarPdfRef}
+            type="file"
+            accept=".pdf"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) {
+                handleLerPdfCarDiretoParaImovel(
+                  f,
+                  indiceAlvoInputCarRef.current
+                );
+              }
+              e.target.value = '';
+            }}
+          />
+
           <div style={ui.sectionHeader}>
             <h4 style={{ ...ui.sectionTitle, color: '#15803d' }}>
-              📍 2. Imóvel(is) / Assentamento (PA) Beneficiado pelo Pleito
+              📍 2. Imóvel(is) / Assentamento (PA) Beneficiado pelo Pleito (CAR e Coordenadas)
             </h4>
             <button
               type="button"
               onClick={() => {
-                setEditouTextoManualmente(false);
+                liberarRegeneracaoAutomatica();
+                const cidadePadrao =
+                  imoveisBeneficiados[0]?.cidadeUf ||
+                  (modeloAtivo === 'PRONAF_A'
+                    ? 'PIO XII - MA'
+                    : 'SANTA INÊS - MA');
                 setImoveisBeneficiados([
                   ...imoveisBeneficiados,
                   {
                     id: `ben_${Date.now()}`,
                     nome: '',
                     matricula: '',
-                    cidadeUf: 'PIO XII - MA',
+                    cidadeUf: cidadePadrao,
                     areaHa: '',
+                    tipoCar:
+                      modeloAtivo === 'PRONAF_A'
+                        ? 'ESPECIFICO_LOTE'
+                        : 'IMOVEL',
+                    numeroCar: '',
+                    latitude: '',
+                    longitude: '',
                   },
                 ]);
               }}
@@ -2357,235 +2602,295 @@ export default function AbaParecerTecnicoCard({
                 cursor: 'pointer',
               }}
             >
-              + Adicionar Imóvel Beneficiado
+              {modeloAtivo === 'PRONAF_A'
+                ? '+ Adicionar CAR Específico do Lote'
+                : '+ Adicionar Imóvel Beneficiado'}
             </button>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {imoveisBeneficiados.map((im, idx) => (
-              <div
-                key={im.id}
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns:
-                    modeloAtivo === 'PRONAF_A'
-                      ? '2.2fr 1.5fr auto'
-                      : '2fr 1fr 1.3fr 0.8fr auto',
-                  gap: '10px',
-                  alignItems: 'end',
-                  background: '#f8fafc',
-                  padding: '10px 12px',
-                  borderRadius: '8px',
-                  border: '1px solid #e2e8f0',
-                }}
-              >
-                <div>
-                  <label style={ui.label}>Nome do Assentamento (PA) / Fazenda</label>
-                  <input
-                    type="text"
-                    value={im.nome}
-                    onChange={(e) => {
-                      setEditouTextoManualmente(false);
-                      const novos = [...imoveisBeneficiados];
-                      novos[idx] = { ...novos[idx], nome: e.target.value };
-                      setImoveisBeneficiados(novos);
-                    }}
-                    placeholder="Ex: PA LAGO DA CARNAUBA"
-                    style={ui.input}
-                  />
-                </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {imoveisBeneficiados.map((im, idx) => {
+              const lendoEste = indiceLendoCarPdf === idx;
+              const ehCarEsp = im.tipoCar === 'ESPECIFICO_LOTE';
 
-                {modeloAtivo !== 'PRONAF_A' && (
-                  <div>
-                    <label style={ui.label}>Matrícula / INCRA</label>
-                    <input
-                      type="text"
-                      value={im.matricula}
-                      onChange={(e) => {
-                        setEditouTextoManualmente(false);
-                        const novos = [...imoveisBeneficiados];
-                        novos[idx] = { ...novos[idx], matricula: e.target.value };
-                        setImoveisBeneficiados(novos);
-                      }}
-                      placeholder="Nº da Matrícula"
-                      style={ui.input}
-                    />
-                  </div>
-                )}
-
-                <div>
-                  <label style={ui.label}>Município - UF</label>
-                  <input
-                    type="text"
-                    value={im.cidadeUf}
-                    onChange={(e) => {
-                      setEditouTextoManualmente(false);
-                      const novos = [...imoveisBeneficiados];
-                      novos[idx] = { ...novos[idx], cidadeUf: e.target.value };
-                      setImoveisBeneficiados(novos);
-                    }}
-                    placeholder="Ex: PIO XII - MA"
-                    style={ui.input}
-                  />
-                </div>
-
-                {modeloAtivo !== 'PRONAF_A' && (
-                  <div>
-                    <label style={ui.label}>Área (ha)</label>
-                    <input
-                      type="text"
-                      value={im.areaHa}
-                      onChange={(e) => {
-                        setEditouTextoManualmente(false);
-                        const novos = [...imoveisBeneficiados];
-                        novos[idx] = { ...novos[idx], areaHa: e.target.value };
-                        setImoveisBeneficiados(novos);
-                      }}
-                      placeholder="Ex: 25"
-                      style={ui.input}
-                    />
-                  </div>
-                )}
-
-                {imoveisBeneficiados.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditouTextoManualmente(false);
-                      setImoveisBeneficiados(imoveisBeneficiados.filter((_, i) => i !== idx));
-                    }}
+              return (
+                <div
+                  key={im.id}
+                  style={{
+                    background: ehCarEsp ? '#f0fdf4' : '#f8fafc',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: `1px solid ${ehCarEsp ? '#86efac' : '#e2e8f0'}`,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                  }}
+                >
+                  {/* Linha 1: Identificação do Imóvel / P.A. / Lote */}
+                  <div
                     style={{
-                      width: 'auto',
-                      height: '36px',
-                      padding: '0 10px',
-                      fontSize: '12px',
-                      background: '#fee2e2',
-                      color: '#b91c1c',
-                      border: '1px solid #fecaca',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
+                      display: 'grid',
+                      gridTemplateColumns:
+                        modeloAtivo === 'PRONAF_A'
+                          ? '1.2fr 2fr 1.3fr auto'
+                          : '2fr 1fr 1.3fr 0.8fr auto',
+                      gap: '10px',
+                      alignItems: 'end',
                     }}
-                    title="Remover Imóvel"
                   >
-                    🗑️
-                  </button>
-                )}
-              </div>
-            ))}
+                    {modeloAtivo === 'PRONAF_A' && (
+                      <div>
+                        <label style={{ ...ui.label, color: '#15803d' }}>
+                          Tipo de CAR
+                        </label>
+                        <select
+                          value={im.tipoCar}
+                          onChange={(e) => {
+                            liberarRegeneracaoAutomatica();
+                            const novos = [...imoveisBeneficiados];
+                            novos[idx] = {
+                              ...novos[idx],
+                              tipoCar: e.target.value as
+                                | 'GERAL_PA'
+                                | 'ESPECIFICO_LOTE',
+                            };
+                            setImoveisBeneficiados(novos);
+                          }}
+                          style={{ ...ui.select, fontWeight: 700 }}
+                        >
+                          <option value="GERAL_PA">🏛️ CAR Geral do P.A.</option>
+                          <option value="ESPECIFICO_LOTE">
+                            📍 CAR Específico do Lote
+                          </option>
+                        </select>
+                      </div>
+                    )}
+
+                    <div>
+                      <label style={ui.label}>
+                        {modeloAtivo === 'PRONAF_A'
+                          ? ehCarEsp
+                            ? 'Nome do Lote / Sítio / Fazenda (Específico)'
+                            : 'Nome do Assentamento (PA) ou Lote - PA'
+                          : 'Nome do Assentamento (PA) / Fazenda'}
+                      </label>
+                      <input
+                        type="text"
+                        value={im.nome}
+                        onChange={(e) => {
+                          liberarRegeneracaoAutomatica();
+                          const novos = [...imoveisBeneficiados];
+                          novos[idx] = { ...novos[idx], nome: e.target.value };
+                          setImoveisBeneficiados(novos);
+                        }}
+                        placeholder={
+                          ehCarEsp
+                            ? 'Ex: SÍTIO EBENEZIA ou LOTE 02'
+                            : 'Ex: PA LAGO DA CARNAUBA ou SÍTIO EBENEZIA - PA LAGO DA CARNAUBA'
+                        }
+                        style={ui.input}
+                      />
+                    </div>
+
+                    {modeloAtivo !== 'PRONAF_A' && (
+                      <div>
+                        <label style={ui.label}>Matrícula / INCRA</label>
+                        <input
+                          type="text"
+                          value={im.matricula}
+                          onChange={(e) => {
+                            liberarRegeneracaoAutomatica();
+                            const novos = [...imoveisBeneficiados];
+                            novos[idx] = {
+                              ...novos[idx],
+                              matricula: e.target.value,
+                            };
+                            setImoveisBeneficiados(novos);
+                          }}
+                          placeholder="Nº da Matrícula"
+                          style={ui.input}
+                        />
+                      </div>
+                    )}
+
+                    <div>
+                      <label style={ui.label}>Município - UF</label>
+                      <input
+                        type="text"
+                        value={im.cidadeUf}
+                        onChange={(e) => {
+                          liberarRegeneracaoAutomatica();
+                          const novos = [...imoveisBeneficiados];
+                          novos[idx] = {
+                            ...novos[idx],
+                            cidadeUf: e.target.value,
+                          };
+                          setImoveisBeneficiados(novos);
+                        }}
+                        placeholder="Ex: PIO XII - MA"
+                        style={ui.input}
+                      />
+                    </div>
+
+                    {modeloAtivo !== 'PRONAF_A' && (
+                      <div>
+                        <label style={ui.label}>Área (ha)</label>
+                        <input
+                          type="text"
+                          value={im.areaHa}
+                          onChange={(e) => {
+                            liberarRegeneracaoAutomatica();
+                            const novos = [...imoveisBeneficiados];
+                            novos[idx] = {
+                              ...novos[idx],
+                              areaHa: e.target.value,
+                            };
+                            setImoveisBeneficiados(novos);
+                          }}
+                          placeholder="Ex: 25"
+                          style={ui.input}
+                        />
+                      </div>
+                    )}
+
+                    {imoveisBeneficiados.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          liberarRegeneracaoAutomatica();
+                          setImoveisBeneficiados(
+                            imoveisBeneficiados.filter((_, i) => i !== idx)
+                          );
+                        }}
+                        style={{
+                          width: 'auto',
+                          height: '36px',
+                          padding: '0 10px',
+                          fontSize: '12px',
+                          background: '#fee2e2',
+                          color: '#b91c1c',
+                          border: '1px solid #fecaca',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                        }}
+                        title="Remover Imóvel / CAR"
+                      >
+                        🗑️
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Linha 2: CAR + Latitude + Longitude + Botão Ler PDF do CAR (Auto / OCR) */}
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '2.2fr 1fr 1fr auto',
+                      gap: '10px',
+                      alignItems: 'end',
+                      paddingTop: '8px',
+                      borderTop: '1px dashed #cbd5e1',
+                    }}
+                  >
+                    <div>
+                      <label style={{ ...ui.label, color: '#15803d' }}>
+                        🛰️{' '}
+                        {modeloAtivo === 'PRONAF_A'
+                          ? ehCarEsp
+                            ? 'CAR Específico do Lote'
+                            : 'CAR Geral do P.A. / Imóvel'
+                          : 'Nº do CAR do Imóvel'}
+                      </label>
+                      <input
+                        type="text"
+                        value={im.numeroCar}
+                        onChange={(e) => {
+                          liberarRegeneracaoAutomatica();
+                          const novos = [...imoveisBeneficiados];
+                          novos[idx] = {
+                            ...novos[idx],
+                            numeroCar: e.target.value.toUpperCase(),
+                          };
+                          setImoveisBeneficiados(novos);
+                        }}
+                        placeholder="Ex: MA-2108702-6100.AE4B.87A4.4B0D.B5B4.84DB.220A.8317"
+                        style={{
+                          ...ui.input,
+                          fontFamily: 'monospace',
+                          fontSize: '11.5px',
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={ui.label}>Latitude</label>
+                      <input
+                        type="text"
+                        value={im.latitude}
+                        onChange={(e) => {
+                          liberarRegeneracaoAutomatica();
+                          const novos = [...imoveisBeneficiados];
+                          novos[idx] = {
+                            ...novos[idx],
+                            latitude: e.target.value,
+                          };
+                          setImoveisBeneficiados(novos);
+                        }}
+                        placeholder={`Ex: 03°53'42,75" S`}
+                        style={ui.input}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={ui.label}>Longitude</label>
+                      <input
+                        type="text"
+                        value={im.longitude}
+                        onChange={(e) => {
+                          liberarRegeneracaoAutomatica();
+                          const novos = [...imoveisBeneficiados];
+                          novos[idx] = {
+                            ...novos[idx],
+                            longitude: e.target.value,
+                          };
+                          setImoveisBeneficiados(novos);
+                        }}
+                        placeholder={`Ex: 45°02'54,43" O`}
+                        style={ui.input}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={indiceLendoCarPdf !== null}
+                      onClick={() => {
+                        indiceAlvoInputCarRef.current = idx;
+                        inputCarPdfRef.current?.click();
+                      }}
+                      style={{
+                        width: 'auto',
+                        height: '36px',
+                        padding: '0 11px',
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        background: '#15803d',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor:
+                          indiceLendoCarPdf !== null ? 'wait' : 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title="Extrair Nº do CAR, Latitude e Longitude diretamente do PDF (com OCR automático se for imagem)"
+                    >
+                      {lendoEste
+                        ? msgLeituraCar || '⏳ Lendo...'
+                        : '📄 Ler PDF CAR'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-
-          {modeloAtivo === 'PRONAF_A' && (
-            <div
-              style={{
-                background: '#f0fdf4',
-                border: '1px solid #86efac',
-                borderRadius: '8px',
-                padding: '10px 12px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: '8px',
-                }}
-              >
-                <strong style={{ fontSize: '11.5px', color: '#15803d' }}>
-                  🛰️ Dados do Recibo do CAR (Inseridos no Item 1 — Informações do Pleito)
-                </strong>
-                <div>
-                  <input
-                    ref={inputCarPdfRef}
-                    type="file"
-                    accept=".pdf"
-                    style={{ display: 'none' }}
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handleLerPdfCarDireto(f);
-                      e.target.value = '';
-                    }}
-                  />
-                  <button
-                    type="button"
-                    disabled={lendoCarPdf}
-                    onClick={() => inputCarPdfRef.current?.click()}
-                    style={{
-                      width: 'auto',
-                      height: '28px',
-                      padding: '0 11px',
-                      fontSize: '11px',
-                      fontWeight: 800,
-                      background: '#15803d',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: lendoCarPdf ? 'wait' : 'pointer',
-                    }}
-                  >
-                    {lendoCarPdf
-                      ? msgLeituraCar || '⏳ Lendo CAR...'
-                      : '📄 Carregar PDF do CAR (Auto / OCR)'}
-                  </button>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '2.2fr 1fr 1fr',
-                  gap: '10px',
-                  alignItems: 'end',
-                }}
-              >
-                <div>
-                  <label style={ui.label}>CAR do Imóvel</label>
-                  <input
-                    type="text"
-                    value={numeroCarImovel}
-                    onChange={(e) => {
-                      setEditouTextoManualmente(false);
-                      setNumeroCarImovel(e.target.value.toUpperCase());
-                    }}
-                    placeholder="Ex: MA-2108702-6100.AE4B.87A4.4B0D.B5B4.84DB.220A.8317"
-                    style={{ ...ui.input, fontFamily: 'monospace', fontSize: '11.5px' }}
-                  />
-                </div>
-
-                <div>
-                  <label style={ui.label}>Latitude (CAR)</label>
-                  <input
-                    type="text"
-                    value={latitudeCarImovel}
-                    onChange={(e) => {
-                      setEditouTextoManualmente(false);
-                      setLatitudeCarImovel(e.target.value);
-                    }}
-                    placeholder={`Ex: 03°53'42,75" S`}
-                    style={ui.input}
-                  />
-                </div>
-
-                <div>
-                  <label style={ui.label}>Longitude (CAR)</label>
-                  <input
-                    type="text"
-                    value={longitudeCarImovel}
-                    onChange={(e) => {
-                      setEditouTextoManualmente(false);
-                      setLongitudeCarImovel(e.target.value);
-                    }}
-                    placeholder={`Ex: 45°02'54,43" O`}
-                    style={ui.input}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
