@@ -18,11 +18,25 @@ export type TipoDocumentoDesembolso =
   | 'NOTA_FISCAL_E_RECIBO'
   | 'RECIBO_PAGAMENTO'
   | 'DECLARACAO_RECEBIMENTO'
+  | 'DECLARACAO_APLICACAO_CUSTEIO'
   | 'COMPROVANTE_PAGAMENTO'
   | 'VITI'
   | 'OUTRO_DESEMBOLSO';
 
 export type StatusItemAuditoriaDesembolso = 'OK' | 'ALERTA' | 'ERRO' | 'INFO';
+
+export type CategoriaItemDesembolso =
+  | 'MATRIZ'
+  | 'REPRODUTOR'
+  | 'BEZERRO_RECRIA'
+  | 'PASTAGEM'
+  | 'ROCO_PASTAGEM'
+  | 'CERCA_REFORMA'
+  | 'SAL_MINERAL'
+  | 'COMPLEMENTACAO_ALIMENTAR'
+  | 'SANIDADE_VACINAS'
+  | 'ASSESSORIA'
+  | 'OUTRO';
 
 export interface ControleCancelamentoOcrDesembolso {
   cancelado: boolean;
@@ -40,13 +54,7 @@ export function criarControleCancelamentoOcrDesembolso(): ControleCancelamentoOc
 export interface LancamentoOrcamentoDesembolso {
   codigo: string;
   descricao: string;
-  categoriaItem:
-    | 'MATRIZ'
-    | 'REPRODUTOR'
-    | 'PASTAGEM'
-    | 'CERCA_REFORMA'
-    | 'ASSESSORIA'
-    | 'OUTRO';
+  categoriaItem: CategoriaItemDesembolso;
   quantidadeUnidade: string;
   mesAno: string; // ex: "out/2026"
   chaveAnoMes: string; // ex: "2026-10"
@@ -56,13 +64,7 @@ export interface LancamentoOrcamentoDesembolso {
 
 export interface ItemComprovacaoFinanceira {
   descricao: string;
-  categoriaItem:
-    | 'MATRIZ'
-    | 'REPRODUTOR'
-    | 'PASTAGEM'
-    | 'CERCA_REFORMA'
-    | 'ASSESSORIA'
-    | 'OUTRO';
+  categoriaItem: CategoriaItemDesembolso;
   quantidade: string;
   valorProjetado: number;
   valorAplicado: number;
@@ -71,13 +73,7 @@ export interface ItemComprovacaoFinanceira {
 
 export interface ItemNotaFiscalDesembolso {
   descricao: string;
-  categoriaItem:
-    | 'MATRIZ'
-    | 'REPRODUTOR'
-    | 'PASTAGEM'
-    | 'CERCA_REFORMA'
-    | 'ASSESSORIA'
-    | 'OUTRO';
+  categoriaItem: CategoriaItemDesembolso;
   unidade: string;
   quantidade: number;
   valorUnitario: number;
@@ -100,6 +96,7 @@ export interface DadosNotaFiscalExtraidos {
   valorTotal: number;
   numeroGtaCitada: string;
   possuiCarimboPago: boolean;
+  possuiFaturaDuplicatas?: boolean;
   itens: ItemNotaFiscalDesembolso[];
 }
 
@@ -136,6 +133,7 @@ export interface DadosReciboExtraidos {
   fornecedorNome: string;
   fornecedorCpfCnpj: string;
   numeroNfCitada: string;
+  numerosNfCitadas?: string[];
   serieNfCitada: string;
   qtdMatrizes: number;
   qtdReprodutores: number;
@@ -153,9 +151,11 @@ export interface DadosDeclaracaoRecebimentoExtraidos {
   numeroNfCitada: string;
   serieNfCitada: string;
   numeroCcbCitada: string;
+  numerosNfCitadas?: string[];
   dataCcbCitada: string;
   qtdMatrizes: number;
   qtdReprodutores: number;
+  qtdBezerros?: number;
 }
 
 export interface DadosLaudoAcompanhamentoExtraidos {
@@ -339,15 +339,7 @@ function formatarCpf(digitos: string): string {
   return digitos;
 }
 
-function classificarCategoriaItem(
-  desc: string
-):
-  | 'MATRIZ'
-  | 'REPRODUTOR'
-  | 'PASTAGEM'
-  | 'CERCA_REFORMA'
-  | 'ASSESSORIA'
-  | 'OUTRO' {
+function classificarCategoriaItem(desc: string): CategoriaItemDesembolso {
   const u = removerAcentos(desc).toUpperCase();
   if (
     u.includes('ASSESSORIA') ||
@@ -356,6 +348,68 @@ function classificarCategoriaItem(
     u.includes('TAXA DE ELABORACAO')
   ) {
     return 'ASSESSORIA';
+  }
+  if (
+    u.includes('PE DE ARAME') ||
+    u.includes('CERCA') ||
+    u.includes('ARAME') ||
+    u.includes('ESTACA') ||
+    u.includes('CURRAL') ||
+    u.includes('CONSTRUCAO') ||
+    u.includes('INSTALACAO') ||
+    u.includes('COCHO') ||
+    u.includes('BEBEDOURO') ||
+    (u.includes('REFORMA') && !u.includes('PASTAGEM'))
+  ) {
+    return 'CERCA_REFORMA';
+  }
+  if (
+    (u.includes('ROCO') || u.includes('ROCAGEM') || u.includes('LIMPEZA')) &&
+    (u.includes('PASTAGEM') || u.includes('BRAQUIARIA') || u.includes('BRACHIARIA'))
+  ) {
+    return 'ROCO_PASTAGEM';
+  }
+  if (
+    u.includes('SAL MINERAL') ||
+    u.includes('MTSD FOS') ||
+    /\bFOS\b/.test(u) ||
+    u.includes('SUPLEMENTO MINERAL') ||
+    u.includes('MINERAL') ||
+    u.includes('PROTEINADO')
+  ) {
+    return 'SAL_MINERAL';
+  }
+  if (
+    u.includes('COMPLEMENTA') ||
+    u.includes('COMPLEMETA') ||
+    u.includes('ALIMENTAR') ||
+    u.includes('MILHO') ||
+    u.includes('RACAO') ||
+    u.includes('RACOES') ||
+    u.includes('NUTRIBEM') ||
+    u.includes('SILAGEM') ||
+    u.includes('FARELO') ||
+    u.includes('SOJA')
+  ) {
+    return 'COMPLEMENTACAO_ALIMENTAR';
+  }
+  if (
+    u.includes('VACINA') ||
+    u.includes('MEDICAMENTO') ||
+    u.includes('VERMIFUGO') ||
+    u.includes('CARRAPATICIDA')
+  ) {
+    return 'SANIDADE_VACINAS';
+  }
+  if (
+    u.includes('BEZERRO') ||
+    u.includes('BEZERRA') ||
+    u.includes('GARROTE') ||
+    u.includes('BOI MAGRO') ||
+    u.includes('RECRIA') ||
+    u.includes('NOVILHO')
+  ) {
+    return 'BEZERRO_RECRIA';
   }
   if (
     u.includes('MATRIZ') ||
@@ -376,23 +430,11 @@ function classificarCategoriaItem(
     u.includes('PASTAGEM') ||
     u.includes('CAPIM') ||
     u.includes('BRACHIARIA') ||
+    u.includes('BRAQUIARIA') ||
     u.includes('SEMENTE') ||
     u.includes('CAPINEIRA')
   ) {
     return 'PASTAGEM';
-  }
-  if (
-    u.includes('CERCA') ||
-    u.includes('ARAME') ||
-    u.includes('ESTACA') ||
-    u.includes('CURRAL') ||
-    u.includes('REFORMA') ||
-    u.includes('CONSTRUCAO') ||
-    u.includes('INSTALACAO') ||
-    u.includes('COCHO') ||
-    u.includes('BEBEDOURO')
-  ) {
-    return 'CERCA_REFORMA';
   }
   return 'OUTRO';
 }
@@ -477,7 +519,7 @@ function detectarAssinaturaNoBinario(buffer: ArrayBuffer): boolean {
 }
 
 function montarTextoOrdenadoTokens(
-  tokens: Array<{ str: string; vx: number; vy: number }>
+  tokens: Array<{ str: string; vx: number; vy: number; w?: number }>
 ): string {
   if (tokens.length === 0) return '';
   const copia = [...tokens].sort((a, b) => a.vy - b.vy || a.vx - b.vx);
@@ -491,7 +533,23 @@ function montarTextoOrdenadoTokens(
   return linhas
     .map((l) => {
       l.itens.sort((a, b) => a.vx - b.vx);
-      return l.itens.map((i) => i.str).join(' ');
+      let out = '';
+      for (let i = 0; i < l.itens.length; i++) {
+        const cur = l.itens[i];
+        if (i === 0) {
+          out = cur.str;
+          continue;
+        }
+        const prev = l.itens[i - 1];
+        const fimPrev = prev.vx + (prev.w || 0);
+        const gap = prev.w ? cur.vx - fimPrev : 99;
+        const colaNumero =
+          gap <= 3.0 &&
+          ((/\d$/.test(prev.str) && /^[.,/\-]\d*$/.test(cur.str)) ||
+            (/[.,/\-]$/.test(prev.str) && /^\d/.test(cur.str)));
+        out += gap <= 1.2 || colaNumero ? cur.str : ` ${cur.str}`;
+      }
+      return out;
     })
     .join('\n');
 }
@@ -642,7 +700,7 @@ async function extrairTextoHibridoDesembolsoPdf(
         const altVis = vp.height || 842;
         const content = await page.getTextContent();
         const rawItems = (content.items || []) as Array<any>;
-        const tokens: Array<{ str: string; vx: number; vy: number }> = [];
+        const tokens: Array<{ str: string; vx: number; vy: number; w?: number }> = [];
 
         for (const it of rawItems) {
           const s = (it.str || '').trim();
@@ -662,7 +720,7 @@ async function extrairTextoHibridoDesembolsoPdf(
           ) {
             continue;
           }
-          tokens.push({ str: s, vx, vy });
+          tokens.push({ str: s, vx, vy, w: Number(it.width) || 0 });
         }
 
         const txtPag = montarTextoOrdenadoTokens(tokens);
@@ -676,7 +734,7 @@ async function extrairTextoHibridoDesembolsoPdf(
           normUp.includes('DESTINO')
         ) {
           const tokOrigem = tokens.find((t) =>
-            /I\s*[-–]\s*ORIGEM/i.test(removerAcentos(t.str))
+            /[I1]\s*[-–]\s*ORIGEM/i.test(removerAcentos(t.str))
           );
           const tokDestino = tokens.find((t) =>
             /II\s*[-–]\s*DESTINO/i.test(removerAcentos(t.str))
@@ -902,36 +960,56 @@ export function classificarDocumentoDesembolso(
     };
   }
 
-  // 6. Declaração de Recebimento dos Animais
+  // 6. Declaração de Recebimento dos Animais (PRONAF A / Investimento / Custeio Pecuário) vs Declaração de Aquisição (Custeio Insumos)
   if (
     tUp.includes('DECLARACAO DE RECEBIMENTO DOS ANIMAIS') ||
-    (tUp.includes('RECEBI NA PROPRIEDADE') && tUp.includes('CEDULA DE CREDITO'))
+    (tUp.includes('RECEBI NA PROPRIEDADE') &&
+      (tUp.includes('CEDULA DE CREDITO') ||
+        /\b(BEZERR|MATRIZ|REPRODUTOR|BOVIN|GARROTE|NOVILH|ANIMA)/.test(tUp)))
   ) {
     return {
       tipo: 'DECLARACAO_RECEBIMENTO',
       titulo: 'DECLARAÇÃO DE RECEBIMENTO DOS ANIMAIS',
     };
   }
+  if (
+    (tUp.includes('FORAM ADQUIRIDOS OS ITENS') ||
+      tUp.includes('APLICACAO OU DESVIO DO CREDITO') ||
+      tUp.includes('ART. 20 DA LEI') ||
+      (tUp.includes('AUTORIZO O DESEMBOLSO') && tUp.includes('ART. 299'))) &&
+    !tUp.includes('DANFE')
+  ) {
+    return {
+      tipo: 'DECLARACAO_APLICACAO_CUSTEIO',
+      titulo: 'DECLARAÇÃO DE AQUISIÇÃO / APLICAÇÃO (CUSTEIO)',
+    };
+  }
 
-  // 7. DANFE / Nota Fiscal Eletrônica (pode vir junto com Recibo na Pág. 2!)
+  // 7. DANFE / NF-e / NFA-e (exige marcadores estruturais de DANFE real — nunca apenas menção textual "NFA-e" num recibo!)
   const temNf =
     tUp.includes('DANFE') ||
-    tUp.includes('DOCUMENTO AUXILIAR DA NOTA FISCAL ELETRONICA') ||
-    tUp.includes('CHAVE DE ACESSO');
+    tUp.includes('DOCUMENTO AUXILIAR DA NOTA FISCAL') ||
+    tUp.includes('DOCUMENTO AUXILIAR DE NOTA FISCAL') ||
+    tUp.includes('CHAVE DE ACESSO') ||
+    (tUp.includes('NFA-E') &&
+      (tUp.includes('NATUREZA DA OPERACAO') ||
+        tUp.includes('DESTINATARIO') ||
+        tUp.includes('PROTOCOLO DE AUTORIZACAO')));
   const temRecibo =
     tUp.includes('RECIBO DE PAGAMENTO') ||
-    /\bRECIBO\b[\s\S]{0,160}?\bRECEBI\s+D[EAO]\b/.test(tUp);
+    /\bRECIBO\b[\s\S]{0,280}?\bRECEBI\s+D[EAO]\b/.test(tUp) ||
+    (tUp.includes('PLENA E IRREVOGAVEL QUITACAO') && tUp.includes('RECEBI'));
 
   if (temNf && temRecibo) {
     return {
       tipo: 'NOTA_FISCAL_E_RECIBO',
-      titulo: 'NOTA FISCAL ELETRÔNICA (DANFE) + RECIBO DE PAGAMENTO',
+      titulo: 'NOTA FISCAL ELETRÔNICA (DANFE/NFA-e) + RECIBO',
     };
   }
   if (temNf) {
     return {
       tipo: 'NOTA_FISCAL',
-      titulo: 'NOTA FISCAL ELETRÔNICA (DANFE)',
+      titulo: 'NOTA FISCAL ELETRÔNICA (DANFE / NFA-e)',
     };
   }
   if (temRecibo) {
@@ -988,7 +1066,15 @@ function extrairOrcamentoDoPdf(textoBruto: string): {
   const mNumFallback = linear.match(/\b(\d{3}\.20\d{2}\.\d{1,5}\.\d{3,8})\b/);
   const numeroCcb = mCab?.[1] || mNumFallback?.[1] || '';
   const clienteNome = (mCab?.[2] || '').replace(/\s+/g, ' ').trim().toUpperCase();
-  const dataContratacao = converterDataExtensoOuCurtaBR(mCab?.[3] || '');
+  const ehAditivoContrato = /ADITIVO\s+[ÀA]\s+C[ÉE]DULA/i.test(linear);
+  const mDataAditivo = ehAditivoContrato
+    ? linear.match(
+        /(?:SANTA\s+IN[ÊE]S\s*[-–]?\s*MA|MA)\s*,\s*(\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})/i
+      )
+    : null;
+  const dataContratacao =
+    converterDataExtensoOuCurtaBR(mDataAditivo?.[1] || '') ||
+    converterDataExtensoOuCurtaBR(mCab?.[3] || '');
   const mCpf = linear.match(/CPF\s*:?\s*(\d{3}\.\d{3}\.\d{3}-\d{2})/i);
   const clienteCpf = mCpf?.[1] || '';
 
@@ -1021,64 +1107,72 @@ function extrairOrcamentoDoPdf(textoBruto: string): {
 
   // Busca também menções diretas conhecidas se o layout de colunas embaralhou o código
   const buscarItemPorTextoProx = (trechoProx: string, idxFallback: number) => {
-    const up = removerAcentos(trechoProx).toUpperCase();
-    if (up.includes('MATRIZ')) {
-      return (
-        itensCab.find((x) => x.cat === 'MATRIZ') || {
-          codigo: '03',
-          descricao: 'AQ. DE MATRIZ BOVINA APTIDÃO CORTE',
-          qtdUnid: 'UA',
-          cat: 'MATRIZ' as const,
-        }
-      );
+    const cat = classificarCategoriaItem(trechoProx);
+    const achadoCab = itensCab.find((x) => x.cat === cat);
+    if (achadoCab) return achadoCab;
+
+    const rotulosPadrao: Partial<
+      Record<
+        CategoriaItemDesembolso,
+        { codigo: string; descricao: string; qtdUnid: string }
+      >
+    > = {
+      ASSESSORIA: {
+        codigo: '05',
+        descricao: 'CUSTO DE ASSESSORIA EMPRESARIAL E TÉCNICA',
+        qtdUnid: '1,00 UA',
+      },
+      SAL_MINERAL: {
+        codigo: '01',
+        descricao: 'SAL MINERAL / SUPLEMENTAÇÃO',
+        qtdUnid: 'VERBA',
+      },
+      ROCO_PASTAGEM: {
+        codigo: '02',
+        descricao: 'ROÇO DE PASTAGEM',
+        qtdUnid: 'VERBA',
+      },
+      CERCA_REFORMA: {
+        codigo: '03',
+        descricao: 'ROÇO PÉ DE ARAME / CERCA / REFORMA',
+        qtdUnid: 'VERBA',
+      },
+      COMPLEMENTACAO_ALIMENTAR: {
+        codigo: '04',
+        descricao: 'COMPLEMENTAÇÃO ALIMENTAR / MILHO / RAÇÃO',
+        qtdUnid: 'VERBA',
+      },
+      SANIDADE_VACINAS: {
+        codigo: '04',
+        descricao: 'VACINAS / MEDICAMENTOS',
+        qtdUnid: 'VERBA',
+      },
+      MATRIZ: {
+        codigo: '03',
+        descricao: 'AQ. DE MATRIZ BOVINA APTIDÃO CORTE',
+        qtdUnid: 'UA',
+      },
+      REPRODUTOR: {
+        codigo: '02',
+        descricao: 'AQ. DE REPRODUTOR BOVINO MESTIÇO ZEBUINO APTIDÃO CORTE',
+        qtdUnid: '1,00 UA',
+      },
+      PASTAGEM: {
+        codigo: '01',
+        descricao: 'FORMAÇÃO DE PASTAGEM CAPIM BRACHIARIA',
+        qtdUnid: 'HA',
+      },
+      BEZERRO_RECRIA: {
+        codigo: '01',
+        descricao: 'AQUISIÇÃO DE BEZERROS / GARROTES (RECRIA)',
+        qtdUnid: 'QTD',
+      },
+    };
+
+    if (cat !== 'OUTRO' && rotulosPadrao[cat]) {
+      return { ...rotulosPadrao[cat]!, cat };
     }
-    if (up.includes('REPRODUTOR')) {
-      return (
-        itensCab.find((x) => x.cat === 'REPRODUTOR') || {
-          codigo: '02',
-          descricao: 'AQ. DE REPRODUTOR BOVINO MESTIÇO ZEBUINO APTIDÃO CORTE',
-          qtdUnid: '1,00 UA',
-          cat: 'REPRODUTOR' as const,
-        }
-      );
-    }
-    if (
-      up.includes('ASSESSORIA') ||
-      up.includes('ASSISTENCIA TECNICA')
-    ) {
-      return (
-        itensCab.find((x) => x.cat === 'ASSESSORIA') || {
-          codigo: '04',
-          descricao: 'CUSTO DE ASSESSORIA EMPRESARIAL E TÉCNICA',
-          qtdUnid: 'VERBA',
-          cat: 'ASSESSORIA' as const,
-        }
-      );
-    }
-    if (
-      up.includes('CERCA') ||
-      up.includes('CURRAL') ||
-      (up.includes('REFORMA') && !up.includes('PASTAGEM'))
-    ) {
-      return (
-        itensCab.find((x) => x.cat === 'CERCA_REFORMA') || {
-          codigo: '01',
-          descricao: 'CONSTRUÇÃO / REFORMA DE CERCA OU INSTALAÇÃO',
-          qtdUnid: 'VERBA',
-          cat: 'CERCA_REFORMA' as const,
-        }
-      );
-    }
-    if (up.includes('PASTAGEM') || up.includes('BRACHIARIA')) {
-      return (
-        itensCab.find((x) => x.cat === 'PASTAGEM') || {
-          codigo: '01',
-          descricao: 'FORMAÇÃO DE PASTAGEM CAPIM BRACHIARIA',
-          qtdUnid: 'HA',
-          cat: 'PASTAGEM' as const,
-        }
-      );
-    }
+
     return (
       itensCab[Math.min(idxFallback, Math.max(0, itensCab.length - 1))] || {
         codigo: String(idxFallback + 1).padStart(2, '0'),
@@ -1096,27 +1190,33 @@ function extrairOrcamentoDoPdf(textoBruto: string): {
     ),
   ];
 
-  // Emparelha cada linha geométrica com a linha de texto visual mais próxima (ou ordem das ocorrências)
+  // Suporta "out/2025 7.500,00" e também com pipe/espaço extra entre mês e valor
   const paresMesValNoTexto = [
     ...textoSemGeo.matchAll(
-      /((?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\/20\d{2})\s+(\d{1,3}(?:\.\d{3})*,\d{2})/gi
+      /((?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\/20\d{2})[\s|]{1,12}(\d{1,3}(?:\.\d{3})*,\d{2})/gi
     ),
   ];
 
-  if (geoMatches.length > 0) {
+  const usarGeo =
+    geoMatches.length > 0 && geoMatches.length >= paresMesValNoTexto.length;
+
+  if (usarGeo) {
     geoMatches.forEach((mG, idx) => {
       const mes = mG[2].toLowerCase();
       const prop = parseMoeda(mG[3]);
       const fne = parseMoeda(mG[4]);
       const matchTextoCorr = paresMesValNoTexto[idx];
-      const contextoAntes =
+      const contextoJanela =
         matchTextoCorr && matchTextoCorr.index !== undefined
           ? textoSemGeo.substring(
-              Math.max(0, matchTextoCorr.index - 110),
-              matchTextoCorr.index
+              Math.max(0, matchTextoCorr.index - 115),
+              Math.min(
+                textoSemGeo.length,
+                matchTextoCorr.index + matchTextoCorr[0].length + 28
+              )
             )
           : '';
-      const infoItem = buscarItemPorTextoProx(contextoAntes, idx);
+      const infoItem = buscarItemPorTextoProx(contextoJanela, idx);
       lancamentos.push({
         codigo: infoItem.codigo,
         descricao: infoItem.descricao,
@@ -1132,11 +1232,17 @@ function extrairOrcamentoDoPdf(textoBruto: string): {
     paresMesValNoTexto.forEach((mP, idx) => {
       const mes = mP[1].toLowerCase();
       const fne = parseMoeda(mP[2]);
-      const ctxAntes =
+      const ctxJanela =
         mP.index !== undefined
-          ? textoSemGeo.substring(Math.max(0, mP.index - 110), mP.index)
+          ? textoSemGeo.substring(
+              Math.max(0, mP.index - 115),
+              Math.min(
+                textoSemGeo.length,
+                mP.index + mP[0].length + 28
+              )
+            )
           : '';
-      const infoItem = buscarItemPorTextoProx(ctxAntes, idx);
+      const infoItem = buscarItemPorTextoProx(ctxJanela, idx);
       lancamentos.push({
         codigo: infoItem.codigo,
         descricao: infoItem.descricao,
@@ -1151,7 +1257,7 @@ function extrairOrcamentoDoPdf(textoBruto: string): {
   }
 
   const mTotal = textoSemGeo.match(
-    /TOTAL\s*(?:\|\s*)*\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:\|\s*)*(\d{1,3}(?:\.\d{3})*,\d{2})/i
+    /TOTAL[\s|]*\d{1,3}(?:\.\d{3})*,\d{2}[\s|]*(\d{1,3}(?:\.\d{3})*,\d{2})/i
   );
   const somaLanc = lancamentos.reduce((acc, l) => acc + l.valorFinanciadoFne, 0);
   const totalFne = mTotal ? parseMoeda(mTotal[1]) : somaLanc;
@@ -1197,6 +1303,7 @@ function extrairComprovacaoFinanceira(textoBruto: string): {
     .replace(/\b\d{2}\/\d{2}\/\d{4}\b/g, ' ')
     .replace(/\b\d{2}:\d{2}(?::\d{2})?\b/g, ' ')
     .replace(/\(\s*VALORES\s+EM\s+R\$\s*1[.,]00\s*\)/gi, ' ')
+    .replace(/(\d)\s*\.\s*(\d{3})/g, '$1.$2')
     .replace(/(\d)\s*([.,])\s*(\d{2})(?!\d)/g, '$1$2$3');
 
   const extrairValoresReais = (trecho: string): number[] => {
@@ -1378,9 +1485,10 @@ function extrairDadosGta(textoBruto: string): DadosGtaExtraidos {
   const linear = textoSemTags.replace(/\s+/g, ' ').trim();
   const up = removerAcentos(linear).toUpperCase();
 
-  const mNum = linear.match(
-    /GUIA\s+DE\s+TR[ÂA]NSITO\s+ANIMAL[\s\S]{0,60}?N[úu]mero\s*:?\s*(\d{4,12})\s+S[ée]rie\s*:?\s*([A-Z0-9]+)/i
-  ) || linear.match(/N[úu]mero\s*:?\s*(\d{5,12})\s+([A-Z])\b/);
+  const mNum =
+    linear.match(
+      /GUIA\s+DE\s+TR[ÂA]NSITO\s+ANIMAL[\s\S]{0,60}?N[úu]mero\s*:?\s*(\d{4,12})\s+S[ée]rie\s*:?\s*([A-Z0-9]+)/i
+    ) || linear.match(/N[úu]mero\s*:?\s*(\d{5,12})\s+([A-Z])\b/);
 
   const mEmissao =
     linear.match(
@@ -1389,36 +1497,84 @@ function extrairDadosGta(textoBruto: string): DadosGtaExtraidos {
     linear.match(/Impresso\s+por[\s\S]{0,90}?(\d{2}\/\d{2}\/20\d{2})/i);
   const mVal = linear.match(/Validade\s*:?\s*(\d{2}\/\d{2}\/20\d{2})/i);
 
+  const mIdxDestGta = up.match(/II\s*[-–]?\s*DESTINO/);
+  const idxDestGta = mIdxDestGta?.index ?? -1;
+
   const blocoOrigem = (
     mColOrig?.[1] ||
-    (up.includes('II-DESTINO')
-      ? linear.substring(0, up.indexOf('II-DESTINO'))
-      : linear)
+    (idxDestGta !== -1 ? linear.substring(0, idxDestGta) : linear)
   )
     .replace(/\s+/g, ' ')
     .trim();
 
   const blocoDestino = (
     mColDest?.[1] ||
-    (up.includes('II-DESTINO')
-      ? linear.substring(up.indexOf('II-DESTINO'))
-      : linear)
+    (idxDestGta !== -1 ? linear.substring(idxDestGta) : linear)
   )
     .replace(/\s+/g, ' ')
     .trim();
 
+  const todosEstabs = [
+    ...linear.matchAll(
+      /Estabelecimento\s*:?\s*([A-ZÀ-Ú0-9\s.\-/]{3,65}?)(?=\s+C[óo]digo\s+Estabelecimento|\s+Marca\s+do\s+Rebanho|\s+Inscri[çc][ãa]o|$)/gi
+    ),
+  ].map((m) => m[1].replace(/\s+/g, ' ').trim().toUpperCase());
+
   const mEstOrig = blocoOrigem.match(
-    /Estabelecimento\s*:?\s*([A-ZÀ-Ú0-9\s.\-/]{3,65}?)(?=\s+C[óo]digo\s+Estabelecimento|\s+Inscri[çc][ãa]o|$)/i
+    /Estabelecimento\s*:?\s*([A-ZÀ-Ú0-9\s.\-/]{3,65}?)(?=\s+C[óo]digo\s+Estabelecimento|\s+Marca\s+do\s+Rebanho|\s+Inscri[çc][ãa]o|$)/i
   );
+  const mEstDest = blocoDestino.match(
+    /Estabelecimento\s*:?\s*([A-ZÀ-Ú0-9\s.\-/]{3,65}?)(?=\s+C[óo]digo\s+Estabelecimento|\s+Marca\s+do\s+Rebanho|\s+Inscri[çc][ãa]o|$)/i
+  );
+
+  const origemEstabelecimentoResolvido = (
+    mEstOrig?.[1] ||
+    todosEstabs[0] ||
+    ''
+  )
+    .trim()
+    .toUpperCase();
+  let destinoEstabelecimentoResolvido = (mEstDest?.[1] || '')
+    .trim()
+    .toUpperCase();
+  if (
+    !destinoEstabelecimentoResolvido ||
+    destinoEstabelecimentoResolvido === origemEstabelecimentoResolvido
+  ) {
+    const outroEstab = todosEstabs.find(
+      (e) => e !== origemEstabelecimentoResolvido
+    );
+    if (outroEstab) destinoEstabelecimentoResolvido = outroEstab;
+  }
+
+  // Coleta TODOS os Nomes e CPFs/CNPJs da GTA (imune a OCR de 2 colunas intercaladas!)
+  const todosNomes = [
+    ...linear.matchAll(
+      /\bNome\s*:?\s*([A-ZÀ-Ú][A-ZÀ-Ú\s]{4,60}?)(?=\s+CPF\/CNPJ|\s+Munic[íi]pio|\s+Inscri[çc][ãa]o|$)/gi
+    ),
+  ].map((m) => m[1].replace(/\s+/g, ' ').trim().toUpperCase());
+
+  const todosCpfsBrutos = [
+    ...linear.matchAll(
+      /CPF\/CNPJ\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2}|\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/gi
+    ),
+  ].map((m) => formatarCpf(m[1]));
+  const todosCpfsUnicos = Array.from(new Set(todosCpfsBrutos));
+
+  // No rodapé da GTA, "Requisitante:" e "CPF:" são SEMPRE do produtor de Origem (vendedor)
+  const mRequisitante = linear.match(
+    /Requisitante\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)(?=\s+Data\/Hora|\s+Funcion[áa]rio|\s+CPF|$)/i
+  );
+  const mCpfReq = linear.match(
+    /Requisitante[\s\S]{0,120}?CPF\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2}|\d{11})/i
+  );
+  const cpfReqFmt = mCpfReq?.[1] ? formatarCpf(mCpfReq[1]) : '';
+
   const mNomeOrig = blocoOrigem.match(
     /Nome\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)(?=\s+CPF\/CNPJ|\s+Munic[íi]pio|$)/i
   );
   const mCpfOrig = blocoOrigem.match(
     /CPF\/CNPJ\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2}|\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/i
-  );
-
-  const mEstDest = blocoDestino.match(
-    /Estabelecimento\s*:?\s*([A-ZÀ-Ú0-9\s.\-/]{3,65}?)(?=\s+C[óo]digo\s+Estabelecimento|\s+Inscri[çc][ãa]o|$)/i
   );
   const mNomeDest = blocoDestino.match(
     /Nome\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)(?=\s+CPF\/CNPJ|\s+Munic[íi]pio|$)/i
@@ -1426,47 +1582,107 @@ function extrairDadosGta(textoBruto: string): DadosGtaExtraidos {
   const mCpfDest = blocoDestino.match(
     /CPF\/CNPJ\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2}|\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/i
   );
+
+  const origemCpfCnpj =
+    cpfReqFmt ||
+    (mCpfOrig?.[1] ? formatarCpf(mCpfOrig[1]) : '') ||
+    todosCpfsUnicos[0] ||
+    '';
+
+  let destinoCpf = mCpfDest?.[1] ? formatarCpf(mCpfDest[1]) : '';
+  // Se OCR misturou as 2 colunas e pegou o CPF da Origem no Destino, seleciona obrigatoriamente o OUTRO CPF da GTA!
+  if (
+    !destinoCpf ||
+    (origemCpfCnpj &&
+      normalizarCpfCnpj(destinoCpf) === normalizarCpfCnpj(origemCpfCnpj))
+  ) {
+    const outroCpf = todosCpfsUnicos.find(
+      (c) => normalizarCpfCnpj(c) !== normalizarCpfCnpj(origemCpfCnpj)
+    );
+    if (outroCpf) destinoCpf = outroCpf;
+  }
+
+  const origemNome = (
+    mRequisitante?.[1] ||
+    mNomeOrig?.[1] ||
+    todosNomes[0] ||
+    ''
+  )
+    .trim()
+    .toUpperCase();
+
+  let destinoNome = (mNomeDest?.[1] || '').trim().toUpperCase();
+  if (
+    !destinoNome ||
+    (origemNome && nomesSaoSemelhantes(destinoNome, origemNome))
+  ) {
+    const outroNome = todosNomes.find(
+      (n) => !nomesSaoSemelhantes(n, origemNome)
+    );
+    if (outroNome) destinoNome = outroNome;
+  }
+
   const mMunDest = blocoDestino.match(
-    /Munic[íi]pio\s*:?\s*([A-ZÀ-Ú0-9\s\-/]{3,40}?)(?=\s+Finalidade|\s+Transporte|\s+0-12|$)/i
+    /Munic[íi]pio\s*:?\s*([A-ZÀ-Ú0-9\s\-/]{3,40}?)(?=\s+Finalidade|\s+Transporte|\s+Esp[ée]cie|\s+III|\s+0-12|$)/i
   );
-  const mFin = blocoDestino.match(
-    /Finalidade\s*:?\s*([A-ZÀ-Úa-zà-ú\s]{3,30}?)(?=\s+0-12|\s+\d|$)/i
-  );
-
-  // Fallback para OCR sem tags de coluna: usa 1ª e 2ª ocorrências de Nome/CPF/Município
-  const todosCpfs = [
-    ...linear.matchAll(/CPF\/CNPJ\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2})/gi),
-  ].map((m) => formatarCpf(m[1]));
-  const mRequisitante = linear.match(
-    /Requisitante\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)(?=\s+Data\/Hora|\s+Funcion[áa]rio|\s+CPF|$)/i
+  const mFin = linear.match(
+    /Finalidade\s*:?\s*([A-ZÀ-Úa-zà-ú\s]{3,30}?)(?=\s+Esp[ée]cie|\s+0-12|\s+\d|$)/i
   );
 
-  const mTab = linear.match(
-    /Total\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)\s*(?:\|\s*)*(\d+)/i
+  // Extração blindada da tabela de 9 colunas de animais (suporta OCR com O->0 e texto intercalado)
+  let nums: number[] = [];
+  const idxIniAnim = up.search(/III\s*[-–]?\s*ANIMAIS|0\s*-\s*12\s*M/);
+  const idxFimAnim = up.search(/VACINACOES|EXAMES\s*:|IV\s*[-–]?\s*INFORMACOES/);
+  const fatiaAnimais =
+    idxIniAnim !== -1
+      ? linear.substring(
+          idxIniAnim,
+          idxFimAnim > idxIniAnim ? idxFimAnim : idxIniAnim + 420
+        )
+      : linear;
+
+  // Remove os rótulos das faixas etárias (0-12, 13-24, 25-36, >36) para sobrar somente as quantidades
+  const fatiaSoQtds = fatiaAnimais
+    .replace(/0\s*[-–]\s*12\s*[MF]?/gi, ' ')
+    .replace(/13\s*[-–]\s*24\s*[MF]?/gi, ' ')
+    .replace(/25\s*[-–]\s*36\s*[MF]?/gi, ' ')
+    .replace(/[>›»]\s*36\s*[MF]?/gi, ' ')
+    .replace(/\b[Oo]\b/g, '0');
+
+  const inteirosCand = (fatiaSoQtds.match(/\b\d{1,4}\b/g) || []).map((n) =>
+    parseInt(n, 10)
   );
-  const nums = mTab ? mTab.slice(1, 10).map((n) => parseInt(n, 10) || 0) : [];
+
+  // Procura sequência exata de 9 inteiros onde a soma dos 8 primeiros fecha o 9º (Total)
+  for (let i = 0; i <= inteirosCand.length - 9; i++) {
+    const fatia9 = inteirosCand.slice(i, i + 9);
+    const soma8 = fatia9.slice(0, 8).reduce((a, b) => a + b, 0);
+    if (fatia9[8] > 0 && soma8 === fatia9[8]) {
+      nums = fatia9;
+      break;
+    }
+  }
+
+  // Fallback matemático pelo código numérico de 44 dígitos da GTA MAPA (ex: 2119 + numGTA + dig + DDMMAAAA + 01 + 0000035...)
+  let totalFallbackBarcode = 0;
+  if (nums.length === 0) {
+    const mBarcode = linear.match(/\b2119\d{7}\d{8}\d{2}(\d{7})\d{8,14}\b/);
+    if (mBarcode && mBarcode[1]) {
+      totalFallbackBarcode = parseInt(mBarcode[1], 10) || 0;
+    }
+  }
 
   return {
     numero: mNum?.[1] || '',
     serie: mNum?.[2] || '',
     dataEmissao: mEmissao?.[1] || '',
     dataValidade: mVal?.[1] || '',
-    origemEstabelecimento: (mEstOrig?.[1] || '').trim().toUpperCase(),
-    origemNome: (
-      mNomeOrig?.[1] ||
-      mRequisitante?.[1] ||
-      ''
-    )
-      .trim()
-      .toUpperCase(),
-    origemCpfCnpj: mCpfOrig?.[1]
-      ? formatarCpf(mCpfOrig[1])
-      : todosCpfs[0] || '',
-    destinoEstabelecimento: (mEstDest?.[1] || '').trim().toUpperCase(),
-    destinoNome: (mNomeDest?.[1] || '').trim().toUpperCase(),
-    destinoCpf: mCpfDest?.[1]
-      ? formatarCpf(mCpfDest[1])
-      : todosCpfs[1] || '',
+    origemEstabelecimento: origemEstabelecimentoResolvido,
+    origemNome,
+    origemCpfCnpj,
+    destinoEstabelecimento: destinoEstabelecimentoResolvido,
+    destinoNome,
+    destinoCpf,
     destinoMunicipio: (mMunDest?.[1] || '').trim().toUpperCase(),
     finalidade: (mFin?.[1] || '').trim().toUpperCase(),
     qtd0a12M: nums[0] || 0,
@@ -1477,7 +1693,7 @@ function extrairDadosGta(textoBruto: string): DadosGtaExtraidos {
     qtd25a36F: nums[5] || 0,
     qtdAcima36M: nums[6] || 0,
     qtdAcima36F: nums[7] || 0,
-    totalAnimais: nums[8] || 0,
+    totalAnimais: nums[8] || totalFallbackBarcode,
     possuiExamesNegativosCitados:
       up.includes('BRUCELOSE') &&
       (up.includes('NEGATIVO') || up.includes('TUBERCULOSE')),
@@ -1485,7 +1701,9 @@ function extrairDadosGta(textoBruto: string): DadosGtaExtraidos {
 }
 
 function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
-  const idxReciboPag2 = textoBruto.search(/RECIBO\s+DE\s+PAGAMENTO/i);
+  const idxReciboPag2 = textoBruto.search(
+    /RECIBO\s+DE\s+PAGAMENTO|\[PÁGINA\s+2\s+DE\s+\d+\]\s*RECIBO\b/i
+  );
   const textoNf =
     idxReciboPag2 > 300 ? textoBruto.substring(0, idxReciboPag2) : textoBruto;
   const linear = textoNf
@@ -1494,9 +1712,9 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
     .trim();
   const up = removerAcentos(linear).toUpperCase();
 
-  // Chave de acesso (44 dígitos com quaisquer quebras ou grupos de 4/8 dígitos)
+  // Chave de acesso (44 dígitos com quaisquer quebras ou grupos)
   const mChaveBloco =
-    linear.match(/CHAVE\s+DE\s+ACESSO[\s\S]{0,120}?(\d[\d\s]{42,70}\d)/i) ||
+    linear.match(/CHAVE\s+DE\s+ACESSO[\s\S]{0,140}?(\d[\d\s]{42,75}\d)/i) ||
     linear.match(/\b((?:\d{4}\s*){11})\b/);
   let chaveAcesso = '';
   if (mChaveBloco) {
@@ -1507,23 +1725,37 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
 
   const mNumSerie =
     linear.match(
-      /N[°º№]?\s*([0-9.]{1,12})\s+(?:fl\.\s*\d+\/\d+\s+)?S[ée]rie\s*:?\s*(\d{1,4})/i
+      /NFA?-e[\s\S]{0,40}?N[°º№.]?\s*([0-9.]{1,12})\s+(?:fl\.\s*\d+\/\d+\s+)?S[ée]rie\s*:?\s*(\d{1,4})/i
     ) ||
     linear.match(
-      /NF-e[\s\S]{0,60}?N[°º№]?\s*([0-9.]{1,12})\s+S[ée]rie\s*:?\s*(\d{1,4})/i
+      /N[°º№.]?\s*([0-9.]{1,12})\s+(?:fl\.\s*\d+\/\d+\s+)?S[ée]rie\s*:?\s*(\d{1,4})/i
     );
+  const mNumAvulso = !mNumSerie
+    ? linear.match(/NFA?-e[\s\S]{0,80}?N[°º№.]?\s*([0-9.]{1,12})/i)
+    : null;
+  const mSerieAvulsa = !mNumSerie
+    ? linear.match(/S[ÉE]RIE\s*:?\s*(\d{1,4})\b/i)
+    : null;
 
-  const numero = mNumSerie ? normalizarNumeroNf(mNumSerie[1]) : '';
-  const serie = mNumSerie ? normalizarNumeroNf(mNumSerie[2]) : '';
+  const numero = mNumSerie
+    ? normalizarNumeroNf(mNumSerie[1])
+    : mNumAvulso
+    ? normalizarNumeroNf(mNumAvulso[1])
+    : '';
+  const serie = mNumSerie
+    ? normalizarNumeroNf(mNumSerie[2])
+    : mSerieAvulsa
+    ? normalizarNumeroNf(mSerieAvulsa[1])
+    : '';
 
-  // 1 - SAÍDA (suporta "1" antes ou depois de "0-ENTRADA 1-SAÍDA" e CFOP de saída 5xxx/6xxx)
-  const temCfopSaida = /\b(?:CFOP\s*)?[56]\d{3}\b/.test(up);
+  // 1 - SAÍDA (suporta "1 - SAÍDA", NFA-e e CFOP 5xxx / 5.xxx / 6xxx)
+  const temCfopSaida = /\b(?:CFOP\s*)?[56]\.?\d{3}\b/.test(up);
   const ehSaida =
     /\b1\s+0\s*[-–]?\s*ENTRADA\s+1\s*[-–]?\s*SA[ÍI]DA/i.test(linear) ||
     /0\s*[-–]?\s*ENTRADA\s+1\s*[-–]?\s*SA[ÍI]DA[\s\S]{0,35}?\b1\b/i.test(
       linear
     ) ||
-    /1\s*[-–]?\s*SA[ÍI]DA[\s\S]{0,35}?\b1\b/i.test(linear) ||
+    /1\s*[-–]?\s*SA[ÍI]DA/i.test(linear) ||
     temCfopSaida;
   const ehEntradaExplicita =
     !ehSaida &&
@@ -1535,7 +1767,7 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
     : 'NAO_IDENTIFICADO';
 
   const mNat = linear.match(
-    /NATUREZA\s+D[AE]\s+OPERA[ÇC][ÃA]O[\s\S]{0,50}?(VENDA[^0-9\n]{3,60}|REMESSA[^0-9\n]{3,60}|ENTREGA[^0-9\n]{3,60})/i
+    /NATUREZA\s+D[AE]\s+OPERA[ÇC][ÃA]O[\s\S]{0,60}?(VENDA[^0-9\n]{0,60}|OUTRA\s+SA[ÍI]DA[^0-9\n]{3,70}|REMESSA[^0-9\n]{3,60}|ENTREGA[^0-9\n]{3,60})/i
   );
   const naturezaOperacao = (mNat?.[1] || '')
     .replace(/\s+/g, ' ')
@@ -1544,30 +1776,68 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
   const ehEntregaFutura =
     up.includes('ENTREGA FUTURA') ||
     up.includes('SIMPLES FATURAMENTO') ||
-    /\b(5922|6922)\b/.test(up);
+    /\b(5\.?922|6\.?922)\b/.test(up);
+  const possuiFaturaDuplicatas =
+    /FATURA\s*\/\s*DUPLICATA[\s\S]{0,90}?\d{2}\/\d{2}\/20\d{2}/i.test(linear);
 
-  const mEmitNome = linear.match(
-    /RECEBEMOS\s+DE\s+([A-ZÀ-Ú0-9\s.&\-]{3,65}?)\s+OS\s+PRODUTOS/i
-  );
+  const mEmitNome =
+    linear.match(
+      /RECEBEMOS\s+DE\s+([A-ZÀ-Ú0-9\s.&\-]{3,65}?)\s+OS\s+PRODUTOS/i
+    ) ||
+    linear.match(
+      /IDENTIFICA[ÇC][ÃA]O\s+DO\s+EMITENTE\s+([A-ZÀ-Ú0-9\s.&\-]{4,60}?)(?=\s+(?:S[ÍI]TIO|NUCLEO|RODOVIA|ESTRADA|RUA|AV\.?|FAZENDA|POVOADO|ZONA\s+RURAL|CH[ÁA]CARA|LOTE|CEP|PC\s|DANFE))/i
+    );
   const emitenteNome = (mEmitNome?.[1] || '').trim().toUpperCase();
 
+  const idxBlocoDest = up.search(/DESTINAT[ÁA]RIO\s*\/?\s*REMETENTE/i);
+  const idxBlocoImposto = up.search(
+    /C[ÁA]LCULO\s+DO\s+IMPOSTO|CALCULO\s+DO\s+IMPOSTO|TOTAL\s+DOS\s+PRODUTOS|TRANSPORTADOR/i
+  );
+
+  const trechoEmitente =
+    idxBlocoDest > 0 ? linear.substring(0, idxBlocoDest) : linear.substring(0, 900);
+  const trechoDestinatario =
+    idxBlocoDest !== -1
+      ? linear.substring(
+          idxBlocoDest,
+          idxBlocoImposto > idxBlocoDest
+            ? idxBlocoImposto
+            : idxBlocoDest + 650
+        )
+      : '';
+
   const mDest =
-    linear.match(
-      /DESTINAT[ÁA]RIO\s*\/?\s*REMETENTE[\s\S]{0,40}?NOME\/RAZ[ÃA]O\s+SOCIAL\s+([A-ZÀ-Ú\s]{4,65}?)(?=\s+ENDERE[ÇC]O|\s+CNPJ)/i
+    trechoDestinatario.match(
+      /NOME\/RAZ[ÃA]O\s+SOCIAL\s+(?:INSCR\.\s*EST\.[^\n]{0,30}?\s+)?([A-ZÀ-Úa-zà-ú\s]{4,65}?)(?=\s+ENDERE[ÇC]O|\s+CNPJ|\s+\d{3}\.?\d{3})/i
     ) ||
     linear.match(
       /DEST\.?\/REM\.?\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)\s*(?:[-–]\s*)?VALOR\s+TOTAL/i
     );
   const destinatarioNome = (mDest?.[1] || '').trim().toUpperCase();
 
-  const docsEncontrados = [
-    ...linear.matchAll(
-      /\b(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\b/g
-    ),
-  ].map((m) => m[1]);
-  const docsUnicos = Array.from(new Set(docsEncontrados));
-  const emitenteCpfCnpj = docsUnicos[0] || '';
-  const destinatarioCpf = docsUnicos[1] || '';
+  const extrairPrimeiroDoc = (trecho: string): string => {
+    const mMasc = trecho.match(
+      /\b(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\b/
+    );
+    if (mMasc) return mMasc[1];
+    const mPuro = trecho.match(
+      /CNPJ(?:\/CP[FP])?[\s\S]{0,45}?\b(\d{14}|\d{11})\b/i
+    );
+    if (mPuro) return formatarCpf(mPuro[1]);
+    return '';
+  };
+
+  const emitenteCpfCnpj = extrairPrimeiroDoc(trechoEmitente);
+  const destinatarioCpf =
+    idxBlocoDest !== -1
+      ? extrairPrimeiroDoc(trechoDestinatario) ||
+        extrairPrimeiroDoc(
+          linear.substring(
+            idxBlocoDest,
+            Math.min(linear.length, idxBlocoDest + 900)
+          )
+        )
+      : '';
 
   const mDataEm =
     linear.match(
@@ -1577,17 +1847,29 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
     linear.match(/\b(\d{2}\/\d{2}\/20\d{2})\b/);
   const dataEmissao = mDataEm?.[1] || '';
 
-  const mValTot =
-    linear.match(
-      /V(?:ALOR|\.)\s+TOTAL\s+DA\s+NOTA[\s\S]{0,30}?(\d{1,3}(?:\.\d{3})+,\d{2}|\d{1,7}[.,]\d{2})(?!\d)/i
-    ) ||
-    linear.match(
-      /VALOR\s+TOTAL\s*:?\s*R\$\s*(\d{1,3}(?:\.\d{3})+,\d{2}|\d{1,7}[.,]\d{2})(?!\d)/i
-    ) ||
-    linear.match(
-      /V(?:ALOR|\.)\s+TOTAL\s+D[EO]S?\s+PRODUTOS[\s\S]{0,30}?(\d{1,3}(?:\.\d{3})+,\d{2}|\d{1,7}[.,]\d{2})(?!\d)/i
+  const extrairPrimeiroValorPositivoApos = (regexCab: RegExp): number => {
+    const mCab = linear.match(regexCab);
+    if (!mCab || mCab.index === undefined) return 0;
+    const janela = linear.substring(
+      mCab.index,
+      Math.min(linear.length, mCab.index + 95)
     );
-  const valorTotal = mValTot ? parseMoeda(normalizarMoedaStr(mValTot[1])) : 0;
+    const vals = (
+      janela.match(
+        /(?:^|[^\d])(\d{1,3}(?:\.\d{3})+,\d{2}|\d{1,7}[.,]\d{2})(?!\d)/g
+      ) || []
+    )
+      .map((v) => parseMoeda(normalizarMoedaStr(v.replace(/^[^\d]+/, ''))))
+      .filter((n) => n > 0.05);
+    return vals[0] || 0;
+  };
+
+  let valorTotal =
+    extrairPrimeiroValorPositivoApos(/V(?:ALOR|\.)\s+TOTAL\s+DA\s+NOTA/i) ||
+    extrairPrimeiroValorPositivoApos(/VALOR\s+TOTAL\s*:/i) ||
+    extrairPrimeiroValorPositivoApos(
+      /V(?:ALOR|\.)\s+TOTAL\s+D[EO]S?\s+PRODUTOS/i
+    );
 
   const mGtaCit = linear.match(
     /GUIA\s+DE\s+TR[ÂA]NSITO\s+ANIMAL[\s\S]{0,30}?N[úu]mero\s*:?\s*(\d{4,12})/i
@@ -1599,12 +1881,12 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
   const itens: ItemNotaFiscalDesembolso[] = [];
   const mIdxProd = up.match(/DADOS\s+D[EO]S?\s+PRODUTOS?/i);
   const idxProd = mIdxProd?.index ?? -1;
-  const fatiaProd = idxProd !== -1 ? textoNf.substring(idxProd) : textoNf;
-  const fatiaProdLin = fatiaProd
-    .replace(/\s+/g, ' ')
-    .replace(/(\d)\s*([.,])\s*(\d{2})(?!\d)/g, '$1$2$3');
+  // Usa `linear` (mesmo comprimento/índice de `up`) para nunca fatiar fora de posição!
+  const fatiaProdLin = (idxProd !== -1 ? linear.substring(idxProd) : linear)
+    .replace(/(\d)\s*\.\s*(\d{3})/g, '$1.$2')
+    .replace(/(\d)\s*,\s*(\d{2,3})(?!\d)/g, '$1,$2');
 
-  // Camada 1: Linha completa (clássico e 2026 IBS/CBS quando reconstruída por viewport)
+  // Camada 1: Linha completa padrão (clássico e 2026 quando QTD + UN + UNIT + TOTAL estão sequenciais)
   const regexProdLinha =
     /([A-ZÀ-Ú][A-ZÀ-Ú0-9\s.\-/]{5,75}?)\s+(?:\[NCM[^\]]*\]\s*(?:\[cClassTrib[^\]]*\]\s*)?)?(?:\|\s*)*(?:(?:CST\s*)?\d{3,8}\s+(?:\|\s*)*(?:CFOP\s*)?\d{3,4}\s+(?:\|\s*)*(?:\d{4}\s+(?:\|\s*)*)?)?(?:(UN|SC|KG|HA|UA|LT|PC|CX)\s+(?:\|\s*)*(\d+(?:[.,]\d{1,3})?)|(\d+(?:[.,]\d{1,3})?)\s*\[?(UN|CAB|SC|KG|HA|UA)\]?)\s+(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2}|\d{3,7}[.,]\d{2})(?!\d)\s+(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2}|\d{3,7}[.,]\d{2})(?!\d)/gi;
 
@@ -1640,16 +1922,16 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
     }
   }
 
-  // Camada 2: Layout em quadrinhos / IBS-CBS onde descrições e colunas QTD/UNIT/TOTAL vêm em blocos separados
+  // Camada 2: Layout 2026 IBS/CBS (onde "[UN]" quebra abaixo de "1,000"/"12,000" e "DE 36 MESES" quebra abaixo da descrição)
+  // Busca quantidades de 3 casas decimais (\d+,\d{3}) + par matemático (Unitário × Qtd ≈ Total) sem exigir [UN] colado!
   if (itens.length === 0 && up.includes('BOVINO')) {
     const descsBov = [
       ...fatiaProdLin.matchAll(
-        /\b(BOVINO\s+(?:MACHO|F[ÊE]MEA)[A-ZÀ-Ú0-9\s]{3,42}?)(?=\s+\[NCM|\s+0102|\s+2000|\s+CST|$)/gi
+        /\b(BOVINO\s+(?:MACHO|F[ÊE]MEA)(?:\s+ACIMA(?:\s+DE\s+36\s+MESES)?)?)/gi
       ),
     ].map((m) => m[1].replace(/\s+/g, ' ').trim().toUpperCase());
 
-    const regexQtdUn =
-      /(\d{1,4}[.,]\d{1,3})\s*\[?(UN|CAB)\]?|\[?(UN|CAB)\]?\s*(\d{1,4}[.,]\d{1,3})/gi;
+    const regexQtd3Dec = /(?:^|[^\d.,])(\d{1,4},\d{3})(?!\d)/g;
     const trincasBov: Array<{
       qtd: number;
       un: string;
@@ -1658,15 +1940,13 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
     }> = [];
 
     let mQ: RegExpExecArray | null;
-    while ((mQ = regexQtdUn.exec(fatiaProdLin)) !== null) {
-      const qtdStr = mQ[1] || mQ[4] || '0';
-      const unStr = (mQ[2] || mQ[3] || 'UN').toUpperCase();
-      const qtd = parseFloat(qtdStr.replace(',', '.')) || 0;
+    while ((mQ = regexQtd3Dec.exec(fatiaProdLin)) !== null) {
+      const qtd = parseFloat(mQ[1].replace(',', '.')) || 0;
       if (qtd <= 0 || qtd > 500) continue;
 
       const janela = fatiaProdLin.substring(
         mQ.index + mQ[0].length,
-        mQ.index + mQ[0].length + 180
+        mQ.index + mQ[0].length + 220
       );
       const vals = (
         janela.match(
@@ -1680,12 +1960,13 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
         const u = vals[i];
         const t = vals[i + 1];
         if (u >= 200 && t >= 200 && Math.abs(qtd * u - t) <= 2) {
-          trincasBov.push({ qtd, un: unStr, unit: u, tot: t });
+          trincasBov.push({ qtd, un: 'UN', unit: u, tot: t });
           break;
         }
       }
     }
 
+    const menciona36m = /36\s+MESES/i.test(fatiaProdLin);
     trincasBov.forEach((tr, idx) => {
       const desc = descsBov[idx] || `BOVINO ITEM #${idx + 1}`;
       itens.push({
@@ -1695,11 +1976,49 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
         quantidade: tr.qtd,
         valorUnitario: tr.unit,
         valorTotal: tr.tot,
-        faixaEtariaDetectada: /ACIMA\s+DE\s+36\s+MESES/i.test(desc)
-          ? '> 36 MESES'
-          : undefined,
+        faixaEtariaDetectada:
+          /36\s+MESES/i.test(desc) || menciona36m ? '> 36 MESES' : undefined,
       });
     });
+  }
+
+  // Camada 2.5: Itens de Custeio / NFA-e / Matsuda / Rações (NCM/CFOP + Unidade + Qtd inteira/decimal + Unit + Total onde Qtd * Unit ≈ Total)
+  if (itens.length === 0) {
+    const regexItemCusteio =
+      /([A-ZÀ-Ú][A-ZÀ-Ú0-9\s.\-/]{3,140}?)\s+(?:\|\s*)*(?:\d{8,11}\s+(?:\|\s*)*(?:\d{3}\s+(?:\|\s*)*)?)?(?:[56]\.?\d{3})\s+(?:\|\s*)*(UNID\.?|UN|SC|PC|KG|LT|HA|UA|CX|PCT)\s+(?:\|\s*)*(\d+(?:[.,]\d{1,4})?)\s+(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2,5}|\d{1,7}[.,]\d{2,5})\s+(?:\|\s*)*(\d{1,3}(?:\.\d{3})*[.,]\d{2}|\d{3,7}[.,]\d{2})(?!\d)/gi;
+
+    let mC: RegExpExecArray | null;
+    while ((mC = regexItemCusteio.exec(fatiaProdLin)) !== null) {
+      const descLimpa = mC[1]
+        .replace(/Trib\s+aprox[\s\S]*$/i, '')
+        .replace(/^\d{3,}\s*\|?\s*/, '')
+        .replace(/^[0-9.,%\s|]+/, '')
+        .replace(/\|/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toUpperCase();
+      const unid = mC[2].toUpperCase();
+      const qtd = parseFloat(mC[3].replace(',', '.')) || 0;
+      const unitNum =
+        parseFloat(mC[4].replace(/\.(?=\d{3})/g, '').replace(',', '.')) || 0;
+      const totNum = parseMoeda(normalizarMoedaStr(mC[5]));
+
+      if (
+        descLimpa.length >= 3 &&
+        qtd > 0 &&
+        totNum > 0 &&
+        Math.abs(qtd * unitNum - totNum) <= Math.max(5, totNum * 0.02)
+      ) {
+        itens.push({
+          descricao: descLimpa,
+          categoriaItem: classificarCategoriaItem(descLimpa),
+          unidade: unid,
+          quantidade: qtd,
+          valorUnitario: unitNum,
+          valorTotal: totNum,
+        });
+      }
+    }
   }
 
   // Camada 3: Fallback apenas para NF de item único (nunca cria item único falso se houver MACHO + FEMEA juntos!)
@@ -1727,6 +2046,10 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
     }
   }
 
+  if (valorTotal <= 0 && itens.length > 0) {
+    valorTotal = itens.reduce((acc, it) => acc + it.valorTotal, 0);
+  }
+
   return {
     numero,
     serie,
@@ -1742,6 +2065,7 @@ function extrairDadosNotaFiscal(textoBruto: string): DadosNotaFiscalExtraidos {
     valorTotal,
     numeroGtaCitada: mGtaCit?.[1] || '',
     possuiCarimboPago: /\bPAGO\b/.test(up),
+    possuiFaturaDuplicatas,
     itens,
   };
 }
@@ -1759,7 +2083,10 @@ function extrairDadosRecibo(textoBruto: string): DadosReciboExtraidos {
     /(\d{1,3}(?:\.\d{3})+,\d{2}|\d{1,3}(?:\.\d{3})+\.\d{2}|\d{1,7},\d{2}|\d{1,7}\.\d{2})(?!\d)/;
 
   const mValQuantia = linear.match(
-    new RegExp(`quantia\\s+de\\s+R\\$\\s*${regexMoedaEstrita.source}`, 'i')
+    new RegExp(
+      `(?:quantia|import[âa]ncia)\\s+de\\s+R\\$\\s*${regexMoedaEstrita.source}`,
+      'i'
+    )
   );
   const todosValoresRecibo = [
     ...linear.matchAll(
@@ -1778,29 +2105,58 @@ function extrairDadosRecibo(textoBruto: string): DadosReciboExtraidos {
       : maiorValorRecibo;
 
   const mCli = linear.match(
-    /Recebi\s+d[eo]\s+(?:Sr[°ºa]?\s*\(?a?\)?\.?\s*)?([A-ZÀ-Úa-zà-ú\s]{4,60}?)\s*,?\s*CPF\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2}|\d{11})/i
+    /Recebi\s+d[eao]\s+(?:Sr[°ºa]?\.?\s*\(?a?\)?\.?\s*)?([A-ZÀ-Úa-zà-ú\s]{4,60}?)\s*,?\s*CPF\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2}|\d{11})/i
   );
   const clienteNome = (mCli?.[1] || '').trim().toUpperCase();
   const clienteCpf = mCli?.[2] ? formatarCpf(mCli[2]) : '';
 
-  const mNf =
-    linear.match(
-      /Nota\s+Fiscal(?:\s+Eletr[ôo]nica)?\s*n?[°º]?\s*:?\s*([0-9.]{1,12})\s*,?\s*S[ée]rie\s*:?\s*(\d{1,4})/i
-    );
+  const mNf = linear.match(
+    /(?:NOTAS?\s+FISCA(?:L|IS)(?:\s+(?:ELETR[ÔO]NICA|AVULSAS?))?|NFA?-e)\s*n?\.?[°º]?\s*:?\s*([0-9.]{1,12})(?:\s*,?\s*S[ée]rie\s*:?\s*(\d{1,4}))?/i
+  );
+
+  // Captura todas as NFs quando o recibo quita mais de uma nota (ex: "NFA-e n.º 263166997 e 263167007")
+  const mBlocoMultiNf = linear.match(
+    /(?:NOTAS?\s+FISCA(?:L|IS)(?:\s+(?:ELETR[ÔO]NICA|AVULSAS?))?|NFA?-e)\s*n?\.?[°º]?\s*:?\s*([0-9.,\s]+(?:\s*(?:e|,|\/)\s*[0-9.]+)*)/i
+  );
+  const numerosNfCitadas = Array.from(
+    new Set(
+      (mBlocoMultiNf?.[1]?.match(/\b[0-9.]{1,12}\b/g) || [])
+        .map((n) => normalizarNumeroNf(n))
+        .filter((n) => n && n.length <= 10 && n !== '2025' && n !== '2026')
+    )
+  );
+  const numeroNfPrincipal =
+    numerosNfCitadas[0] || (mNf ? normalizarNumeroNf(mNf[1]) : '');
 
   const mFornNome =
-    linear.match(/NOME\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)\s+CPF\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i) ||
+    linear.match(
+      /^(?:RECIBO\s+)?(?:R\$\s*[\d.,]+\s+)?(?:(?:EU|A)\s*,\s*)?([A-ZÀ-Ú0-9\s.&\-]{4,65}?)\s*,\s*(?:CNPJ|CPF)\s*(?:n\.?[°º]?)?\s*:?\s*(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})/i
+    ) ||
+    linear.match(
+      /NOME\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)\s+CPF\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})/i
+    ) ||
     linear.match(
       /Documento\s+assinado\s+digitalmente\s+([A-ZÀ-Ú\s]{4,60}?)\s+Data:/i
     );
   const mCnpjForn = linear.match(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/);
 
+  const mFornRodape = !mFornNome
+    ? [
+        ...linear.matchAll(
+          /\b([A-ZÀ-Ú]{3,}(?:\s+[A-ZÀ-Ú]{2,}){1,5})\s+CPF\s*:?\s*(\d{3}\.\d{3}\.\d{3}-\d{2})/gi
+        ),
+      ].find(
+        (m) =>
+          normalizarCpfCnpj(m[2]) !== normalizarCpfCnpj(clienteCpf)
+      )
+    : null;
+
   const mDataRec =
     linear.match(
-      /(?:MA|PI|CE|PA)\s*,\s*(\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2})/i
+      /(?:MA|PI|CE|PA)\s*,\s*(\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})/i
     ) ||
     linear.match(/Data:\s*(\d{2}\/\d{2}\/20\d{2})/i) ||
-    linear.match(/emitida\s+em\s+(\d{2}\/\d{2}\/20\d{2})/i);
+    linear.match(/emitidas?\s+em\s+(\d{2}\/\d{2}\/20\d{2})/i);
 
   const mMat = linear.match(/(\d{1,3})\s*(?:\([^)]+\)\s*)?MATRIZES?\s+BOVIN/i);
   const mRep = linear.match(/(\d{1,2})\s*(?:\([^)]+\)\s*)?REPRODUTOR/i);
@@ -1810,13 +2166,21 @@ function extrairDadosRecibo(textoBruto: string): DadosReciboExtraidos {
     dataRecibo: converterDataExtensoOuCurtaBR(mDataRec?.[1] || ''),
     clienteNome,
     clienteCpf,
-    fornecedorNome: (mFornNome?.[1] || '').trim().toUpperCase(),
-    fornecedorCpfCnpj:
-      mFornNome?.[2]
-        ? formatarCpf(mFornNome[2])
-        : mCnpjForn?.[1] || '',
-    numeroNfCitada: mNf ? normalizarNumeroNf(mNf[1]) : '',
-    serieNfCitada: mNf ? normalizarNumeroNf(mNf[2]) : '',
+    fornecedorNome: (
+      mFornNome?.[1] ||
+      mFornRodape?.[1] ||
+      ''
+    )
+      .trim()
+      .toUpperCase(),
+    fornecedorCpfCnpj: mFornNome?.[2]
+      ? formatarCpf(mFornNome[2])
+      : mFornRodape?.[2]
+      ? formatarCpf(mFornRodape[2])
+      : mCnpjForn?.[1] || '',
+    numeroNfCitada: numeroNfPrincipal,
+    numerosNfCitadas,
+    serieNfCitada: mNf?.[2] ? normalizarNumeroNf(mNf[2]) : '',
     qtdMatrizes: mMat ? parseInt(mMat[1], 10) : 0,
     qtdReprodutores: mRep ? parseInt(mRep[1], 10) : 0,
     ehReciboAssessoria:
@@ -1845,23 +2209,53 @@ function extrairDadosDeclaracaoRecebimento(
     todosValoresDecl.length > 0 ? Math.max(...todosValoresDecl) : 0;
 
   const mVal = linear.match(/R\$\s*(\d{1,3}(?:\.\d{3})*[.,]\d{2})/i);
-  const mNf = linear.match(
-    /nota\(s\)\s+fiscal\s*\(?is\)?\s+de\s+N[°º]?\s*([0-9.]{1,12})\s+S[ée]rie\s*(\d{1,4})/i
+  const mNf =
+    linear.match(
+      /nota\(s\)\s+fiscal\s*\(?is\)?\s+de\s+N[°º]?\s*([0-9.]{1,12})\s+S[ée]rie\s*(\d{1,4})/i
+    ) ||
+    linear.match(
+      /NOTAS?\s+FISCA(?:L|IS)(?:\s+AVULSAS?)?\s*n?\.?[°º]?\s*:?\s*([0-9.]{1,12})(?:\s*,?\s*S[ée]rie\s*:?\s*(\d{1,4}))?/i
+    );
+  const mBlocoMultiNfDecl = linear.match(
+    /(?:nota\(s\)\s+fiscal\s*\(?is\)?|NOTAS?\s+FISCA(?:L|IS)(?:\s+AVULSAS?)?|NFA?-e)\s*(?:de\s+)?n?\.?[°º]?\s*:?\s*([0-9.,\s]+(?:\s*(?:e|,|\/)\s*[0-9.]+)*)/i
   );
-  const mForn = linear.match(
-    /emitida\s*\(?s?\)?\s+por\s+([A-ZÀ-Ú\s]{4,60}?)\s*,?\s*de\s+CPF\s*:+\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2})/i
+  const numerosNfCitadas = Array.from(
+    new Set(
+      (mBlocoMultiNfDecl?.[1]?.match(/\b[0-9.]{1,12}\b/g) || [])
+        .map((n) => normalizarNumeroNf(n))
+        .filter((n) => n && n.length <= 10 && n !== '2025' && n !== '2026')
+    )
   );
-  const mCcb = linear.match(
-    /C[ée]dula\s+de\s+Cr[ée]dito\s+Banc[áa]rio\s+N[°º]?\s*([0-9.]{12,22})\s*,?\s*emitida\s+em\s+(\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})/i
-  );
-  const mCli = linear.match(
-    /NOME\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)\s+CPF\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2})/i
-  );
+
+  const mForn =
+    linear.match(
+      /emitida\s*\(?s?\)?\s+(?:por|pel[oa]\s+(?:Sr\.?a?\.?\s*)?)\s*([A-ZÀ-Ú0-9\s.&\-]{4,65}?)\s*,?\s*(?:de\s+)?(?:CPF|CNPJ)\s*(?:n\.?[°º]?)?\s*:?\s*(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}\s*[-–]?\s*\d{2})/i
+    ) ||
+    linear.match(
+      /emitida\s*\(?s?\)?\s+por\s+([A-ZÀ-Ú0-9\s.&\-]{4,65}?)\s*,\s*CNPJ\s*(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/i
+    );
+  const mCcb =
+    linear.match(
+      /C[ée]dula\s+de\s+Cr[ée]dito\s+Banc[áa]rio\s+N[°º]?\s*([0-9.]{12,22})\s*,?\s*emitida\s+em\s+(\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2}|\d{2}\/\d{2}\/20\d{2})/i
+    ) ||
+    linear.match(
+      /opera[çc][ãa]o\s+n[°º]?\s*([0-9.]{12,22})\s*,?\s*contratada\s+em\s+(\d{2}\/\d{2}\/20\d{2}|\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2})/i
+    );
+  const mCli =
+    linear.match(
+      /NOME\s*:?\s*([A-ZÀ-Ú\s]{4,60}?)\s+CPF\s*:?\s*(\d{3}\.?\d{3}\.?\d{3}\s*[-–]?\s*\d{2})/i
+    ) ||
+    linear.match(
+      /([A-ZÀ-Ú]{3,}(?:\s+[A-ZÀ-Ú]{2,}){1,5})\s+CPF\s*:?\s*(\d{3}\.\d{3}\.\d{3}-\d{2})/i
+    );
   const mDataDecl = linear.match(
     /MA\s*,\s*(\d{1,2}\s+de\s+[a-zçA-ZÇ]+\s+de\s+20\d{2})/i
   );
-  const mMat = linear.match(/(\d{1,3})\s*(?:\([^)]+\)\s*)?MATRIZES?\s+BOVIN/i);
-  const mRep = linear.match(/(\d{1,2})\s*(?:\([^)]+\)\s*)?REPRODUTOR/i);
+  const mMat = linear.match(/(\d{1,3})\s*(?:\([^)]+\)\s*)?,?\s*MATRIZES?\s+BOVIN/i);
+  const mRep = linear.match(/(\d{1,2})\s*(?:\([^)]+\)\s*)?,?\s*REPRODUTOR/i);
+  const mBez = linear.match(
+    /(\d{1,3})\s*(?:\([^)]+\)\s*)?,?\s*(?:BEZERR[OA]S?|GARROTES?)/i
+  );
 
   return {
     valorTotal: valorTotalDeclMaior,
@@ -1870,12 +2264,15 @@ function extrairDadosDeclaracaoRecebimento(
     clienteCpf: mCli?.[2] ? formatarCpf(mCli[2]) : '',
     fornecedorNome: (mForn?.[1] || '').trim().toUpperCase(),
     fornecedorCpfCnpj: mForn?.[2] ? formatarCpf(mForn[2]) : '',
-    numeroNfCitada: mNf ? normalizarNumeroNf(mNf[1]) : '',
-    serieNfCitada: mNf ? normalizarNumeroNf(mNf[2]) : '',
+    numeroNfCitada:
+      numerosNfCitadas[0] || (mNf ? normalizarNumeroNf(mNf[1]) : ''),
+    numerosNfCitadas,
+    serieNfCitada: mNf?.[2] ? normalizarNumeroNf(mNf[2]) : '',
     numeroCcbCitada: mCcb?.[1]?.trim() || '',
     dataCcbCitada: converterDataExtensoOuCurtaBR(mCcb?.[2] || ''),
     qtdMatrizes: mMat ? parseInt(mMat[1], 10) : 0,
     qtdReprodutores: mRep ? parseInt(mRep[1], 10) : 0,
+    qtdBezerros: mBez ? parseInt(mBez[1], 10) : 0,
   };
 }
 
@@ -1952,7 +2349,37 @@ export async function auditarDocumentoIndividualDesembolso(params: {
     base.clienteNome = orc.clienteNome;
     base.clienteCpf = orc.clienteCpf;
   } else if (classif.tipo === 'COMPROVACAO_FINANCEIRA') {
-    const comp = extrairComprovacaoFinanceira(texto);
+    let comp = extrairComprovacaoFinanceira(texto);
+    if (
+      !forcarOcr &&
+      !usouOcr &&
+      (comp.total <= 0 || comp.itens.length === 0) &&
+      !controle?.cancelado
+    ) {
+      onProgresso?.(
+        `📸 Valores da Comprovação Financeira ilegíveis no texto nativo ("${file.name}"). Ativando OCR (Plano B)...`
+      );
+      const rOcrComp = await executarOcrDesembolsoPdf(
+        file,
+        onProgresso,
+        controle,
+        [1]
+      );
+      if (rOcrComp.textoOcr && rOcrComp.textoOcr.trim().length > 30) {
+        const compOcr = extrairComprovacaoFinanceira(rOcrComp.textoOcr);
+        comp = {
+          clienteNome: comp.clienteNome || compOcr.clienteNome,
+          clienteCpf: comp.clienteCpf || compOcr.clienteCpf,
+          dataRelatorio: comp.dataRelatorio || compOcr.dataRelatorio,
+          tecnicoNome: comp.tecnicoNome || compOcr.tecnicoNome,
+          tecnicoCrea: comp.tecnicoCrea || compOcr.tecnicoCrea,
+          itens: compOcr.itens.length > 0 ? compOcr.itens : comp.itens,
+          total: compOcr.total > 0 ? compOcr.total : comp.total,
+        };
+        base.foiLidoPorOcr = true;
+        base.textoExtraido = `${texto}\n\n${rOcrComp.textoOcr}`;
+      }
+    }
     base.clienteNome = comp.clienteNome;
     base.clienteCpf = comp.clienteCpf;
     base.itensComprovacao = comp.itens;
@@ -1988,7 +2415,10 @@ export async function auditarDocumentoIndividualDesembolso(params: {
     base.dadosRecibo = rec;
     base.clienteNome = rec.clienteNome;
     base.clienteCpf = rec.clienteCpf;
-  } else if (classif.tipo === 'DECLARACAO_RECEBIMENTO') {
+  } else if (
+    classif.tipo === 'DECLARACAO_RECEBIMENTO' ||
+    classif.tipo === 'DECLARACAO_APLICACAO_CUSTEIO'
+  ) {
     const decl = extrairDadosDeclaracaoRecebimento(texto);
     base.dadosDeclaracao = decl;
     base.clienteNome = decl.clienteNome;
@@ -2032,6 +2462,33 @@ export function auditarPacoteDesembolsoCompleto(params: {
   const docsDeclaracao = documentos.filter(
     (d) => d.tipo === 'DECLARACAO_RECEBIMENTO'
   );
+
+  const docsDeclaracaoCusteio = documentos.filter(
+    (d) => d.tipo === 'DECLARACAO_APLICACAO_CUSTEIO'
+  );
+  const todasDeclaracoes = [...docsDeclaracao, ...docsDeclaracaoCusteio];
+
+  const temRubricaCusteioNoPacote =
+    (docOrcamento?.lancamentosOrcamento || []).some((l) =>
+      [
+        'SAL_MINERAL',
+        'ROCO_PASTAGEM',
+        'COMPLEMENTACAO_ALIMENTAR',
+        'SANIDADE_VACINAS',
+        'BEZERRO_RECRIA',
+      ].includes(l.categoriaItem)
+    ) ||
+    docsDeclaracaoCusteio.length > 0 ||
+    /RENOVACAO\s+DE\s+CUSTEIO|PLANTA\s+NORDESTE/i.test(
+      removerAcentos(docOrcamento?.textoExtraido || '')
+    ) ||
+    todasDeclaracoes.some((d) =>
+      /ART\.?\s*20\s+DA\s+LEI/i.test(removerAcentos(d.textoExtraido))
+    );
+
+  const ehCusteioEfetivo =
+    modalidade === 'RENOVACAO_CUSTEIO' ||
+    (temRubricaCusteioNoPacote && !docComprovacao && !docLaudo);
   const docsViti = documentos.filter((d) => d.tipo === 'VITI');
 
   // Vincula VITIs aos documentos assinados digitalmente (por nome de arquivo ou signatário)
@@ -2090,6 +2547,16 @@ export function auditarPacoteDesembolsoCompleto(params: {
       if (
         doc.tipo === 'LAUDO_ACOMPANHAMENTO' &&
         (baseVitiLimpa.includes('LAUDO') || arqInternoViti.includes('LAUDO'))
+      ) {
+        return true;
+      }
+      if (
+        (doc.tipo === 'DECLARACAO_RECEBIMENTO' ||
+          doc.tipo === 'DECLARACAO_APLICACAO_CUSTEIO') &&
+        (baseVitiLimpa.includes('DECLARACAO') ||
+          arqInternoViti.includes('DECLARACAO') ||
+          baseVitiLimpa.includes('RECEBIMENTO') ||
+          arqInternoViti.includes('RECEBIMENTO'))
       ) {
         return true;
       }
@@ -2159,11 +2626,11 @@ export function auditarPacoteDesembolsoCompleto(params: {
     docsNf[0]?.clienteCpf ||
     '';
   const numeroCcb =
-    docOrcamento?.numeroCcb || docsDeclaracao[0]?.numeroCcb || '';
+    docOrcamento?.numeroCcb || todasDeclaracoes[0]?.numeroCcb || '';
   const dataContratacao =
     docOrcamento?.dataContratacaoCcb ||
     docLaudo?.dataContratacaoCcb ||
-    docsDeclaracao[0]?.dataContratacaoCcb ||
+    todasDeclaracoes[0]?.dataContratacaoCcb ||
     '';
   const imovelEstabelecimento =
     docLaudo?.dadosLaudo?.localidade ||
@@ -2238,21 +2705,30 @@ export function auditarPacoteDesembolsoCompleto(params: {
     docsGta.length > 0 ||
     docsNf.some((d) =>
       (d.dadosNf?.itens || []).some(
-        (i) => i.categoriaItem === 'MATRIZ' || i.categoriaItem === 'REPRODUTOR'
+        (i) =>
+          i.categoriaItem === 'MATRIZ' ||
+          i.categoriaItem === 'REPRODUTOR' ||
+          i.categoriaItem === 'BEZERRO_RECRIA'
       )
     );
   const faltantesPacote: string[] = [];
   if (!docOrcamento) faltantesPacote.push('Anexo-Orçamento do Contrato');
-  if (!docComprovacao) faltantesPacote.push('Comprovação Físico-Financeira');
-  if (!docLaudo) faltantesPacote.push('Laudo de Acompanhamento');
+  if (!ehCusteioEfetivo && !docComprovacao)
+    faltantesPacote.push('Comprovação Físico-Financeira');
+  if (!ehCusteioEfetivo && !docLaudo)
+    faltantesPacote.push('Laudo de Acompanhamento');
   if (docsNf.length === 0) faltantesPacote.push('Nota(s) Fiscal(is) / DANFE');
   if (temGadoNoPacote && docsGta.length === 0) faltantesPacote.push('GTA');
   if (temGadoNoPacote && docsDeclaracao.length === 0)
     faltantesPacote.push('Declaração de Recebimento dos Animais');
+  if (ehCusteioEfetivo && todasDeclaracoes.length === 0)
+    faltantesPacote.push('Declaração(ões) de Aquisição/Recebimento (Custeio)');
 
   checklist.push({
     id: 'DESEMB_1_COMPOSICAO',
-    titulo: `1. Composição do Dossiê de Desembolso (${documentos.length} arquivo(s) analisado(s))`,
+    titulo: `1. Composição do Dossiê de Desembolso (${documentos.length} arquivo(s) — ${
+      ehCusteioEfetivo ? 'Custeio' : 'Investimento / PRONAF A'
+    })`,
     status: faltantesPacote.length === 0 ? 'OK' : 'ALERTA',
     resumo:
       faltantesPacote.length === 0
@@ -2260,14 +2736,22 @@ export function auditarPacoteDesembolsoCompleto(params: {
         : `⚠️ Faltam carregar para conferência integral: ${faltantesPacote.join(', ')}.`,
     detalhes: [
       `📄 Anexo-Orçamento: ${docOrcamento ? `✅ ${docOrcamento.nomeArquivo}` : '❌ Não anexado'}`,
-      `📄 Comprovação Financeira: ${docComprovacao ? `✅ ${docComprovacao.nomeArquivo}` : '❌ Não anexada'}`,
-      `📄 Laudo de Acompanhamento: ${docLaudo ? `✅ ${docLaudo.nomeArquivo}` : '❌ Não anexado'}`,
-      `🐄 GTA(s): ${docsGta.length > 0 ? `✅ ${docsGta.map((d) => d.nomeArquivo).join(', ')}` : '—'}`,
-      `🧾 Nota(s) Fiscal(is): ${docsNf.length > 0 ? `✅ ${docsNf.map((d) => `${d.nomeArquivo} (NF ${d.dadosNf?.numero || '?'})`).join(', ')}` : '❌ Nenhuma'}`,
-      `💵 Recibo(s): ${docsRecibo.length > 0 ? `✅ ${docsRecibo.map((d) => d.nomeArquivo).join(', ')}` : '⚠️ Nenhum (se > R$ 5 mil, crédito direto ao fornecedor)'}`,
-      `✍️ Declaração Recebimento Animais: ${docsDeclaracao.length > 0 ? `✅ ${docsDeclaracao.map((d) => d.nomeArquivo).join(', ')}` : '—'}`,
+      !ehCusteioEfetivo
+        ? `📄 Comprovação Financeira: ${docComprovacao ? `✅ ${docComprovacao.nomeArquivo}` : '❌ Não anexada'}`
+        : '',
+      !ehCusteioEfetivo
+        ? `📄 Laudo de Acompanhamento: ${docLaudo ? `✅ ${docLaudo.nomeArquivo}` : '❌ Não anexado'}`
+        : '',
+      temGadoNoPacote
+        ? `🐄 GTA(s): ${docsGta.length > 0 ? `✅ ${docsGta.map((d) => d.nomeArquivo).join(', ')}` : '❌ Não anexada'}`
+        : '',
+      `🧾 Nota(s) Fiscal(is) / NFA-e: ${docsNf.length > 0 ? `✅ ${docsNf.map((d) => `${d.nomeArquivo} (NF ${d.dadosNf?.numero || '?'})`).join(', ')}` : '❌ Nenhuma'}`,
+      `💵 Recibo(s): ${docsRecibo.length > 0 ? `✅ ${docsRecibo.map((d) => d.nomeArquivo).join(', ')}` : '⚠️ Nenhum'}`,
+      todasDeclaracoes.length > 0
+        ? `✍️ Declaração(ões): ✅ ${todasDeclaracoes.map((d) => d.nomeArquivo).join(', ')}`
+        : '',
       `🔐 Relatórios VITI carregados: ${docsViti.length}`,
-    ],
+    ].filter(Boolean),
   });
 
   // -------------------------------------------------------------------------
@@ -2297,14 +2781,14 @@ export function auditarPacoteDesembolsoCompleto(params: {
   );
   const ccbOrcDig = normalizarNumeroCcbDigitos(docOrcamento?.numeroCcb || '');
   const ccbDeclDig = normalizarNumeroCcbDigitos(
-    docsDeclaracao[0]?.numeroCcb || ''
+    todasDeclaracoes[0]?.numeroCcb || ''
   );
   const ccbDiverge =
     Boolean(ccbOrcDig && ccbDeclDig) && ccbOrcDig !== ccbDeclDig;
   const ccbComErroFormatacao =
-    Boolean(docsDeclaracao[0]?.numeroCcb && docOrcamento?.numeroCcb) &&
+    Boolean(todasDeclaracoes[0]?.numeroCcb && docOrcamento?.numeroCcb) &&
     ccbOrcDig === ccbDeclDig &&
-    docsDeclaracao[0]?.numeroCcb !== docOrcamento?.numeroCcb;
+    todasDeclaracoes[0]?.numeroCcb !== docOrcamento?.numeroCcb;
 
   checklist.push({
     id: 'DESEMB_2_IDENTIDADE',
@@ -2399,9 +2883,19 @@ export function auditarPacoteDesembolsoCompleto(params: {
   let faltaReciboAssessoriaObrigatorio = false;
   let msgErroAssessoria = '';
 
-  const categoriasParaComparar: Array<
-    'MATRIZ' | 'REPRODUTOR' | 'PASTAGEM' | 'CERCA_REFORMA' | 'ASSESSORIA' | 'OUTRO'
-  > = ['MATRIZ', 'REPRODUTOR', 'PASTAGEM', 'CERCA_REFORMA', 'ASSESSORIA', 'OUTRO'];
+  const categoriasParaComparar: CategoriaItemDesembolso[] = [
+    'SAL_MINERAL',
+    'ROCO_PASTAGEM',
+    'CERCA_REFORMA',
+    'COMPLEMENTACAO_ALIMENTAR',
+    'SANIDADE_VACINAS',
+    'MATRIZ',
+    'REPRODUTOR',
+    'BEZERRO_RECRIA',
+    'PASTAGEM',
+    'ASSESSORIA',
+    'OUTRO',
+  ];
 
   for (const cat of categoriasParaComparar) {
     const lancsCat = (docOrcamento?.lancamentosOrcamento || []).filter(
@@ -2719,13 +3213,16 @@ export function auditarPacoteDesembolsoCompleto(params: {
       );
     }
 
-    // Procura recibo correspondente a esta NF
-    const reciboMatch = docsRecibo.find(
-      (r) =>
-        r.dadosRecibo &&
-        ((nf.numero && r.dadosRecibo.numeroNfCitada === nf.numero) ||
-          Math.abs(r.dadosRecibo.valorTotal - nf.valorTotal) <= 0.05)
-    );
+    // Procura recibo correspondente a esta NF (1:1 OU recibo consolidado quitando múltiplas NFs como "263166997 e 263167007")
+    const reciboMatch = docsRecibo.find((r) => {
+      const rec = r.dadosRecibo;
+      if (!rec) return false;
+      const listaNfsRec = rec.numerosNfCitadas || [];
+      if (nf.numero && listaNfsRec.includes(nf.numero)) return true;
+      if (nf.numero && rec.numeroNfCitada === nf.numero) return true;
+      if (Math.abs(rec.valorTotal - nf.valorTotal) <= 0.05) return true;
+      return false;
+    });
 
     let msgRegraPagamento = '';
     if (nf.valorTotal <= 5000) {
@@ -2735,20 +3232,67 @@ export function auditarPacoteDesembolsoCompleto(params: {
           )})`
         : '✅ Até R$ 5 mil (dispensa comprovante extra além da NF)';
     } else {
-      if (reciboMatch) {
-        const valBate =
-          Math.abs((reciboMatch.dadosRecibo?.valorTotal || 0) - nf.valorTotal) <=
-          0.05;
-        if (!valBate) {
-          errosNf.push(
-            `🚨 Valor do Recibo (R$ ${formatarMoedaBD(
-              reciboMatch.dadosRecibo?.valorTotal || 0
-            )}) diverge da NF nº ${nf.numero} (R$ ${formatarMoedaBD(
-              nf.valorTotal
-            )})!`
-          );
+      if (reciboMatch && reciboMatch.dadosRecibo) {
+        const rec = reciboMatch.dadosRecibo;
+        const listaNfsRec =
+          rec.numerosNfCitadas && rec.numerosNfCitadas.length > 0
+            ? rec.numerosNfCitadas
+            : rec.numeroNfCitada
+            ? [rec.numeroNfCitada]
+            : [];
+        const ehReciboConsolidadoMultiNf =
+          listaNfsRec.length > 1 && nf.numero && listaNfsRec.includes(nf.numero);
+
+        if (ehReciboConsolidadoMultiNf) {
+          const somaNfsCitadas = docsNf
+            .filter((d) => d.dadosNf && listaNfsRec.includes(d.dadosNf.numero))
+            .reduce((acc, d) => acc + (d.dadosNf?.valorTotal || 0), 0);
+          const somaBate = Math.abs(rec.valorTotal - somaNfsCitadas) <= 0.05;
+          if (!somaBate) {
+            errosNf.push(
+              `🚨 Recibo consolidado ("${reciboMatch.nomeArquivo}": R$ ${formatarMoedaBD(
+                rec.valorTotal
+              )}) diverge da soma das NFs [${listaNfsRec.join(
+                ' + '
+              )}] (R$ ${formatarMoedaBD(somaNfsCitadas)})!`
+            );
+          }
+          msgRegraPagamento = `✅ Quitado no Recibo consolidado (${reciboMatch.nomeArquivo} — soma NFs ${listaNfsRec.join(
+            ' + '
+          )} = R$ ${formatarMoedaBD(rec.valorTotal)})`;
+        } else {
+          const valBate = Math.abs(rec.valorTotal - nf.valorTotal) <= 0.05;
+          const numNfRec = rec.numeroNfCitada || '';
+          const numNfDiverge =
+            Boolean(nf.numero && numNfRec) && numNfRec !== nf.numero;
+
+          if (!valBate) {
+            errosNf.push(
+              `🚨 Valor do Recibo (R$ ${formatarMoedaBD(
+                rec.valorTotal
+              )}) diverge da NF nº ${nf.numero} (R$ ${formatarMoedaBD(
+                nf.valorTotal
+              )})!`
+            );
+          } else if (numNfDiverge) {
+            alertasNf.push(
+              `⚠️ Divergência de nº da NF no Recibo ("${reciboMatch.nomeArquivo}"): o recibo cita NF nº ${numNfRec}, mas a NF anexa é nº ${nf.numero} (valor R$ ${formatarMoedaBD(
+                nf.valorTotal
+              )} bate).`
+            );
+          }
+          msgRegraPagamento = numNfDiverge
+            ? `⚠️ Recibo vinculado (valor OK, mas nº NF digitado como ${numNfRec} no recibo)`
+            : `✅ Acima de R$ 5 mil com Recibo vinculado (${reciboMatch.nomeArquivo})`;
         }
-        msgRegraPagamento = `✅ Acima de R$ 5 mil com Recibo vinculado (${reciboMatch.nomeArquivo})`;
+      } else if (nf.possuiFaturaDuplicatas) {
+        alertasNf.push(
+          `⚠️ NF nº ${nf.numero} (R$ ${formatarMoedaBD(
+            nf.valorTotal
+          )} > R$ 5.000,00) possui Fatura/Duplicatas e está sem Recibo avulso anexado — confirmar boletos quitados ou crédito ao fornecedor (${nf.emitenteNome}).`
+        );
+        msgRegraPagamento =
+          '⚠️ Sem Recibo avulso (NF c/ Fatura/Duplicatas — conferir quitação)';
       } else {
         alertasNf.push(
           `⚠️ NF nº ${nf.numero} (R$ ${formatarMoedaBD(
@@ -2799,94 +3343,179 @@ export function auditarPacoteDesembolsoCompleto(params: {
     const errosGado: string[] = [];
     const detalhesGado: string[] = [];
     const gta = docsGta[0]?.dadosGta;
-    const nfGado = docsNf.find((d) =>
-      (d.dadosNf?.itens || []).some(
-        (i) => i.categoriaItem === 'MATRIZ' || i.categoriaItem === 'REPRODUTOR'
-      )
-    )?.dadosNf;
+    const nfsGado = docsNf
+      .map((d) => d.dadosNf)
+      .filter(
+        (nf): nf is DadosNotaFiscalExtraidos =>
+          Boolean(nf) &&
+          nf!.itens.some(
+            (i) =>
+              i.categoriaItem === 'MATRIZ' ||
+              i.categoriaItem === 'REPRODUTOR' ||
+              i.categoriaItem === 'BEZERRO_RECRIA'
+          )
+      );
     const decl = docsDeclaracao[0]?.dadosDeclaracao;
 
-    if (gta && nfGado) {
-      // 1. Número da GTA citado na NF
-      if (nfGado.numeroGtaCitada && gta.numero && nfGado.numeroGtaCitada !== gta.numero) {
+    const todosItensGadoNf = nfsGado.flatMap((n) => n.itens);
+    const totalValorNfsGado = nfsGado.reduce((a, n) => a + n.valorTotal, 0);
+    const numsNfsGado = nfsGado.map((n) => n.numero).filter(Boolean);
+
+    const qtdMachoAdultoNf = todosItensGadoNf
+      .filter((i) => i.categoriaItem === 'REPRODUTOR')
+      .reduce((a, b) => a + b.quantidade, 0);
+    const qtdFemeaAdultaNf = todosItensGadoNf
+      .filter((i) => i.categoriaItem === 'MATRIZ')
+      .reduce((a, b) => a + b.quantidade, 0);
+    const qtdBezerroRecriaNf = todosItensGadoNf
+      .filter((i) => i.categoriaItem === 'BEZERRO_RECRIA')
+      .reduce((a, b) => a + b.quantidade, 0);
+    const totalNfAnimais =
+      qtdMachoAdultoNf + qtdFemeaAdultaNf + qtdBezerroRecriaNf;
+
+      if (gta && nfsGado.length === 0) {
+      errosGado.push(
+        `🚨 GTA nº ${gta.numero} (${gta.totalAnimais} animais) sem Nota Fiscal de aquisição de animais identificada no pacote!`
+      );
+    }
+
+    if (gta && nfsGado.length > 0) {
+      // 1. Vínculo de nº da GTA citado em alguma NF (NFA-e geralmente não imprime GTA)
+      const nfComGta = nfsGado.find((n) => n.numeroGtaCitada);
+      if (nfComGta && gta.numero && nfComGta.numeroGtaCitada !== gta.numero) {
         errosGado.push(
-          `🚨 Nº da GTA na NF (${nfGado.numeroGtaCitada}) diverge da GTA anexada (${gta.numero})!`
+          `🚨 Nº da GTA na NF (${nfComGta.numeroGtaCitada}) diverge da GTA anexada (${gta.numero})!`
         );
-      } else if (nfGado.numeroGtaCitada) {
+      } else if (nfComGta) {
         detalhesGado.push(
-          `✅ Vínculo NF × GTA confirmado: NF nº ${nfGado.numero} cita expressamente a GTA nº ${gta.numero} (Série ${gta.serie}).`
+          `✅ Vínculo NF × GTA confirmado: NF nº ${nfComGta.numero} cita expressamente a GTA nº ${gta.numero} (Série ${gta.serie}).`
         );
       }
 
-      // 2. Fornecedor (CPF) igual na Origem da GTA e Emitente da NF
-      if (
-        normalizarCpfCnpj(gta.origemCpfCnpj) &&
-        normalizarCpfCnpj(nfGado.emitenteCpfCnpj) &&
-        normalizarCpfCnpj(gta.origemCpfCnpj) !==
-          normalizarCpfCnpj(nfGado.emitenteCpfCnpj)
-      ) {
+      // 2. Fornecedor (CPF) igual na Origem da GTA e Emitente(s) das NFs
+      const nfFornDiverge = nfsGado.find(
+        (n) =>
+          normalizarCpfCnpj(gta.origemCpfCnpj) &&
+          normalizarCpfCnpj(n.emitenteCpfCnpj) &&
+          normalizarCpfCnpj(gta.origemCpfCnpj) !==
+            normalizarCpfCnpj(n.emitenteCpfCnpj)
+      );
+      if (nfFornDiverge) {
         errosGado.push(
-          `🚨 Fornecedor da GTA (${gta.origemNome} — ${gta.origemCpfCnpj}) diverge do Emitente da NF (${nfGado.emitenteNome} — ${nfGado.emitenteCpfCnpj})!`
+          `🚨 Fornecedor da GTA (${gta.origemNome} — ${gta.origemCpfCnpj}) diverge do Emitente da NF nº ${nfFornDiverge.numero} (${nfFornDiverge.emitenteNome} — ${nfFornDiverge.emitenteCpfCnpj})!`
         );
       } else {
         detalhesGado.push(
-          `✅ Fornecedor idêntico na GTA e NF: ${gta.origemNome} (CPF: ${gta.origemCpfCnpj}).`
+          `✅ Fornecedor idêntico na GTA e ${
+            nfsGado.length > 1 ? `nas ${nfsGado.length} NFs` : 'na NF'
+          }: ${gta.origemNome || nfsGado[0].emitenteNome} (CPF: ${
+            gta.origemCpfCnpj || nfsGado[0].emitenteCpfCnpj
+          }).`
         );
       }
 
-      // 3. Quantidades e Faixas Etárias (S567: Reprodutores >36M, Matrizes >36F)
-      const qtdMachoNf = nfGado.itens
-        .filter((i) => i.categoriaItem === 'REPRODUTOR')
-        .reduce((a, b) => a + b.quantidade, 0);
-      const qtdFemeaNf = nfGado.itens
-        .filter((i) => i.categoriaItem === 'MATRIZ')
-        .reduce((a, b) => a + b.quantidade, 0);
-      const totalNfAnimais = qtdMachoNf + qtdFemeaNf;
-
+      // 3. Quantidades e Faixas Etárias (0-12M/13-24M para Bezerros/Recria; >36M/>36F para Reprodutores/Matrizes)
       if (totalNfAnimais !== gta.totalAnimais) {
         errosGado.push(
-          `🚨 Quantidade de animais diverge: GTA transporta ${gta.totalAnimais} animais e NF fatura ${totalNfAnimais}!`
+          `🚨 Quantidade de animais diverge: GTA transporta ${gta.totalAnimais} animais e NF(s) [${numsNfsGado.join(
+            ' + '
+          )}] faturam ${totalNfAnimais}!`
         );
       } else {
+        const resumoGtaFaixas = [
+          gta.qtd0a12M > 0 ? `${gta.qtd0a12M} macho(s) 0-12m` : '',
+          gta.qtd0a12F > 0 ? `${gta.qtd0a12F} fêmea(s) 0-12m` : '',
+          gta.qtd13a24M > 0 ? `${gta.qtd13a24M} macho(s) 13-24m` : '',
+          gta.qtd13a24F > 0 ? `${gta.qtd13a24F} fêmea(s) 13-24m` : '',
+          gta.qtdAcima36M > 0 ? `${gta.qtdAcima36M} macho(s) >36m` : '',
+          gta.qtdAcima36F > 0 ? `${gta.qtdAcima36F} fêmea(s) >36m` : '',
+        ]
+          .filter(Boolean)
+          .join(' + ');
+
+        const resumoNfTipos = [
+          qtdBezerroRecriaNf > 0
+            ? `${qtdBezerroRecriaNf} bezerro(s)/recria`
+            : '',
+          qtdMachoAdultoNf > 0 ? `${qtdMachoAdultoNf} reprodutor(es)` : '',
+          qtdFemeaAdultaNf > 0 ? `${qtdFemeaAdultaNf} matriz(es)` : '',
+        ]
+          .filter(Boolean)
+          .join(' + ');
+
         detalhesGado.push(
-          `✅ Quantidades e Faixas Etárias compatíveis: GTA (${gta.qtdAcima36M} macho >36m + ${gta.qtdAcima36F} fêmeas >36m = ${gta.totalAnimais}) × NF (${qtdMachoNf} reprodutor + ${qtdFemeaNf} matrizes = ${totalNfAnimais}).`
+          `✅ Quantidades e Faixas Etárias compatíveis: GTA (${resumoGtaFaixas} = ${
+            gta.totalAnimais
+          }) × ${
+            nfsGado.length > 1 ? `NFs [${numsNfsGado.join(' + ')}]` : `NF nº ${numsNfsGado[0] || '?'}`
+          } (${resumoNfTipos} = ${totalNfAnimais} | Total R$ ${formatarMoedaBD(
+            totalValorNfsGado
+          )}).`
         );
       }
 
-      // 4. Estabelecimento Destino e Exames
+      // 4. Estabelecimento Destino e Sanidade (dispensa aviso de Brucelose/Tuberculose quando for apenas bezerros machos 0-12m de Recria)
+      const ehSomenteBezerrosMachosRecria =
+        gta.qtd0a12M === gta.totalAnimais &&
+        gta.totalAnimais > 0 &&
+        qtdFemeaAdultaNf === 0 &&
+        qtdMachoAdultoNf === 0;
+
       detalhesGado.push(
-        `📍 Estabelecimento Destino na GTA: ${gta.destinoEstabelecimento || '?'} (${
-          gta.destinoMunicipio || '-'
-        }) • Validade GTA: ${gta.dataEmissao} a ${gta.dataValidade}`,
+        `📍 Estabelecimento Destino na GTA: ${
+          gta.destinoEstabelecimento || '?'
+        } (${gta.destinoMunicipio || '-'}) • Finalidade: ${
+          gta.finalidade || '-'
+        } • Validade GTA: ${gta.dataEmissao} a ${gta.dataValidade}`,
         gta.possuiExamesNegativosCitados
           ? '🩺 Sanidade Animal: Exames de Brucelose e Tuberculose NEGATIVOS registrados na GTA.'
+          : ehSomenteBezerrosMachosRecria
+          ? '🩺 Sanidade Animal: Lote de bezerros machos (0-12 meses — Recria), isento de exames de reprodução (Brucelose/Tuberculose).'
           : '⚠️ Atenção: Conferir atestados/exames de Brucelose e Tuberculose na GTA.'
       );
     }
 
-    if (decl && nfGado) {
-      const valDeclOk = Math.abs(decl.valorTotal - nfGado.valorTotal) <= 0.05;
-      const nfDeclOk = !decl.numeroNfCitada || decl.numeroNfCitada === nfGado.numero;
+    if (decl && nfsGado.length > 0) {
+      const valDeclOk = Math.abs(decl.valorTotal - totalValorNfsGado) <= 0.05;
+      const listaNfsDecl =
+        decl.numerosNfCitadas && decl.numerosNfCitadas.length > 0
+          ? decl.numerosNfCitadas
+          : decl.numeroNfCitada
+          ? [decl.numeroNfCitada]
+          : [];
+      const todasNfsNaDecl =
+        listaNfsDecl.length === 0 ||
+        numsNfsGado.every((num) => listaNfsDecl.includes(num));
       const fornDeclOk =
         !decl.fornecedorCpfCnpj ||
         normalizarCpfCnpj(decl.fornecedorCpfCnpj) ===
-          normalizarCpfCnpj(nfGado.emitenteCpfCnpj);
+          normalizarCpfCnpj(nfsGado[0].emitenteCpfCnpj);
 
-      if (!valDeclOk || !nfDeclOk || !fornDeclOk) {
+      if (!valDeclOk || !todasNfsNaDecl || !fornDeclOk) {
         errosGado.push(
           `🚨 Divergência na Declaração de Recebimento dos Animais (Valor R$ ${formatarMoedaBD(
             decl.valorTotal
-          )} | NF ${decl.numeroNfCitada} | Fornecedor ${decl.fornecedorCpfCnpj})!`
+          )} × NFs R$ ${formatarMoedaBD(
+            totalValorNfsGado
+          )} | NFs citadas: [${listaNfsDecl.join(', ')}] | Fornecedor ${
+            decl.fornecedorCpfCnpj
+          })!`
         );
       } else {
+        const resumoDeclAnim = [
+          decl.qtdBezerros ? `${decl.qtdBezerros} bezerro(s)` : '',
+          decl.qtdMatrizes ? `${decl.qtdMatrizes} matriz(es)` : '',
+          decl.qtdReprodutores ? `${decl.qtdReprodutores} reprodutor(es)` : '',
+        ]
+          .filter(Boolean)
+          .join(' + ');
+
         detalhesGado.push(
           `✅ Declaração de Recebimento OK: R$ ${formatarMoedaBD(
             decl.valorTotal
-          )} • ${decl.qtdMatrizes} matrizes + ${
-            decl.qtdReprodutores
-          } reprodutor • NF nº ${decl.numeroNfCitada} Série ${
-            decl.serieNfCitada
-          } • Fornecedor CPF ${decl.fornecedorCpfCnpj}.`
+          )} • ${resumoDeclAnim || `${totalNfAnimais} animais`} • NF(s) [${
+            listaNfsDecl.join(' + ') || numsNfsGado.join(' + ')
+          }] • Fornecedor CPF ${decl.fornecedorCpfCnpj}.`
         );
       }
     }
@@ -2894,17 +3523,77 @@ export function auditarPacoteDesembolsoCompleto(params: {
     checklist.push({
       id: 'DESEMB_7_SEMOVENTES_GTA_NF_DECL',
       titulo:
-        '7. Cruzamento de Semoventes (GTA × NF Gado × Idades/Fases × Declaração de Recebimento)',
+        '7. Cruzamento de Semoventes (GTA × NF(s) Gado × Idades/Fases × Declaração de Recebimento)',
       status: errosGado.length > 0 ? 'ERRO' : 'OK',
       resumo:
         errosGado.length > 0
           ? errosGado[0]
-          : `✅ GTA nº ${gta?.numero || '?'} × NF nº ${
-              nfGado?.numero || '?'
-            } × Declaração de Recebimento 100% sincronizados (quantidades, idades >36m, fornecedor e destino).`,
+          : `✅ GTA nº ${gta?.numero || '?'} × ${
+              nfsGado.length > 1
+                ? `NFs [${numsNfsGado.join(' + ')}]`
+                : `NF nº ${numsNfsGado[0] || '?'}`
+            } × Declaração de Recebimento 100% sincronizados (${totalNfAnimais} animais, faixa etária, fornecedor e destino).`,
       detalhes: [
         ...errosGado.filter((e) => e !== errosGado[0] || errosGado.length > 1),
         ...detalhesGado,
+      ],
+    });
+  }
+
+  if (!temGadoNoPacote && docsDeclaracaoCusteio.length > 0) {
+    const errosDeclCust: string[] = [];
+    const detalhesDeclCust: string[] = [];
+
+    for (const dDecl of docsDeclaracaoCusteio) {
+      const decl = dDecl.dadosDeclaracao;
+      if (!decl) continue;
+
+      const nfRef = docsNf.find(
+        (n) =>
+          n.dadosNf &&
+          ((decl.numeroNfCitada && n.dadosNf.numero === decl.numeroNfCitada) ||
+            Math.abs(n.dadosNf.valorTotal - decl.valorTotal) <= 0.05)
+      )?.dadosNf;
+
+      const opBate =
+        !ccbOrcDig ||
+        !decl.numeroCcbCitada ||
+        normalizarNumeroCcbDigitos(decl.numeroCcbCitada) === ccbOrcDig;
+
+      if (!nfRef) {
+        errosDeclCust.push(
+          `🚨 Declaração "${dDecl.nomeArquivo}" (R$ ${formatarMoedaBD(
+            decl.valorTotal
+          )} | NF ${decl.numeroNfCitada || '?'}) sem NF correspondente no pacote!`
+        );
+      } else if (!opBate) {
+        errosDeclCust.push(
+          `🚨 Operação citada na Declaração "${dDecl.nomeArquivo}" (${decl.numeroCcbCitada}) diverge do Anexo-Orçamento (${numeroCcb})!`
+        );
+      } else {
+        detalhesDeclCust.push(
+          `✅ ${dDecl.nomeArquivo} ➔ NF nº ${nfRef.numero} • R$ ${formatarMoedaBD(
+            decl.valorTotal
+          )} • Op. ${decl.numeroCcbCitada || numeroCcb} (${
+            decl.dataCcbCitada || dataContratacao
+          })`
+        );
+      }
+    }
+
+    checklist.push({
+      id: 'DESEMB_7_DECLARACOES_CUSTEIO',
+      titulo: `7. Cruzamento das Declarações de Aquisição / Aplicação de Custeio × NFs (${docsDeclaracaoCusteio.length})`,
+      status: errosDeclCust.length > 0 ? 'ERRO' : 'OK',
+      resumo:
+        errosDeclCust.length > 0
+          ? errosDeclCust[0]
+          : `✅ Todas as ${docsDeclaracaoCusteio.length} Declarações de Aplicação de Custeio conferem com as NFs/NFA-es e com a Operação ${numeroCcb}.`,
+      detalhes: [
+        ...errosDeclCust.filter(
+          (e) => e !== errosDeclCust[0] || errosDeclCust.length > 1
+        ),
+        ...detalhesDeclCust,
       ],
     });
   }
@@ -3001,7 +3690,11 @@ export function auditarPacoteDesembolsoCompleto(params: {
   );
 
   const textoResumoS567 = [
-    `ANÁLISE DE CONFORMIDADE DE DESEMBOLSO — ${modalidade.replace(/_/g, ' ')}`,
+    `ANÁLISE DE CONFORMIDADE DE DESEMBOLSO — ${
+      ehCusteioEfetivo
+        ? 'RENOVAÇÃO DE CUSTEIO'
+        : modalidade.replace(/_/g, ' ')
+    }`,
     `--------------------------------------------------`,
     `CLIENTE: ${clienteNome || '-'} | CPF: ${clienteCpf || '-'}`,
     `CCB: ${numeroCcb || '-'} (Emitida em ${dataContratacao || '-'})${
