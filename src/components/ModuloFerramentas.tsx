@@ -7,6 +7,7 @@ import ModalVerificarConformidadeSocioambiental from '@/components/ferramentas/M
 import TelaConformidadeProjetoCompleta from '@/components/ferramentas/TelaConformidadeProjetoCompleta';
 import { BotaoBackupNuvemCentral } from '@/components/ferramentas/ModalBackupNuvemSistema';
 import TelaConformidadeContratos from '@/components/ferramentas/TelaConformidadeContratos';
+import TelaAnaliseDesembolso from '@/components/ferramentas/TelaAnaliseDesembolso';
 import {
   salvarFerramentasSync,
   carregarFerramentasSync,
@@ -87,6 +88,8 @@ export default function ModuloFerramentas({
   ] = useState(false);
 
   const [modalConformidadeContratosAberto, setModalConformidadeContratosAberto] = useState(false);
+  const [telaAnaliseDesembolsoAberta, setTelaAnaliseDesembolsoAberta] =
+    useState(false);
 
   const [modalConformidadePronafAberto, setModalConformidadePronafAberto] =
     useState(false); 
@@ -689,11 +692,36 @@ export default function ModuloFerramentas({
   📝 Conformidade de Contratos
 </button>
 
-<TelaConformidadeContratos
-  aberto={modalConformidadeContratosAberto}
-  onFechar={() => setModalConformidadeContratosAberto(false)}
-  contratacoes={contratacoes}
-/>
+<button
+              type="button"
+              onClick={() => setTelaAnaliseDesembolsoAberta(true)}
+              style={{
+                width: 'auto',
+                padding: '8px 14px',
+                background: 'linear-gradient(135deg, #064e3b 0%, #047857 100%)',
+                color: '#ffffff',
+                border: '1px solid #f59e0b',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 800,
+                cursor: 'pointer',
+              }}
+            >
+              💸 Analisar Desembolso
+            </button>
+
+            <TelaConformidadeContratos
+              aberto={modalConformidadeContratosAberto}
+              onFechar={() => setModalConformidadeContratosAberto(false)}
+              contratacoes={contratacoes}
+            />
+
+            <TelaAnaliseDesembolso
+              aberto={telaAnaliseDesembolsoAberta}
+              onFechar={() => setTelaAnaliseDesembolsoAberta(false)}
+              contratacoes={contratacoes}
+              operacoesBase={operacoesBase}
+            />
 
 
 
