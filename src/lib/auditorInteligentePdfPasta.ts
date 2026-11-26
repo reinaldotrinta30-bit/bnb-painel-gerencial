@@ -53,6 +53,9 @@ export interface DadosExtraidosProjetoParecer {
   denominacaoImovelPa: string;
   municipioImovel: string;
   areaImovelHa: string;
+  numeroCarImovel?: string;
+  latitudeCarImovel?: string;
+  longitudeCarImovel?: string;
   imoveisVinculados: ImovelExtraidoProjetoPdf[];
   imovelAvaliadoAcima600kDetectado: boolean;
   atividadePrincipal: string;
@@ -1721,6 +1724,185 @@ function extrairCodigosReciboCar(texto: string): string[] {
   );
 }
 
+export interface DadosExtraidosReciboCar {
+  numeroCar: string;
+  latitude: string;
+  longitude: string;
+  nomeImovel: string;
+  municipioUf: string;
+}
+
+function formatarCodigoCarComPontos(codigoBruto: string): string {
+  const limpo = (codigoBruto || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const m = limpo.match(/^([A-Z]{2})([0-9O]{7})([A-F0-9O]{32})$/);
+  if (!m) return codigoBruto.trim().toUpperCase();
+  const uf = m[1];
+  const ibge = m[2].replace(/O/g, '0');
+  const hash = m[3].replace(/O/g, '0');
+  const blocos = hash.match(/.{1,4}/g)?.join('.') || hash;
+  return `${uf}-${ibge}-${blocos}`;
+}
+
+function converterDecimalParaGmsCar(
+  valStr: string,
+  eixo: 'LAT' | 'LON'
+): string {
+  const num = parseFloat(valStr.replace(',', '.'));
+  if (!Number.isFinite(num)) return '';
+  const abs = Math.abs(num);
+  const graus = Math.floor(abs);
+  const minFloat = (abs - graus) * 60;
+  const mins = Math.floor(minFloat);
+  const segs = (minFloat - mins) * 60;
+  const hem =
+    eixo === 'LAT' ? (num >= 0 ? 'N' : 'S') : num >= 0 ? 'L' : 'O';
+  const gStr = String(graus).padStart(2, '0');
+  const mStr = String(mins).padStart(2, '0');
+  const sStr = segs.toFixed(2).padStart(5, '0').replace('.', ',');
+  return `${gStr}°${mStr}'${sStr}" ${hem}`;
+}
+
+export function extrairDadosDoReciboCar(
+  textoBruto: string
+): DadosExtraidosReciboCar {
+  const resultado: DadosExtraidosReciboCar = {
+    numeroCar: '',
+    latitude: '',
+    longitude: '',
+    nomeImovel: '',
+    municipioUf: '',
+  };
+  if (!textoBruto || !textoBruto.trim()) return resultado;
+
+  const linear = textoBruto.replace(/\s+/g, ' ').trim();
+
+  // 1. Prioriza estritamente "Registro no CAR:" (evitando capturar o "Código do Protocolo:")
+  const mRegCar =
+    linear.match(
+      /Registro\s+no\s+CAR\s*:?\s*([A-Z]{2}\s*[-–]?\s*[0-9O]{7}\s*[-–]?\s*(?:[A-F0-9O]{4}\.?\s*){8})/i
+    ) ||
+    linear.match(
+      /\b([A-Z]{2}-[0-9O]{7}-[A-F0-9O]{4}\.?[A-F0-9O]{4}\.?[A-F0-9O]{4}\.?[A-F0-9O]{4}\.?[A-F0-9O]{4}\.?[A-F0-9O]{4}\.?[A-F0-9O]{4}\.?[A-F0-9O]{4})\b/i
+    );
+  if (mRegCar && mRegCar[1]) {
+    resultado.numeroCar = formatarCodigoCarComPontos(mRegCar[1]);
+  }
+
+  // 2. Latitude (suporta GMS com ou sem hemisfério "S", ruídos de OCR e fallback decimal)
+  const corrigirDig = (s: string) =>
+    s.replace(/[Oo]/g, '0').replace(/[Il|]/g, '1');
+
+  const mLatGms =
+    linear.match(
+      /Latitude\s*:?\s*([0-9OoIl]{1,2})\s*[°ºo*°]?\s*([0-9OoIl]{1,2})\s*['’´`′]\s*([0-9OoIl]{1,2}[.,][0-9OoIl]{1,2})\s*(?:["”″]|'{1,2})?\s*([SN])?/i
+    ) ||
+    linear.match(
+      /Latitude[\s\S]{0,60}?([0-9OoIl]{1,2})\s*[°ºo*]\s*([0-9OoIl]{1,2})\s*['’´`′]\s*([0-9OoIl]{1,2}[.,][0-9OoIl]{1,2})\s*(?:["”″]|'{1,2})?\s*([SN])?/i
+    );
+
+  if (mLatGms) {
+    const g = corrigirDig(mLatGms[1]).padStart(2, '0');
+    const m = corrigirDig(mLatGms[2]).padStart(2, '0');
+    const s = corrigirDig(mLatGms[3]).replace('.', ',');
+    const hem = (mLatGms[4] || 'S').toUpperCase();
+    resultado.latitude = `${g}°${m}'${s}" ${hem}`;
+  } else {
+    const mLatDec = linear.match(/Latitude\s*:?\s*(-?\d{1,2}[.,]\d{3,8})/i);
+    if (mLatDec) {
+      resultado.latitude = converterDecimalParaGmsCar(mLatDec[1], 'LAT');
+    }
+  }
+
+  // 3. Longitude (normaliza O / W / 0 / Ο grego para "O")
+  const mLonGms =
+    linear.match(
+      /Longitude\s*:?\s*([0-9OoIl]{1,3})\s*[°ºo*°]?\s*([0-9OoIl]{1,2})\s*['’´`′]\s*([0-9OoIl]{1,2}[.,][0-9OoIl]{1,2})\s*(?:["”″]|'{1,2})?\s*([OWEL0Ο])?/i
+    ) ||
+    linear.match(
+      /Longitude[\s\S]{0,60}?([0-9OoIl]{1,3})\s*[°ºo*]\s*([0-9OoIl]{1,2})\s*['’´`′]\s*([0-9OoIl]{1,2}[.,][0-9OoIl]{1,2})\s*(?:["”″]|'{1,2})?\s*([OWEL0Ο])?/i
+    );
+
+  if (mLonGms) {
+    const g = corrigirDig(mLonGms[1]).padStart(2, '0');
+    const m = corrigirDig(mLonGms[2]).padStart(2, '0');
+    const s = corrigirDig(mLonGms[3]).replace('.', ',');
+    const hemBruto = (mLonGms[4] || 'O').toUpperCase();
+    const hem = hemBruto === 'E' || hemBruto === 'L' ? 'L' : 'O';
+    resultado.longitude = `${g}°${m}'${s}" ${hem}`;
+  } else {
+    const mLonDec = linear.match(/Longitude\s*:?\s*(-?\d{1,3}[.,]\d{3,8})/i);
+    if (mLonDec) {
+      resultado.longitude = converterDecimalParaGmsCar(mLonDec[1], 'LON');
+    }
+  }
+
+  // 4. Nome do Imóvel Rural e Município/UF
+  const mNomeIm = linear.match(
+    /Nome\s+do\s+Im[óo]vel\s+Rural\s*:?\s*([A-ZÀ-Ú0-9\s.\-/]{3,65}?)(?=\s+Munic[íi]pio|\s+Coordenadas|\s+[ÁA]rea\s+Total|\s+UF:|$)/i
+  );
+  if (mNomeIm && mNomeIm[1]) {
+    resultado.nomeImovel = mNomeIm[1].replace(/\s+/g, ' ').trim().toUpperCase();
+  }
+
+  const mMun = linear.match(
+    /Munic[íi]pio\s*:?\s*([A-ZÀ-Ú\s]{3,40}?)(?=\s+Coordenadas|\s+[ÁA]rea\s+Total|\s+UF:|\s+Latitude|$)/i
+  );
+  if (mMun && mMun[1]) {
+    const mUf = linear.match(
+      /UF\s*:?\s*(Maranh[ãa]o|MA|Piau[íi]|PI|Par[áa]|PA|Tocantins|TO|[A-Z]{2})\b/i
+    );
+    const ufRaw = (mUf?.[1] || 'MA').toUpperCase();
+    const ufSigla = ufRaw.startsWith('MARANH')
+      ? 'MA'
+      : ufRaw.startsWith('PIAU')
+      ? 'PI'
+      : ufRaw.startsWith('PARA')
+      ? 'PA'
+      : ufRaw.startsWith('TOCANT')
+      ? 'TO'
+      : ufRaw.slice(0, 2);
+    resultado.municipioUf = `${mMun[1].trim().toUpperCase()} - ${ufSigla}`;
+  }
+
+  return resultado;
+}
+
+// Leitura direta de um PDF de Recibo do CAR: tenta texto nativo primeiro e aciona OCR na Pág. 1 como Plano B!
+export async function extrairDadosReciboCarDeArquivoPdf(
+  file: File,
+  onProgresso?: (msg: string) => void
+): Promise<DadosExtraidosReciboCar> {
+  const info = await extrairTextoEAssinaturaDoPdf(file, 'ITEM_13_CAR', false);
+  let dados = extrairDadosDoReciboCar(
+    `${info.textoCompleto}\n${info.textoStreamBruto || ''}`
+  );
+
+  // Plano B: se o PDF não tiver texto extraível ou faltar CAR/Latitude/Longitude, aciona OCR somente na Pág. 1
+  if (
+    info.ehProvavelEscaneadoImagem ||
+    !dados.numeroCar ||
+    !dados.latitude ||
+    !dados.longitude
+  ) {
+    onProgresso?.(
+      `📸 CAR sem texto extraível ou incompleto ("${file.name}"). Ativando OCR (Pág. 1)...`
+    );
+    const textoOcrPag1 = await executarOcrEmPdfEscaneado(file, onProgresso, 1);
+    if (textoOcrPag1 && textoOcrPag1.trim().length > 20) {
+      const dadosOcr = extrairDadosDoReciboCar(textoOcrPag1);
+      dados = {
+        numeroCar: dados.numeroCar || dadosOcr.numeroCar,
+        latitude: dados.latitude || dadosOcr.latitude,
+        longitude: dados.longitude || dadosOcr.longitude,
+        nomeImovel: dados.nomeImovel || dadosOcr.nomeImovel,
+        municipioUf: dados.municipioUf || dadosOcr.municipioUf,
+      };
+    }
+  }
+
+  return dados;
+}
+
 export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
   arquivos: Array<{
     fileObj: File;
@@ -1914,13 +2096,67 @@ export async function executarAuditoriaCompletaDosPdfsDaPasta(params: {
     }
   }
 
-  if (pdfProjeto || pdfSolicitacaoLim || pdfIdTitular || pdfIdConjuge) {
-    salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
+  // Extrai Nº do CAR, Latitude e Longitude do Recibo do CAR (com Plano B automático via OCR na Pág. 1 se for imagem!)
+  const docCarAlvo = pdfCar || pdfConsultaCar;
+  if (docCarAlvo) {
+    let dadosCarLidos = extrairDadosDoReciboCar(
+      `${docCarAlvo.textoCompleto}\n${docCarAlvo.textoStreamBruto || ''}`
+    );
+
+    if (
+      docCarAlvo.ehProvavelEscaneadoImagem ||
+      !dadosCarLidos.numeroCar ||
+      !dadosCarLidos.latitude ||
+      !dadosCarLidos.longitude
+    ) {
+      const arqCarOriginal = pdfsParaLer.find(
+        (p) => p.nomeOriginal === docCarAlvo.nomeOriginal
+      );
+      if (arqCarOriginal) {
+        const txtOcrCar = await executarOcrEmPdfEscaneado(
+          arqCarOriginal.fileObj,
+          undefined,
+          1
+        );
+        if (txtOcrCar && txtOcrCar.trim().length > 20) {
+          docCarAlvo.textoCompleto = txtOcrCar;
+          docCarAlvo.ehProvavelEscaneadoImagem = false;
+          const dadosCarOcr = extrairDadosDoReciboCar(txtOcrCar);
+          dadosCarLidos = {
+            numeroCar: dadosCarLidos.numeroCar || dadosCarOcr.numeroCar,
+            latitude: dadosCarLidos.latitude || dadosCarOcr.latitude,
+            longitude: dadosCarLidos.longitude || dadosCarOcr.longitude,
+            nomeImovel: dadosCarLidos.nomeImovel || dadosCarOcr.nomeImovel,
+            municipioUf: dadosCarLidos.municipioUf || dadosCarOcr.municipioUf,
+          };
+        }
+      }
+    }
+
+    if (dadosCarLidos.numeroCar) {
+      dadosProjetoParaParecer.numeroCarImovel = dadosCarLidos.numeroCar;
+    }
+    if (dadosCarLidos.latitude) {
+      dadosProjetoParaParecer.latitudeCarImovel = dadosCarLidos.latitude;
+    }
+    if (dadosCarLidos.longitude) {
+      dadosProjetoParaParecer.longitudeCarImovel = dadosCarLidos.longitude;
+    }
+    if (!dadosProjetoParaParecer.denominacaoImovelPa && dadosCarLidos.nomeImovel) {
+      dadosProjetoParaParecer.denominacaoImovelPa = dadosCarLidos.nomeImovel;
+    }
+    if (!dadosProjetoParaParecer.municipioImovel && dadosCarLidos.municipioUf) {
+      dadosProjetoParaParecer.municipioImovel = dadosCarLidos.municipioUf;
+    }
   }
-  if (titularNome && !dadosProjetoParaParecer.clienteNome) {
-    dadosProjetoParaParecer.clienteNome = titularNome;
-  }
-  if (pdfProjeto || pdfSolicitacaoLim) {
+
+  if (
+    pdfProjeto ||
+    pdfSolicitacaoLim ||
+    pdfIdTitular ||
+    pdfIdConjuge ||
+    docCarAlvo
+  ) {
     salvarDadosExtraidosParaParecer(dadosProjetoParaParecer);
   }
 

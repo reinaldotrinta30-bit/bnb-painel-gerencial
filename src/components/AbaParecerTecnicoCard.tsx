@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { CardKanban, RegistroContratacao } from '@/types/painel';
 import {
   obterDadosExtraidosParaParecer,
+  extrairDadosReciboCarDeArquivoPdf,
   DadosExtraidosProjetoParecer,
 } from '@/lib/auditorInteligentePdfPasta';
 import {
@@ -361,6 +362,54 @@ export default function AbaParecerTecnicoCard({
     },
   ]);
 
+  // Dados do Recibo do CAR (Nº do CAR, Latitude e Longitude) para Parecer PRONAF A
+  const [numeroCarImovel, setNumeroCarImovel] = useState('');
+  const [latitudeCarImovel, setLatitudeCarImovel] = useState('');
+  const [longitudeCarImovel, setLongitudeCarImovel] = useState('');
+  const [lendoCarPdf, setLendoCarPdf] = useState(false);
+  const [msgLeituraCar, setMsgLeituraCar] = useState('');
+  const inputCarPdfRef = useRef<HTMLInputElement>(null);
+
+  // Enquadramento PLANTA NORDESTE (propostas de Custeio)
+  const [enquadrarPlantaNordeste, setEnquadrarPlantaNordeste] = useState(false);
+
+  const handleLerPdfCarDireto = async (file: File) => {
+    setLendoCarPdf(true);
+    setMsgLeituraCar('📄 Lendo Recibo do CAR...');
+    try {
+      const dadosCar = await extrairDadosReciboCarDeArquivoPdf(file, (msg) =>
+        setMsgLeituraCar(msg)
+      );
+      if (dadosCar.numeroCar) setNumeroCarImovel(dadosCar.numeroCar);
+      if (dadosCar.latitude) setLatitudeCarImovel(dadosCar.latitude);
+      if (dadosCar.longitude) setLongitudeCarImovel(dadosCar.longitude);
+      if (dadosCar.nomeImovel || dadosCar.municipioUf) {
+        setImoveisBeneficiados((prev) => [
+          {
+            id: prev[0]?.id || 'ben_1',
+            nome: dadosCar.nomeImovel || prev[0]?.nome || '',
+            matricula: prev[0]?.matricula || '',
+            cidadeUf:
+              dadosCar.municipioUf || prev[0]?.cidadeUf || 'PIO XII - MA',
+            areaHa: prev[0]?.areaHa || '25',
+          },
+          ...prev.slice(1),
+        ]);
+      }
+      setEditouTextoManualmente(false);
+      if (!dadosCar.numeroCar && !dadosCar.latitude && !dadosCar.longitude) {
+        alert(
+          '⚠️ Não foi possível extrair o Nº do CAR ou coordenadas deste PDF. Preencha manualmente nos campos.'
+        );
+      }
+    } catch {
+      alert('❌ Erro ao ler o PDF do CAR.');
+    } finally {
+      setLendoCarPdf(false);
+      setMsgLeituraCar('');
+    }
+  };
+
   const [temGarantiaRealInv, setTemGarantiaRealInv] = useState<'NÃO' | 'SIM'>('NÃO');
   const [imoveisGarantia, setImoveisGarantia] = useState<ImovelGarantiaForm[]>([
     {
@@ -385,6 +434,9 @@ export default function AbaParecerTecnicoCard({
   const [textoParecerFinal, setTextoParecerFinal] = useState('');
   const [editouTextoManualmente, setEditouTextoManualmente] = useState(false);
   const editorParecerRef = useRef<HTMLDivElement>(null);
+  const editouManualmenteRef = useRef(false);
+  const ultimoTextoGeradoRef = useRef('');
+  const ultimaChaveContextoRef = useRef('');
 
   const percMaximoRelacionamento = useMemo(() => {
     return porteCliente.toUpperCase().includes('PRONAF') ? 0.05 : 0.1;
@@ -518,6 +570,17 @@ export default function AbaParecerTecnicoCard({
       setNomeProcurador(dadosPdf.procuradorNomeExtraido);
     }
 
+
+    if (dadosPdf.numeroCarImovel) {
+      setNumeroCarImovel(dadosPdf.numeroCarImovel);
+    }
+    if (dadosPdf.latitudeCarImovel) {
+      setLatitudeCarImovel(dadosPdf.latitudeCarImovel);
+    }
+    if (dadosPdf.longitudeCarImovel) {
+      setLongitudeCarImovel(dadosPdf.longitudeCarImovel);
+    }
+
     // Preenche a lista de itens de inversão separados por vírgula (para o formato do Parecer)
     if (dadosPdf.itensInversao && dadosPdf.itensInversao.length > 0) {
       const textoItensSeparadosPorVirgula = dadosPdf.itensInversao
@@ -561,6 +624,22 @@ export default function AbaParecerTecnicoCard({
     const valOp = opAtiva?.valor || card.valorVinculado || '0,00';
     const progOp = opAtiva?.programa || '';
 
+    // Só reinicializa se o usuário realmente trocar de cliente ou de operação (imune a re-renders do ModalOrganizadorPastasCliente)
+    const chaveContextoAtual = [
+      card.id || '',
+      cli,
+      cpf,
+      opAtiva?.id || opSelecionadaId || 'default',
+      tOp,
+      valOp,
+    ].join('|');
+
+    if (ultimaChaveContextoRef.current === chaveContextoAtual) {
+      return;
+    }
+    ultimaChaveContextoRef.current = chaveContextoAtual;
+    editouManualmenteRef.current = false;
+
     setNomeCliente(cli);
     setCpfCliente(cpf);
     setPorteCliente(prt);
@@ -572,6 +651,7 @@ export default function AbaParecerTecnicoCard({
     recalcularRelacionamentoNegocialPadrao(valOp, prt);
 
     const tUp = tOp.toUpperCase().trim();
+    setEnquadrarPlantaNordeste(tUp.includes('CUSTEIO'));
     if (tUp === 'LCGH' || tUp === 'LCGA') {
       setModeloAtivo('LIMITE_LCG');
       setPrazoMeses('120');
@@ -826,12 +906,16 @@ export default function AbaParecerTecnicoCard({
         `Atividade Econômica – ${setorAtividade}: ${descAtiv}\n\n` +
         blocoProcuracaoPronafA +
         `1. INFORMAÇÕES DO PLEITO:\n` +
-        `O presente pleito objetiva o financiamento com recursos do FNE/PRONAF A, para aquisição de itens destinados à atividade de ${verboExplora}, nos imóveis rurais do beneficiário, constante(s) no projeto, localizado(s) no ${nomePA}, na zona de ${cidadePA}.\n` +
+        `O presente pleito objetiva o financiamento com recursos do FNE/PRONAF A, para aquisição de itens destinados à atividade de ${verboExplora}, no lote do imóvel rural (P.A) cujo assentado, solicitante da proposta, faz parte, constante no projeto, localizado(s) no ${nomePA}, na zona de ${cidadePA}.\n\n` +
+        `CAR DO IMÓVEL: ${numeroCarImovel.trim() || '[Informar Nº do CAR]'}\n\n` +
+        `Localização Geográfica, conforme CAR do imóvel rural de assentamentos da reforma agrária:\n\n` +
+        `- Latitude: ${latitudeCarImovel.trim() || '[Informar Latitude]'}\n` +
+        `- Longitude: ${longitudeCarImovel.trim() || '[Informar Longitude]'}\n\n` +
         `No que se refere à relação entre o proponente e funcionário do Banco, informa-se que não há vínculo de parentesco com funcionário que atue na análise, deliberação ou decisão da presente operação de crédito.\n\n` +
         `2. GARANTIA:\n` +
         `O financiamento não possui garantias, conforme item 7.1 do normativo 1101-08-02.\n\n` +
         `3. HISTÓRICO:\n` +
-        `O assentado faz parte da Associação dos Produtores Rurais do(a) ${nomePA}, situado no Extensão de município de ${cidadePA}, a gleba já dispõe de uma infraestrutura básica capaz de manter as famílias como energia, água, escolas e, etc. ${txtRelacionamentoSimples}. Atualmente ${statusAdimplencia}, ${statusAtrasos} e explora a atividade de ${verboExplora}. Cliente informa que adota as orientações técnicas necessárias à sua atividade produtiva.\n\n` +
+        `O cliente é assentado no imóvel do pleito e faz parte do(a) ${nomePA}, situado no Extensão de município de ${cidadePA}, a gleba já dispõe de uma infraestrutura básica capaz de manter as famílias como energia, água, escolas e, etc. ${txtRelacionamentoSimples}. Atualmente ${statusAdimplencia}, ${statusAtrasos} e explora a atividade de ${verboExplora}. Cliente informa que adota as orientações técnicas necessárias à sua atividade produtiva.\n\n` +
         `4. PROPOSTA\n` +
         `Projeto Individual para a estruturação inicial no âmbito do PRONAF A, destinado ao desenvolvimento da ${verboExplora}, tais como: ${itensConcatenados}. Com a implantação do projeto o associado irá aumentar a sua capacidade produtiva e consequentemente, irá melhorar as condições de vida da família.${paragrafoRecursosProprios41}\n\n` +
         `5. IMOVEL:\n` +
@@ -1200,6 +1284,9 @@ export default function AbaParecerTecnicoCard({
 
     textoFinal += `${idx++}. Cliente não tem parentesco com funcionário do Banco do Nordeste.\n\n`;
     textoFinal += `${idx++}. Cliente faz a opção por juros ${metodologiaJuros}.\n\n`;
+    if (enquadrarPlantaNordeste) {
+      textoFinal += `${idx++}. A proposta será enquadrada no PLANTA NORDESTE.\n\n`;
+    }
 
     if (contaDesembolso.trim()) {
       textoFinal += `${idx++}. Conta vinculada a operação: ${contaDesembolso.trim()}\n\n`;
@@ -1230,8 +1317,9 @@ export default function AbaParecerTecnicoCard({
   };
 
   useEffect(() => {
-    if (!editouTextoManualmente) {
+    if (!editouTextoManualmente && !editouManualmenteRef.current) {
       const novoTexto = construirTextoParecer();
+      ultimoTextoGeradoRef.current = novoTexto;
       setTextoParecerFinal(novoTexto);
       if (editorParecerRef.current) {
         editorParecerRef.current.innerHTML = formatarParecerHtmlComNegrito(novoTexto);
@@ -1290,6 +1378,10 @@ export default function AbaParecerTecnicoCard({
     cpfAvalista,
     rendaAnualAvalista,
     imoveisBeneficiados,
+    numeroCarImovel,
+    latitudeCarImovel,
+    longitudeCarImovel,
+    enquadrarPlantaNordeste,
     temGarantiaRealInv,
     imoveisGarantia,
     gerenteRelacionamento,
@@ -1314,9 +1406,20 @@ export default function AbaParecerTecnicoCard({
     return true;
   };
 
+  const obterTextoEfetivoParecer = (): string => {
+    if (editouTextoManualmente || editouManualmenteRef.current) {
+      const textoLiveEditor = editorParecerRef.current?.innerText;
+      if (textoLiveEditor && textoLiveEditor.trim()) {
+        return textoLiveEditor;
+      }
+      return textoParecerFinal;
+    }
+    return construirTextoParecer();
+  };
+
   const copiarParecerComNegrito = async () => {
     verificar4ModulosAntesDeExportar();
-    const txtFinal = editouTextoManualmente ? textoParecerFinal : construirTextoParecer();
+    const txtFinal = obterTextoEfetivoParecer();
     const htmlComNegrito = `<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:11pt;line-height:1.5;white-space:pre-wrap;">${formatarParecerHtmlComNegrito(
       txtFinal
     )}</div>`;
@@ -1343,9 +1446,7 @@ export default function AbaParecerTecnicoCard({
   // Se estiver na aba normal do Kanban, faz o download normal perguntando onde guardar.
   const exportarParecerTXT = async () => {
     verificar4ModulosAntesDeExportar();
-    const txtFinal = editouTextoManualmente
-      ? editorParecerRef.current?.innerText || textoParecerFinal
-      : construirTextoParecer();
+    const txtFinal = obterTextoEfetivoParecer();
 
     if (typeof window !== 'undefined') {
       const win = window as unknown as {
@@ -1376,7 +1477,7 @@ export default function AbaParecerTecnicoCard({
 
   const exportarParecerPDF = () => {
     verificar4ModulosAntesDeExportar();
-    const txtFinal = editouTextoManualmente ? textoParecerFinal : construirTextoParecer();
+    const txtFinal = obterTextoEfetivoParecer();
     const htmlFormatado = formatarParecerHtmlComNegrito(txtFinal);
     const tituloTopo = `PARECER GERENCIAL - ${(nomeCliente || 'CLIENTE').replace(/"/g, '')}`;
 
@@ -1543,8 +1644,10 @@ export default function AbaParecerTecnicoCard({
             <button
               type="button"
               onClick={() => {
+                editouManualmenteRef.current = false;
                 setEditouTextoManualmente(false);
                 const novoTxt = construirTextoParecer();
+                ultimoTextoGeradoRef.current = novoTxt;
                 setTextoParecerFinal(novoTxt);
                 if (editorParecerRef.current) {
                   editorParecerRef.current.innerHTML = formatarParecerHtmlComNegrito(novoTxt);
@@ -2370,6 +2473,119 @@ export default function AbaParecerTecnicoCard({
               </div>
             ))}
           </div>
+
+          {modeloAtivo === 'PRONAF_A' && (
+            <div
+              style={{
+                background: '#f0fdf4',
+                border: '1px solid #86efac',
+                borderRadius: '8px',
+                padding: '10px 12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                }}
+              >
+                <strong style={{ fontSize: '11.5px', color: '#15803d' }}>
+                  🛰️ Dados do Recibo do CAR (Inseridos no Item 1 — Informações do Pleito)
+                </strong>
+                <div>
+                  <input
+                    ref={inputCarPdfRef}
+                    type="file"
+                    accept=".pdf"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleLerPdfCarDireto(f);
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={lendoCarPdf}
+                    onClick={() => inputCarPdfRef.current?.click()}
+                    style={{
+                      width: 'auto',
+                      height: '28px',
+                      padding: '0 11px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      background: '#15803d',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: lendoCarPdf ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {lendoCarPdf
+                      ? msgLeituraCar || '⏳ Lendo CAR...'
+                      : '📄 Carregar PDF do CAR (Auto / OCR)'}
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '2.2fr 1fr 1fr',
+                  gap: '10px',
+                  alignItems: 'end',
+                }}
+              >
+                <div>
+                  <label style={ui.label}>CAR do Imóvel</label>
+                  <input
+                    type="text"
+                    value={numeroCarImovel}
+                    onChange={(e) => {
+                      setEditouTextoManualmente(false);
+                      setNumeroCarImovel(e.target.value.toUpperCase());
+                    }}
+                    placeholder="Ex: MA-2108702-6100.AE4B.87A4.4B0D.B5B4.84DB.220A.8317"
+                    style={{ ...ui.input, fontFamily: 'monospace', fontSize: '11.5px' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={ui.label}>Latitude (CAR)</label>
+                  <input
+                    type="text"
+                    value={latitudeCarImovel}
+                    onChange={(e) => {
+                      setEditouTextoManualmente(false);
+                      setLatitudeCarImovel(e.target.value);
+                    }}
+                    placeholder={`Ex: 03°53'42,75" S`}
+                    style={ui.input}
+                  />
+                </div>
+
+                <div>
+                  <label style={ui.label}>Longitude (CAR)</label>
+                  <input
+                    type="text"
+                    value={longitudeCarImovel}
+                    onChange={(e) => {
+                      setEditouTextoManualmente(false);
+                      setLongitudeCarImovel(e.target.value);
+                    }}
+                    placeholder={`Ex: 45°02'54,43" O`}
+                    style={ui.input}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2904,6 +3120,21 @@ export default function AbaParecerTecnicoCard({
                 >
                   <option value="pré-fixada">Pré-fixada</option>
                   <option value="pós-fixada">Pós-fixada</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={ui.label}>Enquadramento Planta Nordeste</label>
+                <select
+                  value={enquadrarPlantaNordeste ? 'SIM' : 'NAO'}
+                  onChange={(e) => {
+                    setEditouTextoManualmente(false);
+                    setEnquadrarPlantaNordeste(e.target.value === 'SIM');
+                  }}
+                  style={{ ...ui.select, fontWeight: enquadrarPlantaNordeste ? 700 : 400 }}
+                >
+                  <option value="NAO">NÃO</option>
+                  <option value="SIM">SIM (Citar PLANTA NORDESTE)</option>
                 </select>
               </div>
 
@@ -3452,11 +3683,19 @@ export default function AbaParecerTecnicoCard({
           contentEditable
           suppressContentEditableWarning
           onInput={(e) => {
+            editouManualmenteRef.current = true;
             setEditouTextoManualmente(true);
             setTextoParecerFinal(e.currentTarget.innerText);
           }}
           onBlur={(e) => {
             const textoAtual = e.currentTarget.innerText;
+            if (
+              ultimoTextoGeradoRef.current &&
+              textoAtual.trim() !== ultimoTextoGeradoRef.current.trim()
+            ) {
+              editouManualmenteRef.current = true;
+              setEditouTextoManualmente(true);
+            }
             setTextoParecerFinal(textoAtual);
             e.currentTarget.innerHTML = formatarParecerHtmlComNegrito(textoAtual);
           }}

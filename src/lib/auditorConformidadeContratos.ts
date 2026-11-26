@@ -196,6 +196,8 @@ export interface ResultadoAuditoriaContratoPdf {
   anuenciaIncraSipraCodigo: string;
   anuenciaIncraLote: string;
   anuenciaIncraAtivoDesde: string;
+  cnpjsIncraDetectados?: string[];
+  cnpjIncraDivergente?: boolean;
   conjugeNome: string;
   conjugeCpf: string;
   conjugeRg: string;
@@ -2161,6 +2163,25 @@ export async function auditarContratoPdfCompleto(params: {
     ? matchAnuenciaSipra[6].trim()
     : '';
 
+  // Validação rigorosa do CNPJ do INCRA (padrão esperado: 00.375.972/0002-41)
+  const CNPJ_INCRA_OFICIAL = '00.375.972/0002-41';
+  const matchesCnpjProximoIncra = [
+    ...textoCorpoCosturado.matchAll(
+      /(?:INCRA|COLONIZA[ÇC][ÃA]O\s+E\s+REFORMA\s+AGR[ÁA]RIA)[\s\S]{0,120}?CNPJ(?:\/MF)?\s*(?:sob\s+o\s*)?(?:n[°ºo]?\s*)?:?\s*(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/gi
+    ),
+  ].map((m) => m[1].trim());
+  const matchesRaizCnpjIncra = [
+    ...textoCorpoCosturado.matchAll(/\b(00\.375\.972\/\d{4}-\d{2})\b/g),
+  ].map((m) => m[1].trim());
+
+  const cnpjsIncraDetectados = Array.from(
+    new Set([...matchesCnpjProximoIncra, ...matchesRaizCnpjIncra])
+  ).filter((cnpj) => cnpj !== '07.237.373/0103-54');
+
+  const cnpjIncraDivergente = cnpjsIncraDetectados.some(
+    (cnpj) => cnpj !== CNPJ_INCRA_OFICIAL
+  );  
+
   if (!qualifCred.cpf && matchAnuenciaSipra?.[5]) {
     qualifCred.cpf = matchAnuenciaSipra[5].trim();
   }
@@ -3622,6 +3643,8 @@ export async function auditarContratoPdfCompleto(params: {
     anuenciaIncraSipraCodigo,
     anuenciaIncraLote,
     anuenciaIncraAtivoDesde,
+    cnpjsIncraDetectados,
+    cnpjIncraDivergente,
     conjugeNome,
     conjugeCpf: qualifConj.cpf,
     conjugeRg: qualifConj.rg,
@@ -3720,6 +3743,18 @@ export function reconstruirChecklistIndividualContrato(
         '🚨 ALERTA DE BLOQUEIO: Rodapé "Documento Classificado como Interno" Detectado!',
       status: 'ERRO',
       resumo: `🚨 O arquivo "${r.nomeArquivo}" contém o rodapé travado "${r.trechoRodapeInternoDetectado}"! Remova esse rodapé no Word/Excel antes de colher a assinatura do cliente.`,
+    });
+  }
+
+  if (r.cnpjIncraDivergente) {
+    itensChecklist.push({
+      id: 'CHK_CNPJ_INCRA_DIVERGENTE',
+      categoria: 'CERTIDOES_CLAUSULAS',
+      titulo: '🚨 ERRO NO CNPJ DO INCRA DETECTADO!',
+      status: 'ERRO',
+      resumo: `🚨 O arquivo "${r.nomeArquivo}" cita o CNPJ do INCRA como [${(
+        r.cnpjsIncraDetectados || []
+      ).join(', ')}], mas o CNPJ oficial correto é 00.375.972/0002-41!`,
     });
   }
 
@@ -5199,6 +5234,14 @@ export function auditarSintoniaPacoteDerivada(
       }
     }
 
+    const docsComCnpjIncraErrado = docsPresentes.filter(
+      (d) => d.cnpjIncraDivergente
+    );
+    const cnpjsIncraNoKit = Array.from(
+      new Set(docsPresentes.flatMap((d) => d.cnpjsIncraDetectados || []))
+    );
+    const erroCnpjIncraNoKit = docsComCnpjIncraErrado.length > 0;
+
     const temLacunaCriticaCcb = (ccb.lacunasEmBrancoCcb || []).some((l) =>
       l.startsWith('🚨')
     );
@@ -5206,6 +5249,7 @@ export function auditarSintoniaPacoteDerivada(
     let statusItem6: StatusItemConformidadeContrato = 'OK';
     if (
       temLacunaCriticaCcb ||
+      erroCnpjIncraNoKit ||
       errosFonteProgramaPronafA.length > 0 ||
       (temAvalEmAlgum && (!avalistaPresenteNos3 || avalistaCasadoSemConjuge)) ||
       erroFundoLiquidez ||
@@ -5230,6 +5274,10 @@ export function auditarSintoniaPacoteDerivada(
 
     const resumoItem6 = temLacunaCriticaCcb
       ? `🚨 CAMPOS EM BRANCO NA CCB (${ccb.lacunasEmBrancoCcb.length} pendência(s)): Faltam preenchimentos obrigatórios (Imóvel/Proprietário, Prazo de Utilização em dias e/ou Anuência SIPRA)!`
+      : erroCnpjIncraNoKit
+      ? `🚨 CNPJ DO INCRA INCORRETO: encontrado [${cnpjsIncraNoKit.join(
+          ', '
+        )}] — o CNPJ oficial correto é 00.375.972/0002-41!`
       : errosFonteProgramaPronafA.length > 0
       ? errosFonteProgramaPronafA[0]
       : divergenciaContaPedidoRenovacao
@@ -5267,6 +5315,15 @@ export function auditarSintoniaPacoteDerivada(
       detalhes: [
         ...(ccb.lacunasEmBrancoCcb || []),
         ...errosFonteProgramaPronafA,
+        erroCnpjIncraNoKit
+          ? `🚨 ERRO NO CNPJ DO INCRA em [${docsComCnpjIncraErrado
+              .map((d) => d.nomeArquivo)
+              .join(', ')}]: consta [${cnpjsIncraNoKit.join(
+              ', '
+            )}], mas deve ser obrigatoriamente 00.375.972/0002-41!`
+          : cnpjsIncraNoKit.length > 0
+          ? `✅ CNPJ do INCRA conferido e correto: 00.375.972/0002-41.`
+          : '',
         ehPronafA699 && errosFonteProgramaPronafA.length === 0
           ? `✅ Enquadramento PRONAF A — Programa 699 OK: Fonte de Recursos cita "PRONAF A - RES. 5.183/24" e valor (R$ ${ccb.valorClausulaPrimeira}) respeita o teto de R$ 50.000,00.`
           : ehPronafA368 && errosFonteProgramaPronafA.length === 0
